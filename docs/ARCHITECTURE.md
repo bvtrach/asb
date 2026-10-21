@@ -762,8 +762,30 @@ wire interface. OpenHands may itself report a cache count of zero when its SDK
 does not distinguish a missing cache field from zero. Those run-specific state
 directories can contain agent session transcripts and remain beside the run
 workspace. OpenHands and OpenJiuwen use
-machine-readable output; mini-SWE writes a project-local trajectory that
-is parsed for nested provider usage before it is removed. Their terminal output is intentionally limited to success
+machine-readable output. Mini-SWE's trajectory and Hermes's usage ledger now
+belong to fresh private per-attempt namespaces outside the task workspace.
+The adapters declare and configure their own artifact paths, including the
+guest's explicit mounted run directory; generic execution has no agent-ID
+branch for file answers. After execution, each bounded regular JSON file is
+opened without following symlinks and frozen once. Answer, usage and steps use
+that same document rather than independently refreshing a workspace pathname.
+Existing workspace trajectories are neither interpreted nor deleted.
+Explicit consuming scratch settlement checks namespace/file identity and frozen
+size/time observations before removal. Replacements, symlinks and changed files
+are retained with a fixed diagnostic. This is checked attempt ownership after
+owned process settlement, not an atomic conditional-unlink security sandbox
+against a hostile external writer racing the final check. Unwinding retains a
+best-effort guard; explicit failed settlement is never retried by Drop.
+Scratch retention is ancillary run failure, not unconfirmed workload/container
+quiescence: official grading and independent workload/provider cleanup and
+publication still run once. Guest metadata carries a separate optional artifact
+diagnostic while retaining the existing process/namespace ownership facts.
+Unix file identity is qualified with offline fixtures. Windows retains a
+handle-based volume/128-bit-file-ID implementation with reparse-point refusal;
+its source is reviewed but Linux execution does not qualify Windows runtime.
+An identity-unavailable filesystem/platform still runs and freezes isolated
+evidence, but refuses destructive settlement and reports retained scratch.
+Their terminal output is intentionally limited to success
 rate, elapsed time, and token usage; `--json` changes only the representation
 of those metrics.
 Pass `--show-output` to stream the agent's stdout and stderr live for interactive

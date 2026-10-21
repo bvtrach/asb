@@ -65,6 +65,8 @@ fn default_timeout() -> f64 {
 #[derive(Deserialize, Serialize)]
 pub(crate) struct GuestResult {
     #[serde(default)]
+    pub artifact_error: Option<String>,
+    #[serde(default)]
     pub elapsed_ms: Option<u64>,
     #[serde(default)]
     pub timed_out: bool,
@@ -109,7 +111,22 @@ fn absolute(path: &Path) -> bool {
             .any(|part| matches!(part, Component::ParentDir))
 }
 
-fn prepare(request: &GuestRequest) -> Result<Command, Error> {
+struct PreparedGuest {
+    command: Command,
+    artifact_owner: super::ArtifactOwner,
+}
+impl std::fmt::Debug for PreparedGuest {
+    fn fmt(&self, output: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        output.write_str("PreparedGuest { private command and owned artifacts }")
+    }
+}
+impl std::ops::Deref for PreparedGuest {
+    type Target = Command;
+    fn deref(&self) -> &Command {
+        &self.command
+    }
+}
+fn prepare(request: &GuestRequest) -> Result<PreparedGuest, Error> {
     if !request.timeout_seconds.is_finite() || !(0.001..=86400.0).contains(&request.timeout_seconds)
     {
         return Err(Error::Input(
@@ -188,6 +205,7 @@ fn prepare(request: &GuestRequest) -> Result<Command, Error> {
     // Do not replace a benchmark's Python PATH with the agent's interpreter.
     // Agent entry points/wrappers use their own absolute venv interpreter.
     crate::tools::apply_runtime_path(&mut command, &request.project_root, &project.tools_dir)?;
+    let artifact_owner = super::ArtifactOwner::prepare(&request.run_dir, adapter.artifact_specs())?;
     adapter.prepare(&mut super::PreparationContext {
         command: &mut command,
         model: &request.config.model,
@@ -195,7 +213,10 @@ fn prepare(request: &GuestRequest) -> Result<Command, Error> {
         runtime_dir: &request.runtime_dir,
         run_dir: &request.run_dir,
     })?;
-    Ok(command)
+    Ok(PreparedGuest {
+        command,
+        artifact_owner,
+    })
 }
 
 fn run(request: GuestRequest) -> Result<u8, Error> {
@@ -221,7 +242,10 @@ fn run(request: GuestRequest) -> Result<u8, Error> {
             "quiescent guest execution cannot declare retained ownership".into(),
         ));
     }
-    let mut command = prepare(&request)?;
+    let PreparedGuest {
+        mut command,
+        mut artifact_owner,
+    } = prepare(&request)?;
     fs::create_dir_all(&request.run_dir)
         .map_err(|error| Error::Io(format!("cannot create private guest artifacts: {error}")))?;
     let mut capture = if request.namespace_collectors.is_empty() {
@@ -303,8 +327,9 @@ fn run(request: GuestRequest) -> Result<u8, Error> {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     let adapter = super::find(&request.config.agent).expect("validated agent");
+    let frozen = artifact_owner.freeze();
     let artifacts = adapter.collect(&super::CollectionContext {
-        workspace: Path::new(&request.config.workspace),
+        frozen: &frozen,
         run_dir: &request.run_dir,
         interface: Some(request.connection.interface),
         anthropic_input_includes_cache: crate::providers::anthropic_input_includes_cache(
@@ -319,7 +344,13 @@ fn run(request: GuestRequest) -> Result<u8, Error> {
         None,
     );
     let usage = crate::measurements::with_artifact_usage(usage, artifacts.token_usage);
+    let artifact_error = artifact_owner.settle().err().or_else(|| {
+        frozen.error.then(|| {
+            "agent artifact evidence unavailable; retained scratch requires inspection".into()
+        })
+    });
     let result = GuestResult {
+        artifact_error,
         #[cfg(target_os = "linux")]
         elapsed_ms: held.as_ref().map(|held| held.elapsed_ms),
         #[cfg(not(target_os = "linux"))]
@@ -331,11 +362,13 @@ fn run(request: GuestRequest) -> Result<u8, Error> {
         workload_owner: request.workload_owner,
         schema_version: 1,
         exit_code: output.status.code(),
-        final_response: super::final_response(
-            &request.config.agent,
-            &stdout,
-            Path::new(&request.config.workspace),
-        ),
+        final_response: artifacts.final_response.or_else(|| {
+            super::final_response(
+                &request.config.agent,
+                &stdout,
+                Path::new(&request.config.workspace),
+            )
+        }),
         token_usage: usage,
         steps: artifacts
             .steps
@@ -373,9 +406,6 @@ fn run(request: GuestRequest) -> Result<u8, Error> {
     file.sync_all()
         .and_then(|()| fs::rename(&temporary, &destination))
         .map_err(|error| Error::Io(error.to_string()))?;
-    for path in artifacts.cleanup_paths {
-        let _ = fs::remove_file(path);
-    }
     #[cfg(target_os = "linux")]
     if let Some(held) = held {
         let owner = result

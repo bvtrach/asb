@@ -106,6 +106,7 @@ impl std::ops::Deref for MeasuredOutput {
 }
 
 pub(super) struct ExecutionEvidence {
+    pub artifact_owner: Option<agents::ArtifactOwner>,
     pub output: Output,
     pub run_dir: PathBuf,
     pub guest: Option<agents::driver::GuestResult>,
@@ -119,7 +120,12 @@ pub(super) struct AgentOutcome {
 }
 
 impl ExecutionEvidence {
-    pub fn agent_outcome(&self, agent: &str, workspace: &Path) -> AgentOutcome {
+    pub fn agent_outcome(
+        &self,
+        agent: &str,
+        workspace: &Path,
+        artifact_response: Option<&str>,
+    ) -> AgentOutcome {
         // Prefer the agent's structured final response when deciding whether a
         // zero-exit process succeeded. Tool output can legitimately contain a
         // transient failed command that the agent repairs before its final answer;
@@ -128,7 +134,9 @@ impl ExecutionEvidence {
         let guest = &self.guest;
         let final_response = match guest.as_ref() {
             Some(metadata) => metadata.final_response.clone(),
-            None => agents::final_response(agent, &bounded(&child.stdout), workspace),
+            None => artifact_response
+                .map(str::to_owned)
+                .or_else(|| agents::final_response(agent, &bounded(&child.stdout), workspace)),
         };
         let adapter_failure = guest
             .as_ref()
@@ -189,7 +197,7 @@ pub(super) struct SettledAttempt {
     pub evidence: ExecutionEvidence,
     pub proxy_evidence: crate::proxy::Evidence,
     pub cassette_usage_verified: bool,
-    issues: AttemptIssues,
+    pub issues: AttemptIssues,
 }
 
 impl ExecutedAttempt {

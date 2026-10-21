@@ -47,6 +47,23 @@ prevent the fast-forward, and no stash is automatically discarded.
 
 These checks are offline: replay tests start the embedded tape proxy and test
 clients on loopback, but CI never starts a real agent, bridge, or live provider.
+`cargo test --locked --offline --test agent_artifact_ownership` drives actual
+native replay and guest-driver clients through A-then-silent-B attempts. The
+former fixed workspace trajectory reproduced stale answers, 34 tokens and four
+steps after a naturally failed unlink. The fixed routes use fresh private output
+paths, retain foreign legacy workspace bytes and never attribute A to B. Actual
+scratch-cleanup/publication failure, symlink, malformed and oversized fixtures
+retain independent grades/usage or mark unavailable evidence without changing
+confirmed process quiescence. Native execution uses only the embedded loopback
+replay; guest execution uses an inert local client, never a container/provider.
+`cargo test --locked --offline --lib agents::artifacts` checks single bounded
+snapshots, namespace collisions, file/symlink/in-place replacements, absent-then-
+created files, explicit settlement failure and unwind cleanup. Shared identity
+decision tests reject unknown and mismatched IDs, including high 128-bit changes.
+Windows handle identity is source-only qualification here; identity-unavailable
+hosts retain isolated evidence with a diagnostic instead of guessing deletion
+ownership or disabling execution. Build the current ASB binary before focused
+actual-entry tests and never relink while they are running.
 `cargo test --locked --offline --test tui_install` exercises the actual ASB
 install helper and real terminal backend with local fake npm/node executables.
 Closing the backend's output pipe forces EPIPE while the input PTY stays open:

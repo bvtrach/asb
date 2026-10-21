@@ -74,7 +74,7 @@ fn collect(context: &CollectionContext<'_>) -> AgentArtifacts {
                 && !context.anthropic_input_includes_cache,
         )),
         steps: None,
-        cleanup_paths: Vec::new(),
+        final_response: None,
     }
 }
 
@@ -199,7 +199,7 @@ mod tests {
         std::fs::write(directory.join("first.json"), doc).unwrap();
         std::fs::write(directory.join("sessions.json"), "[]").unwrap();
         let context = CollectionContext {
-            workspace: &root,
+            frozen: &Default::default(),
             run_dir: &root,
             interface: None,
             anthropic_input_includes_cache: false,

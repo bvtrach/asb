@@ -20,6 +20,7 @@ pub(super) struct NativePlan<'a> {
 }
 
 pub(super) struct PreparedNative {
+    artifact_owner: agents::ArtifactOwner,
     command: Command,
     route: crate::launch::CommandRoute,
     run_dir: PathBuf,
@@ -150,6 +151,10 @@ impl NativePlan<'_> {
                 .as_nanos(),
             RUN_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         ));
+        let artifact_owner = agents::ArtifactOwner::prepare(
+            &run_dir,
+            agents::find(&config.agent).map_or(&[], |adapter| adapter.artifact_specs()),
+        )?;
         instrument_phase(measurements, LifecyclePhase::AgentPreparation, || {
             if let Some(connection) = connection.as_ref() {
                 agents::prepare(
@@ -180,6 +185,7 @@ impl NativePlan<'_> {
         crate::tools::apply_runtime_path(&mut command, project_root, &project_config.tools_dir)?;
 
         Ok(PreparedNative {
+            artifact_owner,
             command,
             route,
             run_dir,
@@ -213,6 +219,7 @@ impl PreparedNative {
         )?;
         Ok((
             ExecutionEvidence {
+                artifact_owner: Some(self.artifact_owner),
                 output: child.output,
                 run_dir: self.run_dir,
                 guest: None,

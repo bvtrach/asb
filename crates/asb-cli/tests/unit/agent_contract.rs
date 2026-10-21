@@ -29,8 +29,9 @@ fn config() -> BenchmarkConfig {
         .unwrap()
 }
 fn collect_context() -> CollectionContext<'static> {
+    static FROZEN: std::sync::OnceLock<FrozenArtifacts> = std::sync::OnceLock::new();
     CollectionContext {
-        workspace: Path::new("fixture-workspace"),
+        frozen: FROZEN.get_or_init(FrozenArtifacts::default),
         run_dir: Path::new("fixture-run"),
         interface: None,
         anthropic_input_includes_cache: false,
@@ -84,10 +85,10 @@ fn static_adapter_defaults_are_empty_and_preparation_command_hooks_are_called() 
 
 #[test]
 fn every_optional_hook_is_dispatched_without_changing_its_authoritative_values() {
-    fn collect(context: &CollectionContext<'_>) -> AgentArtifacts {
+    fn collect(_context: &CollectionContext<'_>) -> AgentArtifacts {
         AgentArtifacts {
             steps: Some(17),
-            cleanup_paths: vec![context.run_dir.join("usage.json")],
+            final_response: Some("frozen adapter answer".into()),
             ..Default::default()
         }
     }
@@ -125,8 +126,8 @@ fn every_optional_hook_is_dispatched_without_changing_its_authoritative_values()
     let result = adapter.collect(&collect_context());
     assert_eq!(result.steps, Some(17));
     assert_eq!(
-        result.cleanup_paths,
-        [PathBuf::from("fixture-run/usage.json")]
+        result.final_response.as_deref(),
+        Some("frozen adapter answer")
     );
     let usage = adapter.output_usage("out", "err", true).unwrap();
     assert_eq!(usage.input_tokens, Some(123));
@@ -193,7 +194,7 @@ fn minimal_trait_implementation_has_conservative_optional_defaults() {
     let artifacts = adapter.collect(&collect_context());
     assert!(artifacts.token_usage.is_none());
     assert!(artifacts.steps.is_none());
-    assert!(artifacts.cleanup_paths.is_empty());
+    assert!(artifacts.final_response.is_none());
     assert!(adapter.output_usage("", "", false).is_none());
     assert!(adapter.step_count("", "").is_none());
     assert!(adapter.execution_failure("", "").is_none());

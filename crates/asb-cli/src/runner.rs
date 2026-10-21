@@ -699,7 +699,7 @@ fn run_mode(
             output,
         );
         let mut issues = AttemptIssues::default();
-        let (child, run_dir, guest, execution_elapsed_ms, runtime_output) =
+        let (child, run_dir, guest, execution_elapsed_ms, runtime_output, artifact_owner) =
             if let Some(result) = isolated {
                 let result = result.map_err(Error::Run)?;
                 issues.collector_errors = result.collector_errors;
@@ -711,6 +711,7 @@ fn run_mode(
                     result
                         .elapsed_ms
                         .unwrap_or_else(|| started.elapsed().as_millis()),
+                    None,
                     None,
                 )
             } else {
@@ -738,11 +739,13 @@ fn run_mode(
                     evidence.guest,
                     evidence.elapsed_ms,
                     evidence.runtime_output,
+                    evidence.artifact_owner,
                 )
             };
-        let settled = prepared
+        let mut settled = prepared
             .executed(
                 ExecutionEvidence {
+                    artifact_owner,
                     output: child,
                     run_dir,
                     guest,
@@ -752,7 +755,36 @@ fn run_mode(
                 issues,
             )
             .settle(tape_cassette.as_ref());
-        let agent_outcome = settled.evidence.agent_outcome(&config.agent, &workspace);
+        let mut artifact_owner = settled.evidence.artifact_owner.take();
+        let frozen = artifact_owner
+            .as_mut()
+            .map(|owner| owner.freeze())
+            .unwrap_or_default();
+        if frozen.error {
+            settled.issues.run_error(
+                "agent artifact evidence unavailable; retained scratch requires inspection".into(),
+            );
+        }
+        let adapter_artifacts = if settled.evidence.guest.is_none() {
+            agents::find(&config.agent)
+                .map(|adapter| {
+                    adapter.collect(&agents::CollectionContext {
+                        frozen: &frozen,
+                        run_dir: &settled.evidence.run_dir,
+                        interface: connection.as_ref().map(|connection| connection.interface),
+                        anthropic_input_includes_cache:
+                            crate::providers::anthropic_input_includes_cache(&config.provider),
+                    })
+                })
+                .unwrap_or_default()
+        } else {
+            Default::default()
+        };
+        let agent_outcome = settled.evidence.agent_outcome(
+            &config.agent,
+            &workspace,
+            adapter_artifacts.final_response.as_deref(),
+        );
         let process_success = agent_outcome.failure.is_none();
         let agent_failure = agent_outcome.failure;
         let final_response = agent_outcome.final_response;
@@ -763,8 +795,9 @@ fn run_mode(
             measurements: measurement_session,
             evidence:
                 ExecutionEvidence {
+                    artifact_owner: _,
                     output: child,
-                    run_dir,
+                    run_dir: _,
                     guest,
                     elapsed_ms,
                     runtime_output,
@@ -774,7 +807,7 @@ fn run_mode(
             outcome,
             evaluator_evidence,
             cleanup_confirmed: workload_cleanup_confirmed,
-            issues,
+            mut issues,
         } = settled
             .evaluate_with_policy(
                 final_response.as_deref().unwrap_or_default(),
@@ -784,6 +817,17 @@ fn run_mode(
         let provider_cleanup_error = providers::finish_session(&mut bridge)
             .err()
             .map(|error| error.to_string());
+        if let Some(owner) = artifact_owner
+            && let Err(error) = owner.settle()
+        {
+            issues.run_error(error);
+        }
+        if let Some(error) = guest
+            .as_ref()
+            .and_then(|metadata| metadata.artifact_error.as_ref())
+        {
+            issues.run_error(error.clone());
+        }
         let workload_success = outcome.success();
         let grading_failure = RunFailure::evaluation(&outcome.evaluation);
         let evaluation = outcome.evaluation;
@@ -813,20 +857,6 @@ fn run_mode(
                     kind: failure.kind.as_str(),
                     reason: failure.reason.clone(),
                 });
-        let adapter_artifacts = guest
-            .is_none()
-            .then(|| agents::find(&config.agent))
-            .flatten()
-            .map(|adapter| {
-                adapter.collect(&agents::CollectionContext {
-                    workspace: &workspace,
-                    run_dir: &run_dir,
-                    interface: connection.as_ref().map(|connection| connection.interface),
-                    anthropic_input_includes_cache:
-                        crate::providers::anthropic_input_includes_cache(&config.provider),
-                })
-            })
-            .unwrap_or_default();
         let token_usage = measurements::token_usage_from_sources(
             &config.provider,
             &config.agent,
@@ -843,9 +873,6 @@ fn run_mode(
             token_usage,
             guest.as_ref().map(|metadata| metadata.token_usage.clone()),
         );
-        for path in adapter_artifacts.cleanup_paths {
-            let _ = std::fs::remove_file(path);
-        }
         let steps = if let Some(metadata) = guest.as_ref() {
             metadata.steps
         } else {
@@ -2716,10 +2743,31 @@ mod tests {
             measurements: None,
         };
         let mini = command_for(&base, Some("http://127.0.0.1:3456/v1"), "prompt").unwrap();
-        assert!(
-            mini.args
-                .windows(2)
-                .any(|pair| pair[0] == "--output" && pair[1] == ".asb-mini-swe.traj.json")
+        assert!(!mini.args.iter().any(|argument| argument == "--output"));
+        let mut prepared = std::process::Command::new(&mini.program);
+        prepared.args(&mini.args);
+        let connection = crate::endpoint::Connection {
+            interface: crate::endpoint::Interface::OpenAiChat,
+            authentication: crate::endpoint::Authentication::Bearer,
+            base_url: "http://127.0.0.1:1/v1".into(),
+            credential: None,
+        };
+        let run = std::path::Path::new("fixture-private-run");
+        crate::agents::find("mini-swe")
+            .unwrap()
+            .prepare(&mut crate::agents::PreparationContext {
+                command: &mut prepared,
+                model: &base.model,
+                connection: &connection,
+                runtime_dir: std::path::Path::new("fixture-private"),
+                run_dir: run,
+            })
+            .unwrap();
+        let args: Vec<_> = prepared.get_args().collect();
+        assert_eq!(args[args.len() - 2], "--output");
+        assert_eq!(
+            std::path::Path::new(args[args.len() - 1]),
+            run.join("mini-swe/trajectory.json")
         );
 
         let mut openjiuwen = base.clone();

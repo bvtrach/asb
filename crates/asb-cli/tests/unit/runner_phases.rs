@@ -155,6 +155,7 @@ fn prepared(
 fn evidence(exit: i32, guest: bool) -> ExecutionEvidence {
     use std::os::unix::process::ExitStatusExt;
     ExecutionEvidence {
+        artifact_owner: None,
         output: Output {
             status: std::process::ExitStatus::from_raw(exit << 8),
             stdout: b"submission".to_vec(),
@@ -188,7 +189,7 @@ fn native_guest_grade_and_cleanup_matrix_preserves_independent_facts() {
                         .collector_errors
                         .push("capture shutdown failed".into());
                     let execution = evidence(exit, guest);
-                    let agent = execution.agent_outcome("fixture", &fixture.0);
+                    let agent = execution.agent_outcome("fixture", &fixture.0, None);
                     assert_eq!(agent.failure.is_none(), exit == 0);
                     let final_state = prepared
                         .executed(execution, issues)
@@ -395,7 +396,7 @@ fn native_and_guest_apply_the_same_adapter_terminal_answer_policy() {
         if let Some(metadata) = execution.guest.as_mut() {
             metadata.final_response = None;
         }
-        let outcome = execution.agent_outcome("openjiuwen", &fixture.0);
+        let outcome = execution.agent_outcome("openjiuwen", &fixture.0, None);
         assert!(
             outcome
                 .failure
@@ -408,7 +409,7 @@ fn native_and_guest_apply_the_same_adapter_terminal_answer_policy() {
         } else {
             execution.output.stdout = b"{\"type\":\"answer\",\"payload\":\"finished\"}".to_vec();
         }
-        let outcome = execution.agent_outcome("openjiuwen", &fixture.0);
+        let outcome = execution.agent_outcome("openjiuwen", &fixture.0, None);
         assert!(outcome.failure.is_none());
         assert_eq!(outcome.final_response.as_deref(), Some("finished"));
     }

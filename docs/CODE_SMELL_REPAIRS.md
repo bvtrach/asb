@@ -449,6 +449,26 @@ tag `a073a80e836aa4911c5a11931dcdde57a26926a0` as valid.
 
 ## 6. Shared implementation and lifecycle policies
 
+Agent-artifact ownership candidate (no version/delivery claim): ignored native
+and guest cleanup errors could leave Mini-SWE's fixed workspace trajectory to
+provide a previous attempt's answer, usage and steps to a silent next client.
+Offline actual-entry A/B reproductions retain the failing evidence. Adapter-owned
+fresh private namespaces, a single bounded no-follow snapshot and consuming
+identity-checked settlement replace that path/cleanup-list contract. Mini-SWE
+and Hermes own their document interpretation; orchestration contains no new
+agent-specific policy. Scratch retention is ancillary and never fabricates a
+process/container quiescence failure or changes an official grade. Foreign
+workspace bytes, symlinks and replacements survive; no client retries occur.
+Unix runtime qualification, Windows source-only handle identity and honest
+retention where identity is unavailable remain distinct. Independent source
+review, integrated full qualification and hosted delivery remain pending.
+Focused offline qualification passed 57 adapter/ownership, 22 token-usage and
+72 runner tests (three explicit optional skips), plus 21 tests across actual
+artifact-route, guest, completion-diagnostic and unmeasured-sweep targets.
+Strict all-target/all-feature Clippy and formatting passed. This checkpoint is
+based on the reviewed sweep stack, not the later repeated-execution main; its
+integration must preserve that main's fresh client state and SDK preparation.
+
 Review repeated sudo consent/probes, three wizard progress-worker patterns,
 usage aggregation and original workload grade/inspect/recovery implementations.
 Share mechanics while leaving actual agent/provider/workload semantics in
