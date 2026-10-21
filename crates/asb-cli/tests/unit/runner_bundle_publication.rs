@@ -231,7 +231,7 @@ fn run_child(case: &str) {
     let response = json!({"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":transcript_answer}]}]});
     let artifact_script = if artifact {
         format!(
-            "const out=process.argv[process.argv.indexOf('--output')+1];if(!out)throw Error('missing private output');fs.writeFileSync(out,JSON.stringify({}));console.log(JSON.stringify({{usage:{{prompt_tokens:499,completion_tokens:500,total_tokens:999}}}}));",
+            "const p=require('node:path');const oi=process.argv.indexOf('--output');const out=process.argv[oi+1];const owned=p.resolve(process.cwd()+'.asb-agent-runtime','runs')+p.sep;if(oi<0||!out||!p.resolve(out).startsWith(owned)||!out.endsWith(p.join('mini-swe','trajectory.json')))throw Error('missing private attempt output');fs.writeFileSync(out,JSON.stringify({}));console.log(JSON.stringify({{usage:{{prompt_tokens:499,completion_tokens:500,total_tokens:999}}}}));",
             trajectory(answer)
         )
     } else {
