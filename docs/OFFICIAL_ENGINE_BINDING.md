@@ -176,3 +176,12 @@ This is local offline Linux x86-64 source qualification, not live-SDK/container
 or native-ARM qualification, full-population benchmark performance, hosted CI,
 actual-main integration, publication or release approval. Stage 0.2.41 remains
 queued pending root's final review and coordinated delivery ancestry.
+
+Root's independent final review approved documentation checkpoint `29d9330b`:
+the production/test tree is unchanged from `453898c0`, the full transcript and
+24 outer summaries support 1401/0/21 without recounting nested children, all
+four hash observations and the preserved executable match, and lint, doctest,
+complete make/doc/diagram/completion and separate shell syntax gates passed.
+The ARM and non-live qualification limits remain explicit. This approval does
+not substitute for actual-main ancestry review, exact-head hosted/package CI,
+both post-merge jobs or the stage 0.2.41 signed release.
