@@ -186,6 +186,12 @@ ordinary CI: service fixtures use local Unix sockets and mock daemons, check
 creator-thread exit, owner-process death, failed-client isolation, lease lifetime,
 and bounded log draining. Actual overlapping captures remain an opt-in local
 qualification; mock ownership tests do not prove real scheduler coverage.
+The normal-shutdown lease regression deliberately keeps the same locked file
+description in an independent pipe-blocked child. Once owned daemons are reaped,
+the lease must be reacquirable while that incidental child remains alive. This
+deterministically covers a fork-before-exec inheritance window without relying
+on scheduling sleeps. Separate tests keep inherited ownership on uncertain
+cleanup and retain the unchanged owner-SIGKILL daemon-shutdown contract.
 The ignored `live_perfetto_streaming_preserves_markers_beyond_the_service_ring_capacity`
 test writes fixed, non-secret marker pressure beyond the configured 128 MiB service
 buffer, then requires complete, loss-free capture and scoped agent measurements.
