@@ -2027,6 +2027,15 @@ fn full_entry_child(case: &str) {
             ["evaluate", "finish", "provider-finish"]
         );
         assert_eq!(std::fs::read_to_string(&counter).unwrap(), "called\n");
+        let completions: Vec<_> = std::fs::read_dir(root.join(".asb-completions"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect();
+        assert_eq!(completions.len(), 1);
+        let private: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&completions[0]).unwrap()).unwrap();
+        assert_eq!(private["summary"]["process_termination"], exact);
+        assert_eq!(private["summary"], summary);
         let report =
             crate::compare::generate(config_path.to_str().unwrap(), &mut Vec::new()).unwrap();
         let comparison = report.with_file_name("comparison.json");

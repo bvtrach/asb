@@ -1276,8 +1276,27 @@ mod tests {
                     .to_string_lossy()
                     .contains("process_termination")
             }));
-            assert_eq!(fs::read(outcome).unwrap(), original_outcome);
-            assert_eq!(fs::read(measured).unwrap(), original_measurement);
+            assert_eq!(fs::read(&outcome).unwrap(), original_outcome);
+            assert_eq!(fs::read(&measured).unwrap(), original_measurement);
+            if !retained_fact.is_null() {
+                let report_dir = fixture.root.join("results/sweep-comparison");
+                let html = fs::read(report_dir.join("report.html")).unwrap();
+                let json = fs::read(report_dir.join("comparison.json")).unwrap();
+                let mut older_attempt = measurement.clone();
+                older_attempt["process_termination"] = Value::Null;
+                older_attempt
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("process_termination_diagnostic");
+                older_attempt["task"]["attempt_id"] = json!("different-older-attempt");
+                let bytes = serde_json::to_vec(&older_attempt).unwrap();
+                fs::write(&measured, &bytes).unwrap();
+                assert!(fixture.compare().is_err());
+                assert_eq!(fs::read(&outcome).unwrap(), original_outcome);
+                assert_eq!(fs::read(&measured).unwrap(), bytes);
+                assert_eq!(fs::read(report_dir.join("report.html")).unwrap(), html);
+                assert_eq!(fs::read(report_dir.join("comparison.json")).unwrap(), json);
+            }
         }
     }
 
