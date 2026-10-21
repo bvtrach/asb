@@ -76,6 +76,18 @@ bounded teardown and actionable errors. Best-effort cleanup in destructors
 is not automatically equivalent to an incorrectly ignored required write.
 Pending.
 
+Flamegraph cleanup candidate: the perf-script/stack-collapse/render pipeline
+owns every directly spawned stage. A failure, timeout or unwind signals all
+remaining stages before polling against one shared cleanup deadline, preserving
+the original error and retaining unconfirmed children in the shared private
+`OwnedReaper` established before any spawn. It no longer selects processes by
+parent PID or returns from an upstream failure while forgetting a downstream
+child. Offline real-child tests cover stage/file/spawn failures, timeout,
+unwind, fallback-custody handoff, actual reaping and unrelated sentinel survival.
+The reviewed source is integrated with current main; fresh ordinary/package
+qualification, coverage, a PR, post-merge checks and a patch release remain
+pending. This does not claim arbitrary descendant or crash-persistent cleanup.
+
 ## 4. Typed domain and wire contracts
 
 Review run status/evaluation/failure categories, execution mode, result source,
