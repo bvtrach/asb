@@ -5,6 +5,15 @@ branch; final qualification and bundle coordinator integration remain unfinished
 This is not a claim that bundled run/sweep/viewer commands are available.
 See MULTITRACK.md for the full delivery scope.
 
+The source codec detects ZIP by bounded content inspection, independently of
+filename extensions. Legacy single JSONL takes precedence over adjacent replica
+files; absent bases discover the supported sparse concurrency suffixes through
+64 using the same naming policy as execution. Legacy observations bind payload
+length/checksum but manufacture no manifest, completeness or statistics. Open
+regular files retain source identity and selected reads verify the observed
+digest; FIFO, dangling, changed and oversized inputs fail explicitly. This codec
+is a building block, not completed CLI source/selection integration.
+
 The separate `capture-session.mjs` component now implements create-new output,
 exact-byte and handler accounting, sticky uncertain finalization/close state, and
 atomic no-clobber receipt publication with separate cleanup evidence. Its

@@ -378,20 +378,7 @@ fn parallel_path(value: &str, index: usize) -> String {
 }
 
 fn append_path_suffix(path: &Path, index: usize) -> PathBuf {
-    let stem = path
-        .file_stem()
-        .and_then(|value| value.to_str())
-        .unwrap_or("benchmark");
-    let extension = path.extension().and_then(|value| value.to_str());
-    let name = match extension {
-        Some(extension) => format!("{stem}-concurrency-{index}.{extension}"),
-        None => format!("{stem}-concurrency-{index}"),
-    };
-    if let Some(parent) = path.parent() {
-        parent.join(name)
-    } else {
-        PathBuf::from(name)
-    }
+    crate::benchmark_paths::replica_path(path, index)
 }
 
 fn run_mode(

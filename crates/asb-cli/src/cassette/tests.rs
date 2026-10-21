@@ -8,6 +8,126 @@ use zip::{CompressionMethod, ZipWriter, write::SimpleFileOptions};
 #[path = "publication_tests.rs"]
 mod publication;
 
+#[test]
+fn source_detection_uses_content_and_preserves_unknown_legacy_metadata() {
+    let fixture = Fixture::new();
+    let archive = fixture.zip(&manifest(1), &[("tracks/1.jsonl", b"{}\n")]);
+    let renamed = fixture.0.join("actually-a-bundle.jsonl");
+    fs::rename(archive, &renamed).unwrap();
+    let mut source = Source::open(&renamed, Limits::default()).unwrap();
+    assert!(source.manifest().is_some());
+    assert!(source.legacy_tracks().is_empty());
+    assert_eq!(source.read_track(1).unwrap(), b"{}\n");
+    let legacy = fixture.0.join("actually-jsonl.zip");
+    fs::write(&legacy, b"{}\n").unwrap();
+    let mut source = Source::open(&legacy, Limits::default()).unwrap();
+    assert!(source.manifest().is_none());
+    assert_eq!(source.legacy_tracks()[0].id, 1);
+    assert_eq!(source.read_track(1).unwrap(), b"{}\n");
+    assert!(source.read_track(2).is_err());
+    fs::write(fixture.0.join("corrupt.jsonl"), b"PKbad archive").unwrap();
+    assert!(Source::open(&fixture.0.join("corrupt.jsonl"), Limits::default()).is_err());
+}
+
+#[test]
+fn sparse_legacy_sources_include_replica_64_and_single_base_takes_precedence() {
+    let fixture = Fixture::new();
+    let base = fixture.0.join("input.jsonl");
+    for id in [2, 64] {
+        fs::write(
+            crate::benchmark_paths::replica_path(&base, id),
+            format!("{{\"id\":{id}}}\n"),
+        )
+        .unwrap();
+    }
+    let mut source = Source::open(&base, Limits::default()).unwrap();
+    assert_eq!(
+        source
+            .legacy_tracks()
+            .iter()
+            .map(|track| track.id)
+            .collect::<Vec<_>>(),
+        [2, 64]
+    );
+    assert!(source.read_track(1).is_err());
+    assert_eq!(source.read_track(64).unwrap(), b"{\"id\":64}\n");
+    fs::write(&base, b"{}\n").unwrap();
+    let mut single = Source::open(&base, Limits::default()).unwrap();
+    assert_eq!(single.legacy_tracks().len(), 1);
+    assert_eq!(single.read_track(1).unwrap(), b"{}\n");
+    assert!(single.read_track(64).is_err());
+}
+
+#[test]
+fn legacy_source_limits_and_frozen_checksums_are_enforced() {
+    super::source::take_observation_count();
+    let fixture = Fixture::new();
+    let base = fixture.0.join("input.jsonl");
+    for id in [2, 64] {
+        fs::write(crate::benchmark_paths::replica_path(&base, id), b"{}\n").unwrap();
+    }
+    for limits in [
+        Limits {
+            max_tracks: 1,
+            ..Limits::default()
+        },
+        Limits {
+            max_track_bytes: 2,
+            ..Limits::default()
+        },
+        Limits {
+            max_total_bytes: 5,
+            ..Limits::default()
+        },
+    ] {
+        assert!(Source::open(&base, limits).is_err());
+        assert_eq!(
+            super::source::take_observation_count(),
+            0,
+            "over-budget layouts must not hash payloads"
+        );
+    }
+    let mut source = Source::open(&base, Limits::default()).unwrap();
+    assert_eq!(super::source::take_observation_count(), 2);
+    fs::write(crate::benchmark_paths::replica_path(&base, 2), b"[]\n").unwrap();
+    assert!(
+        source
+            .read_track(2)
+            .unwrap_err()
+            .to_string()
+            .contains("changed")
+    );
+    assert_eq!(source.read_track(64).unwrap(), b"{}\n");
+    fs::write(
+        crate::benchmark_paths::replica_path(&base, 64),
+        b"{}\nextra",
+    )
+    .unwrap();
+    assert!(source.read_track(64).is_err());
+    assert!(Source::open(&fixture.0.join("missing"), Limits::default()).is_err());
+    assert!(Source::open(&fixture.0, Limits::default()).is_err());
+}
+
+#[cfg(unix)]
+#[test]
+fn legacy_source_rejects_fifo_and_dangling_symlinks_without_falling_back() {
+    use std::os::unix::fs::symlink;
+    let fixture = Fixture::new();
+    let base = fixture.0.join("input.jsonl");
+    fs::write(crate::benchmark_paths::replica_path(&base, 64), b"{}\n").unwrap();
+    symlink(fixture.0.join("missing"), &base).unwrap();
+    assert!(Source::open(&base, Limits::default()).is_err());
+    let fifo = fixture.0.join("pipe.jsonl");
+    assert!(
+        std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(Source::open(&fifo, Limits::default()).is_err());
+}
+
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
 struct Fixture(PathBuf);
