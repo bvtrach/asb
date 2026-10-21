@@ -616,7 +616,7 @@ fn bundle_contract(root: &Path) {
             .into_owned()
             .into_boxed_str(),
     );
-    let spec = || BundleSpec {
+    let spec = || workloads::SourceBundle {
         archive: source,
         marker: "fixture-revision",
         prompt: "fixture task prompt",

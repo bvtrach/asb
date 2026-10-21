@@ -273,6 +273,9 @@ pub(crate) fn publish_sweep(
             "invalid setup configuration population".into(),
         ));
     }
+    for config in &configs {
+        crate::planning::resolve(config)?;
+    }
     if path.exists() {
         return Err(Error::Input(format!(
             "sweep {} already exists; choose a new --output filename",
@@ -303,6 +306,7 @@ pub(crate) fn publish_sweep(
         references.push(format!("{group}/{filename}"));
     }
     let text = toml::to_string_pretty(&crate::sweep::SweepFile {
+        resources: None,
         configs: references,
     })
     .map_err(|error| Error::Input(error.to_string()))?;

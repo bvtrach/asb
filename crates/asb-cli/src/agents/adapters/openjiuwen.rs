@@ -228,6 +228,7 @@ mod tests {
     #[test]
     fn enables_verbose_mode_for_deterministic_noninteractive_runs() {
         let config = BenchmarkConfig {
+            planning: None,
             agent: "openjiuwen".into(),
             workload: "bug-fix".into(),
             provider: "cli2key".into(),

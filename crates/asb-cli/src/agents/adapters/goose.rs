@@ -141,6 +141,7 @@ mod tests {
     #[test]
     fn bounded_turn_budget_allows_inspect_edit_and_test() {
         let config = crate::benchmark::BenchmarkConfig {
+            planning: None,
             agent: "goose".into(),
             workload: "bug-fix".into(),
             provider: "cli2key".into(),
