@@ -14,6 +14,23 @@ informational, not a substitute for meaningful offline regressions. Required
 functional CI, independent review, exact-head validation and patch releases
 still apply to each repair class.
 
+Integrated candidate, staged patch **0.2.32**: source-reviewed publication
+`1a2980fb`, platform confirmation `4affdb3a` and independent Windows capture
+reader `2bf963c3` are combined with source-reviewed controller transport
+`8b9a009d` and qualified typed-controller delivery ancestry `940a9d39`.
+The newer repeated execution, SDK/staging contexts, resource/artifact fields,
+explicit-null settlement, incomplete-capture reporting and preparation/material
+budgets are retained. Measurement finalization publishes the complete newer run
+record while independently attempting remaining collectors and summary output.
+Both publication and incomplete-capture actual-runner fixtures remain present;
+their private fixture state is independent. Attempt-artifact repair 33 remains
+separate and is not folded into this candidate. The earlier old-base focused
+checks do not qualify this combined tree. Fresh focused checks, independent
+integration review, full offline qualification, hosted/package CI, merge,
+post-merge verification and release remain pending. Windows compilation and
+runtime remain unqualified; the non-Unix controller keeps its documented legacy
+blocking transport limitation.
+
 The [full residual requirement/disposition matrix and ordered plan](CODE_SMELL_REMAINING_AUDIT.md)
 records the read-only 21 October comparison of exact main `4224472f` with
 qualified stack `48609d50`, including misreports, completed versus unmerged
