@@ -82,6 +82,8 @@ module names in those owning boundaries. Pending.
 Audit correction: current `perfetto_instance_config` is seven lines, not the
 reported 630. Comparison's filter JavaScript is already a separate asset.
 Do not perform redundant extraction based on stale line counts.
+The custom BPF scope validator is also a small function (about sixty lines),
+not the reported 533; its confirmed correctness defect is tracked below.
 
 ## 6. Shared implementation and lifecycle policies
 
@@ -96,6 +98,11 @@ Independent review additionally found that wizard installation workers are
 detached: a draw error can return while an installer still mutates project
 files. Shared progress handling must own worker completion/cancellation, with
 a fake-install regression for terminal failure during active work.
+
+Coverage-driven inspection also found a wizard transition defect: saving
+trials consumes `selected_workload`, so the advertised next Enter reopens
+trial selection instead of finishing. Add bounded event-loop/PTY regressions,
+not only helper tests, and repair the explicit save/finish state in this class.
 
 ## 7. Limits, diagnostics and CLI consistency
 
@@ -124,3 +131,11 @@ the process-tree variable. This contradicts the documented fail-closed scope
 contract. It needs a separate repair class with supported probe/predicate
 parsing, multiline/OR regressions, and preservation of valid process-tree
 profiles; it must not be hidden as a test-only cleanup. Pending.
+
+Installer inspection found that HTTP downloads write directly to the published
+destination. A failed/truncated or oversized response can replace a usable
+executable with partial bytes while retaining its executable mode. Required
+repair: stage downloads, validate size/checksum/exit status before atomic
+publication, preserve existing tools on failures, and test readiness queries
+with offline fake download commands. This is a verified publication issue,
+unlike blanket claims about every ignored scratch deletion. Pending.
