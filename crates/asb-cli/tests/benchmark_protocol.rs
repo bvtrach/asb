@@ -4,6 +4,11 @@ mod support;
 use support::IsolatedEnvironment;
 
 #[test]
+fn configured_user_staging_reuses_only_verified_owned_instrumentation() {
+    python_protocol("benchmark_staging.py");
+}
+
+#[test]
 fn direct_creation_and_shared_default_bridge_bind_only_owned_workload_material() {
     python_protocol("benchmark_material_direct.py");
 }

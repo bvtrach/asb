@@ -282,15 +282,18 @@ def validate_expected_entries(expected_entries, exclusions, root_metadata_only, 
                 or exclusions or root_metadata_only):
             raise MaterialError("invalid expected material tree declaration")
         for name, item in expected_entries.items():
+            fields = set(item) - {"uid","gid"} if isinstance(item,dict) else set()
             if (not isinstance(name,str) or (name and path_name(name) != name)
-                    or not isinstance(item,dict) or set(item) not in [{"kind","mode"},{"kind","mode","sha256","bytes"}]
+                    or not isinstance(item,dict) or fields not in [{"kind","mode"},{"kind","mode","sha256","bytes"}]
+                    or (set(item) & {"uid","gid"} not in [set(),{"uid","gid"}])
+                    or any(type(item[key]) is not int or not 0 <= item[key] <= 4294967295 for key in ["uid","gid"] if key in item)
                     or item.get("kind") not in ["file","5"]
                     or type(item.get("mode")) is not int or not 0 <= item["mode"] <= 0o7777
-                    or (item["kind"] == "file" and (set(item) != {"kind","mode","sha256","bytes"}
+                    or (item["kind"] == "file" and (fields != {"kind","mode","sha256","bytes"}
                         or type(item["bytes"]) is not int or not 0 <= item["bytes"] <= max_file_bytes
                         or not isinstance(item["sha256"],str) or len(item["sha256"]) != 64
                         or any(char not in "0123456789abcdef" for char in item["sha256"])))
-                    or (item["kind"] == "5" and set(item) != {"kind","mode"})):
+                    or (item["kind"] == "5" and fields != {"kind","mode"})):
                 raise MaterialError("invalid expected material tree declaration")
 
 

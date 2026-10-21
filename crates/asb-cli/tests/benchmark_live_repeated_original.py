@@ -54,6 +54,9 @@ class RepeatedOriginalQualification(unittest.TestCase):
         import guest_provider_fixture as provider
         root = Path(os.environ["ASB_TEST_SWECATALOG_ROOT"]).resolve()
         binary = Path(os.environ["ASB_TEST_BENCHMARK_ASB"]).resolve()
+        binary_hash = hashlib.sha256(binary.read_bytes()).hexdigest()
+        sources = sorted((Path(__file__).parents[1]/"assets/benchmarks").glob("asb_*.py"))
+        source_hashes = {path.name:hashlib.sha256(path.read_bytes()).hexdigest() for path in sources}
         suite = os.environ.get("ASB_TEST_BENCHMARK_SUITE","swe-bench-lite")
         self.assertIn(suite,["swe-bench-lite","terminal-bench-1.0","terminal-bench-2.1"])
         if fault:
@@ -176,7 +179,10 @@ class RepeatedOriginalQualification(unittest.TestCase):
                     for row in rows[1:] if row["execution"]["batch"] == batch))
                 self.assertEqual(len(list((campaign/f"batch-{batch}/outcomes").glob("*.json"))),2)
             self.assertFalse((artifacts/"unused-workspace").exists())
+            self.assertEqual(binary_hash,hashlib.sha256(binary.read_bytes()).hexdigest())
+            self.assertEqual(source_hashes,{path.name:hashlib.sha256(path.read_bytes()).hexdigest() for path in sources})
             (artifacts/"qualification.json").write_text(json.dumps({"campaign":str(campaign),
+                "binary_sha256":binary_hash,"source_hashes":source_hashes,
                 "workload":suite,"task":instance,
                 "executions":4,"distinct_original_attempts":4,
                 "official_resolved":sum(row["workload_success"] is True for row in rows[1:]),

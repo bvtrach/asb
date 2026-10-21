@@ -5,7 +5,7 @@ stages instrumentation before any environment sampling begins.
 """
 import time
 
-from asb_material import MaterialError, RUNTIME_FILES, RUNTIME_ROOTS, canonical_digest, change_inventory, image_digest, path_name, tar_digest
+from asb_material import MaterialError, RUNTIME_FILES, RUNTIME_ROOTS, canonical_digest, change_inventory, image_digest, path_name
 from asb_material_exec import ObservationBudget, observe, run
 
 RUNTIME = "/opt/asb-runtime"
@@ -30,10 +30,15 @@ Callers must compare two whole-environment rounds. Two observations of each
 service in isolation cannot establish a stable multi-service environment.
 """
     from asb_docker import docker_command
-    from asb_guest import upload
+    from asb_staging import configured_owner, stage_runtime, verify_runtime as verify_owned_runtime
+    from asb_execution import ExecutionError
     from asb_runtime import bundle
     container = task.workspace.container
-    command = [*docker_command(), "exec", "-i", container.id]
+    configured_command = [*docker_command(), "exec", "-i", container.id]
+    # The read-only whole-root observer needs access to root-owned material.
+    # This changes only observation privilege inside this exact owned container,
+    # never the configured installer/client/SDK-shell identity.
+    command = [*docker_command(), "exec", "--user", "0", "-i", container.id]
     cancelled = task.cancelled
 
     def check():
@@ -42,6 +47,9 @@ service in isolation cannot establish a stable multi-service environment.
 
     def checked(arguments):
         return run([*command, *arguments], deadline=deadline, cancelled=cancelled)
+
+    def configured_checked(arguments):
+        return run([*configured_command,*arguments],deadline=deadline,cancelled=cancelled)
 
     from asb_material_binds import beneath, verify as verify_binds
     from asb_material_mounts import plan as mount_plan, targets, require_local_kernel
@@ -77,39 +85,23 @@ service in isolation cannot establish a stable multi-service environment.
 
     check(); container.reload(); check()
     initial_mounts = mounted(False)
-    state = getattr(task, "_material_runtime", None)
-    if state is None:
-        # Both ancestors and destination are checked before the first write.
-        # Nothing in the original workload may be overwritten or followed.
-        checked(["/bin/sh", "-c", "test -d /opt && test ! -L /opt && test ! -e /opt/asb-runtime && test ! -L /opt/asb-runtime && mkdir -m 700 /opt/asb-runtime && mkdir -m 700 /opt/asb-runtime/bin /opt/asb-runtime/lib"])
-        check(); files, receipt = bundle(binary, container.image.attrs.get("Architecture")); check()
-        upload(container, RUNTIME, files, temporary_dir=task.artifacts)
-        check()
-        expected = {name:{"kind":"file", "mode":mode, "bytes":len(content),
-            "sha256":receipt["files"][index]["sha256"]} for index,(name,content,mode) in enumerate(files)}
-        expected.update({name:{"kind":"5","mode":0o700} for name in ["","bin","lib"]})
-        state = task._material_runtime = {"container":container.id, "binary":str(binary),
-            "expected":expected, "verified":None}
-    elif state.get("container") != container.id or state.get("binary") != str(binary):
-        raise MaterialError("prepared material helper ownership changed")
+    def root_checked(arguments):
+        return run([*docker_command(), "exec", "--user", "0", "-i", container.id, *arguments],
+                   deadline=deadline, cancelled=cancelled)
+    try:
+        check(); files, _receipt = bundle(binary, container.image.attrs.get("Architecture")); check()
+        configured_owner(task,configured_checked)
+        stage_runtime(task,binary,files,configured_checked,root_checked,deadline=deadline,cancelled=cancelled)
+    except ExecutionError as error:
+        raise MaterialError(str(error)) from None
 
     def verify_runtime():
-        checked(["/bin/sh", "-c", "test -d /opt && test ! -L /opt && test -d /opt/asb-runtime && test ! -L /opt/asb-runtime"])
         check()
-        chunks, metadata = container.get_archive(RUNTIME, chunk_size=65536, encode_stream=False)
         try:
-            if metadata.get("name") != "asb-runtime" or metadata.get("linkTarget"):
-                raise MaterialError("prepared material helper root was substituted")
-            digest = tar_digest(chunks,"asb-runtime", deadline=deadline, cancelled=cancelled,
-                expected_root_kind=b"5", expected_entries=state["expected"],
-                max_entries=128, max_bytes=384*1024**2, max_wire=385*1024**2)
-        finally:
-            chunks.close()
+            verify_owned_runtime(task,binary,checked,deadline=deadline,cancelled=cancelled)
+        except ExecutionError as error:
+            raise MaterialError(str(error)) from None
         check()
-        if state["verified"] is not None and state["verified"] != digest:
-            raise MaterialError("prepared material helper metadata changed")
-        state["verified"] = digest
-        checked(["/bin/sh", "-c", "test -d /opt && test ! -L /opt && test -d /opt/asb-runtime && test ! -L /opt/asb-runtime"])
     workdir = task.workspace.workdir.rstrip("/")
     if not workdir:
         workdir = "/"

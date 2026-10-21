@@ -26,10 +26,8 @@ class SDKInstalledAgentQualification(unittest.TestCase):
         from asb_docker import DockerSession
         from asb_guest import execute_agent,upload
         from asb_terminal_bench_1 import TerminalBenchTask
-        import asb_execution,asb_guest,asb_terminal_bench_1,asb_terminal_session,asb_harness
         import guest_provider_fixture as provider
-        sources = [Path(module.__file__) for module in
-            [asb_execution,asb_guest,asb_terminal_bench_1,asb_terminal_session,asb_harness]]
+        sources = sorted((Path(__file__).parents[1]/"assets/benchmarks").glob("asb_*.py"))
         hashes = {path.name:hashlib.sha256(path.read_bytes()).hexdigest() for path in sources}
         binary = Path(os.environ["ASB_TEST_BENCHMARK_ASB"]).absolute()
         binary_hash = hashlib.sha256(binary.read_bytes()).hexdigest()

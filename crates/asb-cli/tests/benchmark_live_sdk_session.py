@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -19,10 +20,10 @@ class SDKSessionQualification(unittest.TestCase):
         from asb_docker import DockerSession
         from asb_guest import upload
         from asb_runtime import bundle
+        from asb_staging import stage_runtime,prepare_guest_roots
         from asb_terminal_bench_1 import TerminalBenchTask
         from asb_terminal_session import SDKSessionLauncher
-        import asb_execution,asb_terminal_session,asb_terminal_bench_1,asb_guest,asb_harness
-        sources = [Path(module.__file__) for module in [asb_execution,asb_terminal_session,asb_terminal_bench_1,asb_guest,asb_harness]]
+        sources = sorted((Path(__file__).parents[1]/"assets/benchmarks").glob("asb_*.py"))
         hashes = {path.name:hashlib.sha256(path.read_bytes()).hexdigest() for path in sources}
         binary = Path(os.environ["ASB_TEST_BENCHMARK_ASB"]).absolute()
         binary_hash = hashlib.sha256(binary.read_bytes()).hexdigest()
@@ -36,9 +37,8 @@ class SDKSessionQualification(unittest.TestCase):
                         "hello-world",artifacts/"task") as task:
                     success = False
                     try:
-                        task.checked(["mkdir","-p","/opt/asb-runtime/bin","/opt/asb-runtime/lib"])
                         files,_ = bundle(binary,task.workspace.image_identity["architecture"])
-                        upload(task.workspace.container,"/opt/asb-runtime",files,temporary_dir=artifacts)
+                        stage_runtime(task,binary,files,task.checked,task.checked,deadline=time.monotonic()+120)
                         session = task.terminal.create_session("asb-launch-fixture",as_configured_user=True)
                         def parent():
                             session.send_keys(["printf '%s|%s|%s|%s\\n' \"$$\" \"$(id -u)\" \"$PWD\" "
@@ -73,8 +73,9 @@ class SDKSessionQualification(unittest.TestCase):
                         # Exercise the REAL registered-adapter driver, not just
                         # an arbitrary shell child. Its logical benchmark root
                         # differs deliberately from the SDK shell's cwd.
+                        identity,receipt = prepare_guest_roots(task,(0,0),task.checked,task.checked)
                         task.checked(["mkdir","-p","/opt/asb-project/.asb",
-                            "/opt/asb-project/.asb-tools/pi/bin","/opt/asb-private","/tmp/asb-sdk-driver-context"])
+                            "/opt/asb-project/.asb-tools/pi/bin"])
                         upload(task.workspace.container,"/opt/asb-project/.asb",[("project.toml",
                             b"tools_dir='.asb-tools'\nworkloads_dir='workloads'\nworkspace_dir='workspace'\n",0o600)],temporary_dir=artifacts)
                         fixture = b'''#!/bin/sh
@@ -87,9 +88,10 @@ exit 7
 '''
                         upload(task.workspace.container,"/opt/asb-project/.asb-tools/pi/bin",
                             [("pi",fixture,0o755)],temporary_dir=artifacts)
-                        session.send_keys(["cd /tmp/asb-sdk-driver-context","Enter"],block=True,max_timeout_sec=10)
+                        session.send_keys(["cd /","Enter"],block=True,max_timeout_sec=10)
                         driver_parent = parent()
-                        guest = {"inherit_working_directory":True,"config":{
+                        guest = {"inherit_working_directory":True,"task_identity":identity,
+                            "owned_instrumentation":receipt,"config":{
                             "agent":"pi","provider":"openrouter","model":"fixture-model","workload":"terminal-bench-1.0",
                             "workspace":task.workspace.workdir,"concurrency":1},
                             "connection":{"interface":"open_ai_chat","authentication":"bearer",
@@ -103,13 +105,14 @@ exit 7
                             self.assertNotIn("driver-private-fixture",str(keys.call_args_list))
                         self.assertEqual(result["exit_code"],7,result["stderr"].decode(errors="replace"))
                         self.assertIn(("|".join(driver_parent[1:])+"\n").encode(),result["stdout"])
-                        self.assertEqual(task.checked(["cat","/tmp/asb-sdk-driver-context/performed.txt"]),b"fixture-driver")
+                        self.assertEqual(task.checked(["cat","/performed.txt"]),b"fixture-driver")
                         self.assertEqual(parent(),driver_parent)
                         metadata = json.loads(task.checked(["cat","/opt/asb-private/attempt/agent-result.json"]))
                         self.assertEqual(metadata["exit_code"],7)
                         self.assertEqual(metadata["final_response"],"driver-context-fixture")
                         self.assertTrue(metadata["tree_quiesced"])
-                        self.assertEqual(metadata["execution_workspace"],"/tmp/asb-sdk-driver-context")
+                        self.assertEqual(metadata["execution_workspace"],"/")
+                        self.assertEqual(metadata["owned_instrumentation"],receipt)
                         self.assertTrue(session.is_session_alive())
                         self.assertEqual(hashes,{path.name:hashlib.sha256(path.read_bytes()).hexdigest() for path in sources})
                         self.assertEqual(binary_hash,hashlib.sha256(binary.read_bytes()).hexdigest())

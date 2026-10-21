@@ -12,11 +12,20 @@ from unittest.mock import patch
 
 sys.dont_write_bytecode = True
 sys.path.insert(0,str(Path(__file__).parents[1]/"assets/benchmarks"))
-from asb_material import MaterialError
+from asb_material import MaterialError, tar_digest
 import asb_material_root as subject
 
 
 class RootTests(unittest.TestCase):
+    def setUp(self):
+        # Ownership transport is tested independently; these are composition
+        # fixtures with synthetic TARs, not real container-user qualification.
+        owner = patch("asb_staging.configured_owner",return_value=(0,0))
+        owner.start()
+        self.addCleanup(owner.stop)
+        identity = patch("asb_staging.prefix_identity",return_value={"fixture":"owned-prefix"})
+        identity.start()
+        self.addCleanup(identity.stop)
     def runtime(self, content=b"fixture", extra=False, mode=0o755):
         output = io.BytesIO()
         with tarfile.open(fileobj=output,mode="w") as archive:
@@ -44,7 +53,7 @@ class RootTests(unittest.TestCase):
     def capture(self,task, observations=None, stage=None):
         observations = observations or [{"sha256":"b"*64,"entries":3,"bytes":7}]*2
         with patch("asb_docker.docker_command",return_value=["fixture-docker"]), \
-             patch("asb_guest.upload") as upload, \
+             patch("asb_staging.upload") as upload, \
              patch("asb_runtime.bundle",return_value=([("asb",b"fixture",0o755)],
                  {"files":[{"sha256":hashlib.sha256(b"fixture").hexdigest()}]})), \
              patch.object(subject,"run",side_effect=stage) as run, \
@@ -58,15 +67,18 @@ class RootTests(unittest.TestCase):
         result, calls, staged, uploaded = self.capture(task)
         self.assertEqual(result["scope"],"prepared-workload-material-v1")
         self.assertEqual(len(calls),2)
+        for call in calls:
+            self.assertIn("--user",call.args[0])
+            self.assertEqual(call.args[0][call.args[0].index("--user")+1],"0","only whole-root observations are elevated")
         roots = calls[0].args[1]
         self.assertEqual(roots[0]["path"],"/")
         self.assertEqual(roots[0]["content_paths"],["outside/workdir"])
         self.assertIn("task/.git/index",roots[0]["exclusions"])
         self.assertEqual(roots[1],{"name":"shared-memory","path":"/dev/shm","exclusions":[]})
-        self.assertEqual((staged,uploaded),(9,1))
+        self.assertEqual((staged,uploaded),(12,1))
         repeated,_,staged,uploaded = self.capture(task)
         self.assertEqual(result,repeated)
-        self.assertEqual((staged,uploaded),(8,0))
+        self.assertEqual((staged,uploaded),(10,0))
         task.workspace.container.diff = lambda:[{"Path":"/outside/workdir","Kind":1}]
         self.assertNotEqual(result,self.capture(task)[0],"deletion tombstones remain bound")
 
@@ -76,12 +88,12 @@ class RootTests(unittest.TestCase):
         for role,task in tasks.items():
             task.workspace.container.id = "owned-"+role
         with patch("asb_docker.docker_command",return_value=["fixture-docker"]), \
-             patch("asb_guest.upload",side_effect=lambda container,*args,**kwargs:events.append(("stage",container.id))), \
+             patch("asb_staging.upload",side_effect=lambda container,*args,**kwargs:events.append(("stage",container.id))), \
              patch("asb_runtime.bundle",return_value=([("asb",b"fixture",0o755)],
                  {"files":[{"sha256":hashlib.sha256(b"fixture").hexdigest()}]})), \
              patch.object(subject,"run"), \
              patch.object(subject,"observe",side_effect=lambda command,*args,**kwargs:
-                 events.append(("sample",command[3])) or {"sha256":"b"*64,"entries":3,"bytes":7}):
+                 events.append(("sample",command[command.index("-i")+1])) or {"sha256":"b"*64,"entries":3,"bytes":7}):
             samplers = {role:subject.prepare(task,[],"/private/asb",time.monotonic()+3)
                 for role,task in tasks.items()}
             self.assertEqual(events,[("stage","owned-main"),("stage","owned-database")])
@@ -119,7 +131,7 @@ class RootTests(unittest.TestCase):
             "Destination":"/task","RW":True,"Mode":"","Propagation":"rprivate"}]
         declaration = {"/task":{"source":"/owned/input","chain":[[12,34,16384]]}}
         with patch("asb_docker.docker_command",return_value=["fixture-docker"]), \
-             patch("asb_guest.upload"), \
+             patch("asb_staging.upload"), \
              patch("asb_runtime.bundle",return_value=([("asb",b"fixture",0o755)],
                  {"files":[{"sha256":hashlib.sha256(b"fixture").hexdigest()}]})), \
              patch("asb_material_binds.verify",return_value=declaration), \
@@ -166,7 +178,7 @@ class RootTests(unittest.TestCase):
 
     def test_staging_failure_does_not_upload_or_claim_a_helper(self):
         task = self.fixture()
-        with patch("asb_guest.upload") as upload:
+        with patch("asb_staging.upload") as upload:
             with self.assertRaises(MaterialError):
                 self.capture(task,stage=MaterialError("staging collision"))
             self.assertFalse(hasattr(task,"_material_runtime"))
@@ -200,7 +212,7 @@ class RootTests(unittest.TestCase):
                          {"asb":{"kind":"file","mode":True,"bytes":1,"sha256":"a"*64}}]:
             chunks,_ = self.runtime()
             with self.assertRaises(MaterialError):
-                subject.tar_digest(chunks,"asb-runtime",expected_entries=expected)
+                tar_digest(chunks,"asb-runtime",expected_entries=expected)
             self.assertTrue(chunks.closed)
             self.assertEqual(chunks.reads,0)
 

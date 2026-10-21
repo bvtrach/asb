@@ -17,6 +17,8 @@ impl Fixture {
         )
         .unwrap();
         GuestRequest {
+            owned_instrumentation: None,
+            task_identity: None,
             inherit_working_directory: false,
             process_lifetime: Default::default(),
             workload_owner: None,

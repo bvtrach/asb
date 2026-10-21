@@ -454,6 +454,32 @@ DIR` when a host profile is needed; keep `ASB_MEASURE_*` collectors disabled in
 CI. Measurement JSON must remain bounded and must not contain credentials,
 provider responses, or full agent transcripts.
 
+Owned guest staging uses the shared `asb_staging` helper for both material
+capture and client bootstrap. Fixed prefixes are created once with the task's
+configured numeric UID/GID, and uploaded files receive those owners directly.
+Capture-to-bootstrap reuse verifies the exact runtime tree and directory identity;
+it does not restage or recursively change ownership. The guest keeps directory
+descriptors and an attempt-bound private receipt through preparation. A genuine
+task cwd of `/` is allowed with that receipt; a workspace inside an instrumentation
+prefix, including through a symlink alias, is not. These are local lifecycle and
+consistency checks, not an authentication or signing prerequisite. Read-only
+whole-root observation may run as root inside the owned container; installers,
+clients and SDK shells retain the configured user and environment.
+
+`benchmark_staging.py` and the Rust staging tests cover ownership, reuse,
+replacement and malformed receipt failures without Docker. Opt-in
+`benchmark_live_staging.py` requires `ASB_TEST_BENCHMARK_ASB` (a separately copied,
+hashed ASB binary), `ASB_TEST_STAGING_IMAGE` (an explicitly selected cached Linux
+image with `/bin/sh`, `id`, `mkdir`, `tail` and `cat`), and
+`ASB_TEST_SWECATALOG_ROOT` (an evidence directory). Run it using a Python with
+Docker SDK installed. It uses an isolated networkless container, numeric nonroot
+UID/GID, the real guest driver and a fixture client at cwd `/`, with no provider
+or grading. It removes its successful container; a failed one is stopped and
+preserved. `benchmark_live_sdk_session.py` additionally exercises the actual
+original SDK shell and root cwd, using the installed Terminal SDK/catalog.
+Both retain binary and all bundled Python source hashes. Neither is evidence of
+AI solving, a full repeated workload run, or live-provider qualification.
+
 Lifecycle events are sent through the collector interface, and an ordered,
 bounded `lifecycle.json` journal is written for measured runs, including early
 failures. Optional live Perfetto tests require a project-local installation and

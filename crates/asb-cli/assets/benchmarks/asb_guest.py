@@ -4,7 +4,6 @@ No provider/agent registry lives here. Selection, package recipes, endpoint
 configuration and output interpretation remain in the same Rust adapters used
 by native execution. Host homes, venvs and project directories are not mounted.
 """
-import io
 from contextlib import ExitStack
 import hashlib
 import json
@@ -18,6 +17,7 @@ import threading
 
 from asb_execution import ExecutionError
 from asb_runtime import bundle
+from asb_staging import upload, stage_runtime, root_execute, prepare_guest_roots
 from asb_relay import HostRelay, ForwardingCancellation, forward_request
 
 
@@ -47,24 +47,7 @@ class PreparationBudget:
             except BaseException:pass  # Notification must not skip settlement.
 
 
-def upload(container, destination, files, temporary_dir=None, owner=None):
-    if owner is not None and (not isinstance(owner,tuple) or len(owner) != 2
-            or any(type(value) is not int or not 0 <= value <= 4294967295 for value in owner)):
-        raise ExecutionError("invalid private guest file owner")
-    with tempfile.TemporaryFile(dir=temporary_dir) as archive:
-        with tarfile.open(fileobj=archive, mode="w") as tar:
-            for name, content, mode in files:
-                entry = tarfile.TarInfo(name)
-                entry.size, entry.mode = len(content), mode
-                if owner is not None:
-                    entry.uid,entry.gid = owner
-                tar.addfile(entry, io.BytesIO(content))
-        archive.seek(0)
-        if not container.put_archive(destination, archive):
-            raise ExecutionError("could not stage the task's private runtime")
-
-
-def stage_public_cache(container, project, temporary_dir=None):
+def stage_public_cache(container, project, temporary_dir=None, owner=None):
     cache = project / ".asb-cache/npm/_cacache"
     if not cache.is_dir():
         return
@@ -82,13 +65,18 @@ def stage_public_cache(container, project, temporary_dir=None):
                         return  # Never stage a credential-bearing registry cache.
     with tempfile.TemporaryFile(dir=temporary_dir) as archive:
         with tarfile.open(fileobj=archive, mode="w") as tar:
-            tar.add(cache, arcname="npm/_cacache", recursive=True)
+            def ownership(entry):
+                if owner is not None:
+                    entry.uid,entry.gid = owner
+                    entry.uname,entry.gname = "",""
+                return entry
+            tar.add(cache, arcname="npm/_cacache", recursive=True,filter=ownership)
         archive.seek(0)
         if not container.put_archive("/opt/asb-project/.asb-cache", archive):
             raise ExecutionError("could not stage public package cache")
 
 
-def stage_bootstrap(task, plan, tools):
+def stage_bootstrap(task, plan, tools, owner=None):
     """Consume declared installer assets; never infer dependencies from names."""
     if (not isinstance(plan,dict) or not {"runtime_tools","assets"}.issubset(plan)
             or set(plan)-{"runtime_tools","assets","public_package_cache"}
@@ -126,7 +114,7 @@ def stage_bootstrap(task, plan, tools):
     for target in sorted({str(Path(name).parent) for name,_,_ in staged}):
         task.checked(["mkdir","-p",root+"/"+target])
     if staged:
-        upload(task.workspace.container,root,staged,temporary_dir=task.artifacts)
+        upload(task.workspace.container,root,staged,temporary_dir=task.artifacts,owner=owner)
     receipt = {"schema_version":1,"runtime_tools":runtimes,
                "assets":[{"target":name,"bytes":len(content),"sha256":hashlib.sha256(content).hexdigest()}
                          for name,content,_ in staged]}
@@ -156,9 +144,11 @@ def prepare_agent(task, request, cancelled, resources=None, relays=None, prepara
     runtime_receipt = task.artifacts / "runtime.json"
     runtime_receipt.write_text(json.dumps(receipt,sort_keys=True)+"\n")
     runtime_receipt.chmod(0o600)
-    task.checked(["mkdir", "-p", "/opt/asb-runtime/bin", "/opt/asb-runtime/lib", "/opt/asb-project/.asb",
-                  "/opt/asb-project/.asb-tools", "/opt/asb-project/.asb-cache"])
-    upload(container, "/opt/asb-runtime", files,temporary_dir=task.artifacts)
+    deadline = preparation_budget.deadline if preparation_budget else time.monotonic()+900
+    root_checked = lambda arguments:root_execute(task,arguments,deadline=deadline,cancelled=cancelled)
+    owner = stage_runtime(task,request["binary"],files,task.checked,root_checked,deadline=deadline,cancelled=cancelled)
+    task_identity,ownership = prepare_guest_roots(task,owner,task.checked,root_checked)
+    task.checked(["mkdir", "-m", "700", "/opt/asb-project/.asb", "/opt/asb-project/.asb-tools", "/opt/asb-project/.asb-cache"])
     check_budget()
     configuration = request.get("project_configuration", "tools_dir='.asb-tools'\nworkloads_dir='workloads'\nworkspace_dir='workspace'\n")
     if not isinstance(configuration, str) or len(configuration.encode()) > 64 * 1024:
@@ -177,11 +167,12 @@ def prepare_agent(task, request, cancelled, resources=None, relays=None, prepara
     request = forward_request(dict(request, project_configuration=configuration), start_relay)
     configuration = request["project_configuration"]
     guest = request["request"]
-    upload(container, "/opt/asb-project/.asb", [("project.toml", configuration.encode(), 0o600)],temporary_dir=task.artifacts)
-    runtimes = stage_bootstrap(task,request.get("bootstrap"),tools)
+    guest = dict(guest,task_identity=task_identity,owned_instrumentation=ownership)
+    upload(container, "/opt/asb-project/.asb", [("project.toml", configuration.encode(), 0o600)],temporary_dir=task.artifacts,owner=owner)
+    runtimes = stage_bootstrap(task,request.get("bootstrap"),tools,owner=owner)
     check_budget()
     if request["bootstrap"].get("public_package_cache",False):
-        stage_public_cache(container, project,temporary_dir=task.artifacts)
+        stage_public_cache(container, project,temporary_dir=task.artifacts,owner=owner)
         check_budget()
     environment = request.get("environment", {})
     for selected in [*runtimes, tool]:

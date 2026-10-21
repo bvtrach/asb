@@ -32,6 +32,8 @@ def elf(interpreter=False):
 class Container:
     def __init__(self):
         self.files = []
+        self.id = "guest-bootstrap-fixture"
+        self.attrs = {"Config":{"User":""}}
 
     def put_archive(self, destination, source):
         if isinstance(source, bytes):
@@ -43,6 +45,18 @@ class Container:
 
 
 class GuestBootstrapTests(unittest.TestCase):
+    def setUp(self):
+        # These fixtures exercise bootstrap selection, not the separately
+        # tested ownership transport or actual Docker filesystem staging.
+        for name, options in [
+            ("asb_staging.configured_owner",dict(return_value=(0,0))),
+            ("asb_staging.verify_runtime",dict(return_value=(0,0))),
+            ("asb_guest.root_execute",dict(return_value=b"")),
+            ("asb_guest.prepare_guest_roots",dict(return_value=({},None))),
+        ]:
+            mock = patch(name,**options)
+            mock.start()
+            self.addCleanup(mock.stop)
     def test_preparation_budget_is_bounded_anchored_and_not_restarted(self):
         for invalid in [True, False, 0, -1, 1801, float("nan"), float("inf"), "900"]:
             with self.subTest(invalid=invalid), self.assertRaises(ExecutionError):

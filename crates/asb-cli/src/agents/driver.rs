@@ -40,6 +40,10 @@ pub(crate) fn namespace_id() -> Result<u64, Error> {
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct GuestRequest {
+    #[serde(default)]
+    pub owned_instrumentation: Option<crate::workloads::staging::Ownership>,
+    #[serde(default)]
+    pub task_identity: Option<crate::workloads::session::TaskIdentity>,
     /// Workload-owned persistent shells keep their actual cwd, not a guessed
     /// container default. The benchmark/project identities remain separate.
     #[serde(default)]
@@ -68,6 +72,8 @@ fn default_timeout() -> f64 {
 
 #[derive(Deserialize, Serialize)]
 pub(crate) struct GuestResult {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owned_instrumentation: Option<crate::workloads::staging::Ownership>,
     /// Exact effective directory selected before launch, not re-resolved later.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution_workspace: Option<PathBuf>,
@@ -178,7 +184,24 @@ fn execution_workspace(request: &GuestRequest) -> Result<PathBuf, Error> {
     }
 }
 
-fn prepare(request: &GuestRequest) -> Result<Command, Error> {
+#[derive(Debug)]
+struct PreparedGuest {
+    command: Command,
+    instrumentation: Option<crate::workloads::staging::Guard>,
+}
+impl std::ops::Deref for PreparedGuest {
+    type Target = Command;
+    fn deref(&self) -> &Command {
+        &self.command
+    }
+}
+impl std::ops::DerefMut for PreparedGuest {
+    fn deref_mut(&mut self) -> &mut Command {
+        &mut self.command
+    }
+}
+
+fn prepare(request: &GuestRequest) -> Result<PreparedGuest, Error> {
     if !request.timeout_seconds.is_finite() || !(0.001..=86400.0).contains(&request.timeout_seconds)
     {
         return Err(Error::Input(
@@ -191,6 +214,31 @@ fn prepare(request: &GuestRequest) -> Result<Command, Error> {
         ));
     }
     let workspace = execution_workspace(request)?;
+    let instrumentation = request
+        .owned_instrumentation
+        .as_ref()
+        .map(|owner| {
+            if request.runtime_dir != Path::new(crate::workloads::staging::PRIVATE)
+                || request.run_dir != Path::new(crate::workloads::staging::PRIVATE).join("attempt")
+                || request.project_root != Path::new("/opt/asb-project")
+                || !request.task_identity.as_ref().is_some_and(|identity| {
+                    identity.attempt_id == owner.attempt
+                        && identity.workload == request.config.workload
+                })
+            {
+                return Err(Error::Input(
+                    "owned instrumentation does not match this task invocation".into(),
+                ));
+            }
+            crate::workloads::staging::verify(owner)
+        })
+        .transpose()?;
+    let instrumentation_overlap = if instrumentation.is_some() {
+        crate::workloads::staging::contains_workspace(&workspace)?
+            || crate::workloads::staging::contains_workspace(Path::new(&request.config.workspace))?
+    } else {
+        false
+    };
     if ![
         workspace.as_path(),
         Path::new(&request.config.workspace),
@@ -200,8 +248,10 @@ fn prepare(request: &GuestRequest) -> Result<Command, Error> {
     ]
     .into_iter()
     .all(absolute)
-        || request.runtime_dir.starts_with(&workspace)
-        || request.run_dir.starts_with(&workspace)
+        || (instrumentation.is_none()
+            && (request.runtime_dir.starts_with(&workspace)
+                || request.run_dir.starts_with(&workspace)))
+        || instrumentation_overlap
         || !request.run_dir.starts_with(&request.runtime_dir)
     {
         return Err(Error::Input("guest workspace and private runtime paths must be absolute, separate and owned by this attempt".into()));
@@ -270,7 +320,10 @@ fn prepare(request: &GuestRequest) -> Result<Command, Error> {
         runtime_dir: &request.runtime_dir,
         run_dir: &request.run_dir,
     })?;
-    Ok(command)
+    Ok(PreparedGuest {
+        command,
+        instrumentation,
+    })
 }
 
 fn run(request: GuestRequest) -> Result<u8, Error> {
@@ -317,6 +370,9 @@ fn run(request: GuestRequest) -> Result<u8, Error> {
         session.attach_pid(std::process::id()).map_err(Error::Run)?;
         Some(session)
     };
+    if let (Some(guard), Some(owner)) = (&command.instrumentation, &request.owned_instrumentation) {
+        guard.revalidate(owner)?;
+    }
     // Preparation and command construction are complete before the outer
     // collector attaches. Credentials remain only in process memory/env.
     println!("__ASB_GATE__:{}", std::process::id());
@@ -401,6 +457,7 @@ fn run(request: GuestRequest) -> Result<u8, Error> {
     );
     let usage = crate::measurements::with_artifact_usage(usage, artifacts.token_usage);
     let result = GuestResult {
+        owned_instrumentation: request.owned_instrumentation.clone(),
         execution_workspace: Some(workspace.clone()),
         #[cfg(target_os = "linux")]
         elapsed_ms: held.as_ref().map(|held| held.elapsed_ms),
