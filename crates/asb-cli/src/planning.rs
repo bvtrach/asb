@@ -150,6 +150,76 @@ pub(crate) struct CollectorPlan {
     pub selected: bool,
 }
 
+/// Constructed only from validated planning and runtime caps. Run callers
+/// cannot supply a free-form cohort identifier.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(transparent)]
+pub(crate) struct ExecutionPlanFingerprint(String);
+
+impl ExecutionPlanFingerprint {
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+pub(crate) fn protocol_fingerprint(
+    config: &BenchmarkConfig,
+    policy: &ResolvedPlan,
+    effective: EffectiveBudgets,
+    replica_concurrency: usize,
+) -> Result<ExecutionPlanFingerprint, Error> {
+    use sha2::{Digest, Sha256};
+    resolve_snapshot(config, !policy.collectors.is_empty(), Some(policy))?;
+    if !(1..=crate::benchmark::MAX_CONCURRENCY).contains(&replica_concurrency)
+        || effective
+            .execution_seconds
+            .is_none_or(|n| !n.is_finite() || !(0.001..=86400.0).contains(&n))
+        || [
+            effective.environment_preparation_seconds,
+            effective.evaluation_seconds,
+        ]
+        .into_iter()
+        .flatten()
+        .any(|n| !(1..=86400).contains(&n))
+        || effective.agent_preparation_seconds.is_some()
+        || policy
+            .budgets
+            .execution_seconds
+            .is_some_and(|n| effective.execution_seconds != Some(n as f64))
+        || policy
+            .budgets
+            .environment_preparation_seconds
+            .is_some_and(|n| effective.environment_preparation_seconds != Some(n))
+        || policy
+            .budgets
+            .evaluation_seconds
+            .is_some_and(|n| effective.evaluation_seconds != Some(n))
+    {
+        return Err(Error::Input(
+            "effective controller caps do not match validated execution policy".into(),
+        ));
+    }
+    // Occurrence identity belongs in the attempt record. Cohort compatibility
+    // retains the declared repetition total, without splitting occurrences.
+    let mut cohort = serde_json::to_value(policy).map_err(|error| Error::Io(error.to_string()))?;
+    cohort["repetition"]
+        .as_object_mut()
+        .expect("serialized repetition object")
+        .remove("index");
+    let identity = serde_json::json!({
+        "schema_version":1,
+        "module": workloads::descriptor(&config.workload),
+        "policy":cohort,
+        "effective_controller_caps":effective,
+        "replica_concurrency":replica_concurrency,
+    });
+    let bytes = serde_json::to_vec(&identity).map_err(|error| Error::Io(error.to_string()))?;
+    Ok(ExecutionPlanFingerprint(format!(
+        "asb-protocol-v1:{:x}",
+        Sha256::digest(bytes)
+    )))
+}
+
 pub(crate) fn resolve(config: &BenchmarkConfig) -> Result<ResolvedPlan, Error> {
     resolve_for_run(config, false)
 }
@@ -390,6 +460,53 @@ mod tests {
         assert_eq!(plan.backend, "native");
         assert_eq!(plan.budgets.execution_seconds, Some(42));
         assert!(plan.collectors.is_empty());
+    }
+    #[test]
+    fn protocol_cohort_omits_occurrence_but_binds_repeat_total_caps_and_replica_concurrency() {
+        let mut config = config("[planning.repetition]\nindex=1\ntotal=3");
+        let caps = EffectiveBudgets {
+            execution_seconds: Some(900.0),
+            ..Default::default()
+        };
+        let first = protocol_fingerprint(&config, &resolve(&config).unwrap(), caps, 2).unwrap();
+        config.planning.as_mut().unwrap().repetition.index = 2;
+        let second = protocol_fingerprint(&config, &resolve(&config).unwrap(), caps, 2).unwrap();
+        assert_eq!(
+            first, second,
+            "repetition occurrence is not a protocol difference"
+        );
+        assert!(first.as_str().starts_with("asb-protocol-v1:"));
+        assert_ne!(
+            first,
+            protocol_fingerprint(&config, &resolve(&config).unwrap(), caps, 3).unwrap()
+        );
+        let changed = EffectiveBudgets {
+            execution_seconds: Some(901.0),
+            ..caps
+        };
+        assert_ne!(
+            first,
+            protocol_fingerprint(&config, &resolve(&config).unwrap(), changed, 2).unwrap()
+        );
+        config.planning.as_mut().unwrap().repetition.total = 4;
+        assert_ne!(
+            first,
+            protocol_fingerprint(&config, &resolve(&config).unwrap(), caps, 2).unwrap()
+        );
+        assert!(
+            protocol_fingerprint(
+                &config,
+                &resolve(&config).unwrap(),
+                EffectiveBudgets {
+                    execution_seconds: Some(f64::NAN),
+                    ..caps
+                },
+                2
+            )
+            .is_err()
+        );
+        config.planning.as_mut().unwrap().budgets.execution_seconds = Some(1000);
+        assert!(protocol_fingerprint(&config, &resolve(&config).unwrap(), caps, 2).is_err());
     }
     #[test]
     fn snapshot_rejects_changed_collectors_and_repeat_identity_is_independent_of_concurrency() {

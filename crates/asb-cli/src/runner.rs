@@ -50,7 +50,7 @@ struct RunResult<'a> {
     planning: crate::planning::ResolvedPlan,
     effective_budgets: crate::planning::EffectiveBudgets,
     execution_plan: Option<PathBuf>,
-    execution_plan_fingerprint: Option<&'a str>,
+    execution_plan_fingerprint: Option<crate::planning::ExecutionPlanFingerprint>,
     module: Option<workloads::contracts::ModuleDescriptor>,
     benchmark_outcome: Option<workloads::outcome::BenchmarkOutcome>,
     replica_index: Option<usize>,
@@ -89,7 +89,6 @@ struct RunResult<'a> {
 #[derive(Clone, Copy, Default)]
 pub(crate) struct RunOptions<'a> {
     pub policy: Option<&'a crate::planning::ResolvedPlan>,
-    pub execution_plan_fingerprint: Option<&'a str>,
     pub execution_cohort: Option<&'a measurements::ExecutionCohort>,
     pub json: bool,
     pub show_output: bool,
@@ -584,15 +583,21 @@ fn run_mode(
         Some(effective_budgets),
         Some(&workload_session.invocation().identity),
     )?;
+    let execution_plan_fingerprint = crate::planning::protocol_fingerprint(
+        &config,
+        &policy,
+        effective_budgets,
+        options.replica.total,
+    )?;
     // Capture provenance at execution time; report rendering never consults
     // today's adapter registry to label a historical record.
     let module = workload_session.module_descriptor();
-    let policy = workload_session.metric_policy();
-    if !policy.valid()
-        || (module.is_none() && policy != workloads::outcome::MetricPolicy::default())
+    let metric_policy = workload_session.metric_policy();
+    if !metric_policy.valid()
+        || (module.is_none() && metric_policy != workloads::outcome::MetricPolicy::default())
         || module
             .as_ref()
-            .is_some_and(|m| !m.valid() || !policy.matches_module(m))
+            .is_some_and(|m| !m.valid() || !metric_policy.matches_module(m))
     {
         return Err(Error::Run(
             "module metric policy differs from its declared scoring protocol".into(),
@@ -889,11 +894,11 @@ fn run_mode(
         || Ok(workload_session.evaluate_outcome(final_response.as_deref().unwrap_or_default())),
     )?
     .map_err(Error::Run)?;
-    if let Err(reason) = policy.validate_evaluation(&evaluation) {
+    if let Err(reason) = metric_policy.validate_evaluation(&evaluation) {
         evaluation = workloads::outcome::EvaluationOutcome::Error { reason };
     }
     let evaluator_evidence = workload_session.checkpoint_evidence();
-    if policy != workloads::outcome::MetricPolicy::default()
+    if metric_policy != workloads::outcome::MetricPolicy::default()
         && evaluation.completed()
         && evaluator_evidence.is_empty()
     {
@@ -1057,7 +1062,7 @@ fn run_mode(
         planning: policy,
         effective_budgets,
         execution_plan: Some(execution_plan),
-        execution_plan_fingerprint: options.execution_plan_fingerprint,
+        execution_plan_fingerprint: Some(execution_plan_fingerprint),
         module,
         benchmark_outcome: Some(workloads::outcome::BenchmarkOutcome {
             schema_version: 1,
@@ -1065,7 +1070,7 @@ fn run_mode(
             evaluation,
             cleanup_confirmed: Some(workload_cleanup_confirmed && proxy_evidence.cleanup_confirmed),
             evidence: evaluator_evidence,
-            policy,
+            policy: metric_policy,
             lineage: workloads::outcome::EvaluationLineage {
                 execution_attempt: workload_session.invocation().identity.attempt_id.clone(),
                 evaluation_id: workloads::TaskIdentity::local("evaluation", None).attempt_id,
@@ -1131,7 +1136,10 @@ fn run_mode(
             .event(LifecycleEvent::RunFinishing)
             .map_err(Error::Run)?;
         let measured = measurements::RunMeasurement {
-            execution_plan_fingerprint: result.execution_plan_fingerprint,
+            execution_plan_fingerprint: result
+                .execution_plan_fingerprint
+                .as_ref()
+                .map(|fingerprint| fingerprint.as_str()),
             module: result.module.as_ref(),
             benchmark_outcome: result.benchmark_outcome.as_ref(),
             replica_index: result.replica_index,

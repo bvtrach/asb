@@ -72,6 +72,17 @@ the agent executes. Run logs, JSONL and completion summaries retain the policy,
 effective caps and record reference even without measurement collection.
 Instructions, credentials and attachment payloads never enter policy records.
 
+The runner computes `execution_plan_fingerprint` itself from validated resolved
+choices, effective controller caps, module identity and replica concurrency;
+run callers cannot supply an opaque identity. The versioned SHA-256 cohort
+fingerprint includes repetition total/policy but excludes its occurrence index,
+task/attempt IDs, output paths and execution-cohort IDs. Repeated occurrences of
+the same protocol can therefore aggregate, while changed caps, collector choices,
+host/backend policy or replica concurrency form separate comparison groups.
+The same fingerprint enters logs, completion outcomes, optional measurements and
+the existing metric/population/resolution grouping paths. Historical records
+without a fingerprint remain a separate unknown cohort.
+
 `execution_seconds` caps the native process or guest driver. Official task
 execution defaults are taken from the controller's ready invocation, including
 fractional seconds, and recorded separately from requested overrides.

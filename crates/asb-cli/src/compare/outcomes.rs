@@ -562,6 +562,44 @@ mod tests {
     }
 
     #[test]
+    fn validated_protocol_cohorts_aggregate_repeat_occurrences_and_separate_changed_caps() {
+        let fixture = Fixture::new("terminal-bench-2.1", 3);
+        let mut fingerprints = Vec::new();
+        for slot in 1..=3 {
+            let config: crate::benchmark::BenchmarkConfig = toml::from_str(&format!("agent='pi'\nprovider='fixture-provider'\nmodel='fixture-model'\nworkload='terminal-bench-2.1'\n[planning.repetition]\nindex={slot}\ntotal=3\n")).unwrap();
+            let policy = crate::planning::resolve(&config).unwrap();
+            let caps = crate::planning::EffectiveBudgets {
+                environment_preparation_seconds: Some(900),
+                agent_preparation_seconds: None,
+                execution_seconds: Some(if slot == 3 { 901.0 } else { 900.0 }),
+                evaluation_seconds: Some(1800),
+            };
+            let fingerprint =
+                crate::planning::protocol_fingerprint(&config, &policy, caps, 1).unwrap();
+            fingerprints.push(fingerprint.clone());
+            let mut record = fixture.record(slot, json!(true), true, true);
+            record["summary"]["execution_plan_fingerprint"] = json!(fingerprint);
+            record["summary"]["planning"] = json!(policy);
+            record["summary"]["effective_budgets"] = json!(caps);
+            fixture.publish(slot, &record);
+        }
+        assert_eq!(fingerprints[0], fingerprints[1]);
+        assert_ne!(fingerprints[1], fingerprints[2]);
+        let report = fixture.compare().unwrap();
+        assert_eq!(report["metric_groups"].as_object().unwrap().len(), 2);
+        assert_eq!(report["population_coverage"].as_object().unwrap().len(), 2);
+        assert_eq!(report["resolution_groups"].as_object().unwrap().len(), 2);
+        let mut counts = report["population_coverage"]
+            .as_object()
+            .unwrap()
+            .values()
+            .map(|group| group["selected_attempts"].as_u64().unwrap())
+            .collect::<Vec<_>>();
+        counts.sort_unstable();
+        assert_eq!(counts, [1, 2]);
+    }
+
+    #[test]
     fn recorded_protocol_revisions_partition_scores_without_live_relabeling() {
         let fixture = Fixture::new("terminal-bench-2.1", 2);
         for slot in 1..=2 {
