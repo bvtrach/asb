@@ -11,7 +11,7 @@ mod selection;
 mod source;
 
 pub use archive::{Archive, Limits};
-pub use journal::{Publication, RecordingJournal};
+pub use journal::{Publication, RecordingJournal, TrackEvidence};
 pub use selection::{Metric, SelectionPlan, Selector};
 use serde::{Deserialize, Serialize};
 pub use source::{LegacyTrack, Source};

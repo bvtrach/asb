@@ -817,6 +817,73 @@ fn journal_publishes_out_of_order_and_recovers_failed_complete_attempts() {
 }
 
 #[test]
+fn immutable_track_evidence_verifies_under_active_writer_and_after_payload_cleanup() {
+    let fixture = Fixture::new();
+    let destination = fixture.0.join("evidence.asb.zip");
+    let mut journal =
+        RecordingJournal::create(&destination, manifest(0), 2, Limits::default()).unwrap();
+    let tracks = manifest(2).tracks;
+    journal.begin(1, 1).unwrap();
+    assert!(journal.track_evidence(&tracks[0]).is_err());
+    journal
+        .commit(tracks[0].clone(), &mut &b"{}\n"[..])
+        .unwrap();
+    let evidence = journal.track_evidence(&tracks[0]).unwrap();
+    evidence.verify(Limits::default()).unwrap();
+    assert!(RecordingJournal::recover(&destination, Limits::default()).is_err());
+    journal.begin(2, 1).unwrap();
+    journal
+        .commit(tracks[1].clone(), &mut &b"{}\n"[..])
+        .unwrap();
+    evidence.verify(Limits::default()).unwrap();
+    let published = journal.finalize().unwrap();
+    assert!(published.cleanup_complete);
+    assert!(!journal.partial_directory().join("track-1.jsonl").exists());
+    evidence.verify(Limits::default()).unwrap();
+    let mut altered = evidence.clone();
+    altered.track.process_success = Some(false);
+    assert!(altered.verify(Limits::default()).is_err());
+    altered = evidence.clone();
+    altered.compatibility.model = "different".into();
+    assert!(altered.verify(Limits::default()).is_err());
+    // A stale copy cannot make loss of the published target look recoverable.
+    fs::write(journal.partial_directory().join("track-1.jsonl"), b"{}\n").unwrap();
+    fs::remove_file(&destination).unwrap();
+    assert!(evidence.verify(Limits::default()).is_err());
+}
+
+#[test]
+fn immutable_track_evidence_survives_publication_faults_but_not_commit_tampering() {
+    for fault in [
+        "after-freeze",
+        "after-final-link",
+        "before-published",
+        "after-published",
+        "after-payload-cleanup",
+    ] {
+        let fixture = Fixture::new();
+        let destination = fixture.0.join("fault.asb.zip");
+        let mut journal =
+            RecordingJournal::create(&destination, manifest(0), 1, Limits::default()).unwrap();
+        let track = manifest(1).tracks.remove(0);
+        journal.begin(1, 1).unwrap();
+        journal.commit(track.clone(), &mut &b"{}\n"[..]).unwrap();
+        let evidence = journal.track_evidence(&track).unwrap();
+        journal.inject_publication_failure(fault);
+        let _publication = journal.finalize();
+        evidence.verify(Limits::default()).unwrap();
+        let path = journal.partial_directory().join("committed-1.json");
+        let original = fs::read(&path).unwrap();
+        let mut bad: serde_json::Value = serde_json::from_slice(&original).unwrap();
+        bad["track"]["complete"] = serde_json::json!(false);
+        fs::write(&path, serde_json::to_vec(&bad).unwrap()).unwrap();
+        assert!(evidence.verify(Limits::default()).is_err(), "{fault}");
+        fs::write(path, original).unwrap();
+        evidence.verify(Limits::default()).unwrap();
+    }
+}
+
+#[test]
 fn journal_retains_interrupted_copy_without_promoting_it_to_complete() {
     struct BrokenReader(bool);
     impl Read for BrokenReader {

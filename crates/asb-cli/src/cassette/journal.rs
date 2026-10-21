@@ -1,7 +1,9 @@
 //! Immutable recording intent/start/commit records under one output owner.
+mod evidence;
 mod publication;
 use super::{Error, Limits, Manifest, Statistics, Track, digest};
 use crate::output_lock::OutputLock;
+pub use evidence::TrackEvidence;
 pub use publication::Publication;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
@@ -431,20 +433,7 @@ impl RecordingJournal {
     }
 
     fn check_root_identity(&self) -> Result<(), Error> {
-        let current = fs::symlink_metadata(&self.root).map_err(io_error)?;
-        if !current.is_dir() {
-            return Err(Error("recording partial directory was replaced".into()));
-        }
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::MetadataExt;
-            if current.dev() != self.root_identity.dev()
-                || current.ino() != self.root_identity.ino()
-            {
-                return Err(Error("recording partial directory identity changed".into()));
-            }
-        }
-        Ok(())
+        check_root_identity(&self.root, &self.root_identity)
     }
 
     fn ensure_recording(&self) -> Result<(), Error> {
@@ -488,6 +477,21 @@ impl RecordingJournal {
     }
 }
 
+fn check_root_identity(root: &Path, original: &fs::Metadata) -> Result<(), Error> {
+    let current = fs::symlink_metadata(root).map_err(io_error)?;
+    if !current.is_dir() {
+        return Err(Error("recording partial directory was replaced".into()));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if current.dev() != original.dev() || current.ino() != original.ino() {
+            return Err(Error("recording partial directory identity changed".into()));
+        }
+    }
+    Ok(())
+}
+
 fn validate_count(repeat: u64, concurrency: u64, limits: Limits) -> Result<u64, Error> {
     repeat
         .checked_mul(concurrency)
@@ -498,6 +502,19 @@ fn validate_count(repeat: u64, concurrency: u64, limits: Limits) -> Result<u64, 
 }
 
 fn paths_and_lock(destination: &Path) -> Result<(PathBuf, PathBuf, String, OutputLock), Error> {
+    let (destination, root, name) = recording_paths(destination)?;
+    let owner = OutputLock::acquire(
+        &destination
+            .parent()
+            .expect("canonical parent")
+            .join(format!(".{name}.recording.lock")),
+        "another writer owns this cassette recording",
+    )
+    .map_err(Error)?;
+    Ok((destination, root, name, owner))
+}
+
+fn recording_paths(destination: &Path) -> Result<(PathBuf, PathBuf, String), Error> {
     let name = destination
         .file_name()
         .and_then(|value| value.to_str())
@@ -510,16 +527,10 @@ fn paths_and_lock(destination: &Path) -> Result<(PathBuf, PathBuf, String, Outpu
         .unwrap_or(Path::new("."))
         .canonicalize()
         .map_err(io_error)?;
-    let owner = OutputLock::acquire(
-        &parent.join(format!(".{name}.recording.lock")),
-        "another writer owns this cassette recording",
-    )
-    .map_err(Error)?;
     Ok((
         parent.join(&name),
         parent.join(format!(".{name}.partial")),
         name,
-        owner,
     ))
 }
 
