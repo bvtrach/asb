@@ -50,6 +50,14 @@ Perf-stat regression fixtures process a complete synthetic file larger than
 the diagnostic cap, retain missing-interval timestamps and hybrid CPU counter
 totals, and reject invalid or excessive input without publishing partial totals.
 They need neither perf permissions nor a live agent/provider.
+Flamegraph pipeline regressions use synthetic local tools and pin each direct
+child's identity with a pidfd. Success, stage failures, output-file errors,
+preflight failures, timeout and unwinding must stop and reap every admitted
+stage while leaving an unrelated sentinel alive. Cleanup signals only owned
+direct children, never a process-name/PID-parent search. The caller's cleanup
+wait is bounded; an unconfirmed kernel-stuck child remains owned by a fallback
+reaper and is reported as a cleanup failure, not a completed graph. These
+fixtures neither invoke host perf nor qualify arbitrary tool descendants.
 `cargo test --locked --offline --test compare_setup` checks repeated CLI setup
 selections, scoped models/trials, dependency expansion, non-overwriting sweep
 publication, standalone measured/unmeasured reports and an injected browser
