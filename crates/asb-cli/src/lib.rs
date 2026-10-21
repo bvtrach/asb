@@ -159,6 +159,7 @@ mod adapter_layout_tests {
                     "selection.rs", // Generic pre-execution catalog/identity contract.
                     "recovery.rs",  // Generic attempt references and adapter dispatch.
                     "controller.rs",
+                    "task_protocol.rs", // Generic private task request/event/grade contracts.
                     "remote.rs",
                     "relay.rs",
                     "target.rs",
@@ -202,6 +203,14 @@ mod adapter_layout_tests {
             }
             for id in ids {
                 let stem = id.replace(['-', '.'], "_");
+                // A new generic module must not accidentally allow an owning
+                // target adapter back into the category root.
+                for filename in [format!("{stem}.rs"), format!("{stem}_agent.rs")] {
+                    assert!(
+                        !root_modules.contains(&filename.as_str()),
+                        "registered {category} adapter {id} cannot be a category-wide module"
+                    );
+                }
                 assert!(
                     adapters.join(format!("{stem}.rs")).is_file()
                         || adapters.join(format!("{stem}_agent.rs")).is_file(),
