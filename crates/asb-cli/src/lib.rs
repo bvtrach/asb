@@ -145,16 +145,18 @@ mod adapter_layout_tests {
     #[test]
     fn registered_adapters_have_consistent_paths() {
         let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-        let categories: [(&str, Vec<&str>, &[&str]); 5] = [
+        let categories: [(&str, Vec<&str>, &[&str], &[&str]); 5] = [
             (
                 "agents",
                 super::agents::names().collect(),
                 &["mod.rs", "driver.rs"],
+                &[],
             ),
             (
                 "providers",
                 super::providers::names().to_vec(),
                 &["mod.rs", "preparation.rs"],
+                &[],
             ),
             (
                 "workloads",
@@ -177,16 +179,18 @@ mod adapter_layout_tests {
                     "relay.rs",
                     "target.rs",
                 ],
+                &["controller"], // Generic Unix/legacy protocol transports.
             ),
-            ("proxy", super::proxy::names().collect(), &["mod.rs"]),
+            ("proxy", super::proxy::names().collect(), &["mod.rs"], &[]),
             (
                 "collectors",
                 super::collectors::names().collect(),
                 // Category-wide bounded output codec, not a target adapter.
                 &["mod.rs", "output.rs"],
+                &[],
             ),
         ];
-        for (category, ids, root_modules) in categories {
+        for (category, ids, root_modules, root_directories) in categories {
             let root = source.join(category);
             let adapters = root.join("adapters");
             assert!(
@@ -198,9 +202,10 @@ mod adapter_layout_tests {
                 let entry = entry.unwrap();
                 let path = entry.path();
                 if path.is_dir() {
-                    assert_eq!(
-                        entry.file_name(),
-                        "adapters",
+                    let name = entry.file_name();
+                    assert!(
+                        name == "adapters"
+                            || root_directories.iter().any(|allowed| name == *allowed),
                         "unexpected adapter directory: {}",
                         path.display()
                     );
@@ -216,6 +221,10 @@ mod adapter_layout_tests {
             }
             for id in ids {
                 let stem = id.replace(['-', '.'], "_");
+                assert!(
+                    !root_directories.contains(&stem.as_str()),
+                    "registered {category} adapter {id} cannot be a category-wide directory"
+                );
                 // A new generic module must not accidentally allow an owning
                 // target adapter back into the category root.
                 for filename in [format!("{stem}.rs"), format!("{stem}_agent.rs")] {
