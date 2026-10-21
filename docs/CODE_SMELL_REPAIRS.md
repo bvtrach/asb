@@ -71,9 +71,11 @@ reran all seven isolated policy fixtures after current-stack integration. These
 exercise actual source installation and execution for every registered agent
 and tool, custom roots, override precedence, broken/non-executable/symlink
 entries and host-only discovery. Existing installer regressions now call the
-same shared executable predicate rather than a removed duplicate. Final full
-source/package checks, review of integration, PR merge, post-merge verification
-and the patch release remain pending.
+same shared executable predicate rather than a removed duplicate. Current-main
+integration `b395617e` is independently source-approved; its full offline suite
+passed 996 tests, followed by strict Clippy, formatting and build/docs checks.
+Exact-head hosted/package CI, PR merge, post-merge verification and the patch
+release remain pending.
 
 Shared benchmark-path repair, released patch **0.2.13**: all five equivalent legacy normalizers now
 use one component/stem policy, and both sweep execution and comparison use the
@@ -300,8 +302,10 @@ not a claim of transactional multi-file I/O. Independent source review approved
 `6758b426`; a separate execution passed all 39 TUI unit tests and both terminal
 integration tests, including ten actual PTY workflow scenarios and terminal
 restoration. Worker full offline qualification passed 956 tests with 20 explicit
-optional skips. Version/package, exact-head hosted CI, merge and post-merge
-release verification remain pending. Detached installation-worker custody and
+optional skips. Current-main integration `6af7939b` is independently
+source-approved; a fresh full offline suite passed 998 tests, followed by
+strict Clippy, formatting and build/docs checks. Exact-head hosted/package CI,
+merge and post-merge release verification remain pending. Detached installation-worker custody and
 other TUI structural issues remain separate repair classes.
 
 ## 7. Limits, diagnostics and CLI consistency
