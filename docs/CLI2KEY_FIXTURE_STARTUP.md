@@ -88,7 +88,7 @@ No local full-crate suite, hosted/package CI, PR publication, merge or release
 is claimed by that historical checkpoint. The then-planned main-30 repair was
 subsequently superseded by the peer main-31 integration below.
 
-## Main-31 integration and coordinated patch 32 (qualification pending)
+## Main-31 integration and coordinated patch 32
 
 Actual main advanced to `cabaa576` through peer PR294 (version 0.2.31).
 The signed integration `01e3af38` retained that exact production, Cargo, workflow
@@ -108,3 +108,24 @@ peer main-31 without tagging version 30 or replacing/reusing the peer release.
 A fresh actual patch-32 CLI build, complete offline target and strict lint/format
 qualification are required; earlier hashes/results are not substituted.
 Hosted CI, PR, merge and release decisions remain with root after exact review.
+
+## Current patch-32 offline qualification
+
+Root independently approved integrated/versioned source `bec846d1`: all
+production/workflow bytes match actual main `cabaa576`, apart from the two
+authorized Cargo package-version lines. The fixture patch's stable ID remains
+`ce3d48b6f87c643726c491d91996ea1b19c3324e`, identical to the reviewed repair.
+
+A fresh actual 0.2.32 CLI build and new complete `offline_cli` run passed
+94 tests, failed zero and ignored 5 existing optional tests (not qualified).
+Strict offline all-target/all-feature Clippy and formatting passed on this
+integrated source. These are new results, not reuse of the historical version-30
+qualification. Logs are `target/cli2key-fixture-v032-{build,offline-cli,clippy,fmt}.log`.
+Actual CLI hashes before and after the terminal sequence matched:
+`4bad6979166c39b8c00f9dc38b5820def40239fb8bf5312ae30ff195f9bfd243`.
+The hash files are `target/cli2key-fixture-v032-{before,after}.sha256`.
+
+This qualification addition changes only this document. No local full-crate
+suite or hosted/package CI is claimed; PR publication, merge and any release
+remain root-owned pending steps. Version-30 source/evidence and runtime34's
+separate source checkpoint remain immutable.
