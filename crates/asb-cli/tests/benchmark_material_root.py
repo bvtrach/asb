@@ -70,6 +70,25 @@ class RootTests(unittest.TestCase):
         task.workspace.container.diff = lambda:[{"Path":"/outside/workdir","Kind":1}]
         self.assertNotEqual(result,self.capture(task)[0],"deletion tombstones remain bound")
 
+    def test_preparing_all_services_precedes_interleaved_whole_environment_rounds(self):
+        events = []
+        tasks = {role:self.fixture() for role in ["main","database"]}
+        for role,task in tasks.items():
+            task.workspace.container.id = "owned-"+role
+        with patch("asb_docker.docker_command",return_value=["fixture-docker"]), \
+             patch("asb_guest.upload",side_effect=lambda container,*args,**kwargs:events.append(("stage",container.id))), \
+             patch("asb_runtime.bundle",return_value=([("asb",b"fixture",0o755)],
+                 {"files":[{"sha256":hashlib.sha256(b"fixture").hexdigest()}]})), \
+             patch.object(subject,"run"), \
+             patch.object(subject,"observe",side_effect=lambda command,*args,**kwargs:
+                 events.append(("sample",command[3])) or {"sha256":"b"*64,"entries":3,"bytes":7}):
+            samplers = {role:subject.prepare(task,[],"/private/asb",time.monotonic()+3)
+                for role,task in tasks.items()}
+            self.assertEqual(events,[("stage","owned-main"),("stage","owned-database")])
+            rounds = [{role:sample() for role,sample in samplers.items()} for _ in range(2)]
+        self.assertEqual(rounds[0],rounds[1])
+        self.assertEqual(events[2:],[('sample','owned-main'),('sample','owned-database')]*2)
+
     def test_root_workspace_is_supported_and_second_round_mutation_is_rejected(self):
         task = self.fixture()
         task.workspace.workdir = "/"

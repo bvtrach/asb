@@ -1,7 +1,7 @@
-"""Compose actual owned root observations with image and deletion inventory.
+"""Prepare one owned root sampler; compose whole-environment rounds above it.
 
-This extends the old work-directory reader, not the final multi-service/mount
-composer. Unsupported declarations fail; no definition-only fallback exists.
+Unsupported declarations fail; no definition-only fallback exists. Preparation
+stages instrumentation before any environment sampling begins.
 """
 import time
 
@@ -11,7 +11,12 @@ from asb_material_exec import observe, run
 RUNTIME = "/opt/asb-runtime"
 
 
-def capture(task, definition, exclusions, binary, deadline):
+def prepare(task, exclusions, binary, deadline):
+    """Stage one service, then return a callable taking one complete observation.
+
+Callers must compare two whole-environment rounds. Two observations of each
+service in isolation cannot establish a stable multi-service environment.
+"""
     from asb_docker import docker_command
     from asb_guest import upload
     from asb_runtime import bundle
@@ -113,8 +118,8 @@ def capture(task, definition, exclusions, binary, deadline):
         check()
         return {"image":anchor,"changes":changes,"topology":topology,"hidden":hidden}
 
-    rounds = []
-    for _ in range(2):
+    def sample():
+        nonlocal kernel_identity
         verify_runtime()
         if kernel_identity is None and any(item["kind"] == "bind" for item in initial_mounts["mounts"]):
             kernel_identity = checked(["/bin/sh","-c",'exec /opt/asb-runtime/asb __asb-target "$$"'])
@@ -143,8 +148,14 @@ def capture(task, definition, exclusions, binary, deadline):
         if before != after:
             raise MaterialError("prepared image or change inventory changed during root observation")
         topology = {key:value for key,value in before["topology"].items() if key != "raw_sha256"}
-        rounds.append({"image_sha256":before["image"], "changes":before["changes"],
-            "topology":topology,"files":result})
+        return {"image_sha256":before["image"], "changes":before["changes"],
+            "topology":topology,"files":result}
+    return sample
+
+
+def capture(task, definition, exclusions, binary, deadline):
+    sample = prepare(task,exclusions,binary,deadline)
+    rounds = [sample(),sample()]
     if rounds[0] != rounds[1]:
         raise MaterialError("prepared filesystem changed between complete root observations")
     # Helper staging is instrumentation, not workload content. Its implementation

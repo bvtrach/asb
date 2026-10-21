@@ -241,6 +241,17 @@ containers/volumes. No agent, provider or evaluator ran. This representative
 qualification does not cover multi-service/network composition or complete
 runtime equivalence, which remain separate unfinished work.
 
+The root implementation separates `prepare` (owned instrumentation staging)
+from the returned single-observation sampler. The single-container entry point
+still compares two samples with the same hash domain. A deterministic seam
+stages two distinct service contexts before taking A(main, database) and
+B(main, database), demonstrating the interface needed by a whole-environment
+composer without claiming that production multi-service dispatch exists yet.
+That composer must own durable logical roles, exact resource witnesses,
+aggregate budgets, global runtime/network snapshots and shared-storage groups;
+it must not run isolated A/B pairs per service or silently exclude generated
+Docker configuration files without corresponding semantic observations.
+
 ## Implemented native repeated execution
 
 Explicit repetition, including `--repeat 1`, allocates a new project-local
