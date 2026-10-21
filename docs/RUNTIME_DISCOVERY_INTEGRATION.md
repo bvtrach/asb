@@ -51,3 +51,13 @@ Only the owned CLI cache was used, without a live provider, credential,
 privileged collector, external SDK or host permission change. This is Linux
 combined-source qualification, not native non-Unix qualification, hosted package
 CI, a merge or a release. Historical evidence remains preserved separately.
+
+An independent final proof review approved docs checkpoint `25a85e9b`: it checked
+all 24 outer summaries, source/merge identity, focused/full/owning-fixture logs,
+all five hash observations and the preserved executable, lint and complete
+build/documentation gates; independent completion shell syntax checks passed.
+After all local handles were terminal, root verified the CLI cache idle and
+preserved the exact executable at `target/qualification/runtime38-2f30840d-asb`.
+A scoped `cargo clean --package asb-cli` then reclaimed 2 GiB of rebuildable CLI
+cache outputs. Source, transcripts, retained failures and benchmark data were
+not removed; loss of the cache's derived binary is not a qualification failure.
