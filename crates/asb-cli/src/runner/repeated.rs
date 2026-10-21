@@ -1,12 +1,12 @@
 //! Fresh sequential batches with a durable intended-slot plan and outcome links.
+mod legacy;
 mod replay;
 use super::campaign::{MAX_EXECUTIONS, Plan, ReplayInput, Slot, planned_slots};
 use super::{RunOptions, batch, replica};
 use crate::{Error, benchmark::BenchmarkConfig, cassette::Compatibility, io_error};
 use serde::Serialize;
 use serde_json::json;
-use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -93,7 +93,12 @@ struct Prepared {
     root: PathBuf,
     plan: Plan,
     bytes: Vec<u8>,
-    replay: Option<replay::Prepared>,
+    replay: Option<PreparedReplay>,
+}
+
+enum PreparedReplay {
+    Selected(Box<replay::Prepared>),
+    Legacy(legacy::Prepared),
 }
 
 /// Only presentation and saved policy survive preparation as execution options.
@@ -159,12 +164,19 @@ impl Prepared {
                 .as_ref()
                 .is_some_and(|value| value.enabled);
         let mut slots = planned_slots(&config, repeat, measured)?;
-        let replay = replay::Prepared::open(config_path, &config, options, repeat)?;
-        let replay_inputs = if let Some(replay) = &replay {
-            replay.inputs(&mut slots)?
-        } else {
-            replay_inputs(config_path, &config, options, &mut slots)?
-        };
+        let (replay, replay_inputs) =
+            match replay::Prepared::open(config_path, &config, options, repeat)? {
+                Some(selected) => {
+                    let inputs = selected.inputs(&mut slots)?;
+                    (Some(PreparedReplay::Selected(Box::new(selected))), inputs)
+                }
+                None if options.mode == Some(crate::tape::Mode::Replay) => {
+                    let (legacy, inputs) =
+                        legacy::Prepared::open(config_path, &config, options, &mut slots)?;
+                    (Some(PreparedReplay::Legacy(legacy)), inputs)
+                }
+                None => (None, Vec::new()),
+            };
         let parent = campaign_parent
             .map(|path| std::path::absolute(path).map_err(io_error))
             .transpose()?
@@ -189,7 +201,10 @@ impl Prepared {
             .transpose()
             .map_err(io_error)?;
         let plan = Plan {
-            replay_selection: replay.as_ref().and_then(|replay| replay.selection.clone()),
+            replay_selection: replay.as_ref().and_then(|replay| match replay {
+                PreparedReplay::Selected(selected) => selected.selection.clone(),
+                PreparedReplay::Legacy(_) => None,
+            }),
             recording: recording_destination.clone(),
             admission,
             schema_version: 1,
@@ -245,7 +260,7 @@ fn activate(
         root,
         plan,
         bytes,
-        mut replay,
+        replay,
     } = prepared;
     let config = &plan.configuration;
     let repeat = plan.repeat;
@@ -291,11 +306,13 @@ fn activate(
             config.concurrency,
         ))
     });
-    let private_cassette = if let Some(replay) = &mut replay {
-        replay.stage(&root, &plan.replay_inputs)?;
-        None
-    } else {
-        stage_replay(&root, &plan, config.concurrency)?
+    let (private_cassette, replay) = match replay {
+        Some(PreparedReplay::Selected(mut selected)) => {
+            selected.stage(&root, &plan.replay_inputs)?;
+            (None, Some(selected))
+        }
+        Some(PreparedReplay::Legacy(legacy)) => (legacy.stage(&root, &plan)?, None),
+        None => (None, None),
     };
     if let Some(measurement_root) = &measurement_root
         && measurement_root != &root
@@ -579,149 +596,6 @@ fn must_stop(
     let ordinary_failure =
         matches!(result, Err(Error::Run(_))) && completed == selected && prepared && cleanup;
     (result.is_err() && !ordinary_failure) || !prepared || !cleanup || completed != selected
-}
-
-fn replay_inputs(
-    config_path: &Path,
-    config: &BenchmarkConfig,
-    options: RunOptions<'_>,
-    slots: &mut [Slot],
-) -> Result<Vec<ReplayInput>, Error> {
-    if options.mode != Some(crate::tape::Mode::Replay) {
-        return Ok(Vec::new());
-    }
-    let base = options
-        .cassette
-        .map(PathBuf::from)
-        .unwrap_or_else(|| super::default_cassette(config_path, config));
-    let mut seen = BTreeMap::new();
-    let mut inputs = Vec::new();
-    let mut total = 0u64;
-    let mut replicas = Vec::new();
-    for replica in 1..=config.concurrency {
-        let source = if config.concurrency == 1 {
-            base.clone()
-        } else {
-            super::replica_cassette(crate::tape::Mode::Replay, &base, replica)
-        };
-        let source = source.canonicalize().map_err(|error| {
-            Error::Input(format!(
-                "cannot resolve replay input {}: {error}",
-                source.display()
-            ))
-        })?;
-        let id = if let Some(id) = seen.get(&source) {
-            *id
-        } else {
-            let (bytes, sha256) = transfer_input(&source, &mut std::io::sink())?;
-            total = total
-                .checked_add(bytes)
-                .filter(|total| *total <= 2 * 1024 * 1024 * 1024)
-                .ok_or_else(|| Error::Input("replay inputs exceed 2 GiB aggregate bound".into()))?;
-            let id = inputs.len();
-            inputs.push(ReplayInput {
-                complete: None,
-                track: None,
-                source: source.clone(),
-                private: PathBuf::from(format!("inputs/recording-{}.jsonl", id + 1)),
-                bytes,
-                sha256,
-            });
-            seen.insert(source, id);
-            id
-        };
-        replicas.push(id);
-    }
-    for slot in slots {
-        slot.replay_input = Some(replicas[slot.replica - 1]);
-    }
-    Ok(inputs)
-}
-
-fn transfer_input(path: &Path, output: &mut dyn Write) -> Result<(u64, String), Error> {
-    let mut options = OpenOptions::new();
-    options.read(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
-    }
-    let mut file = options.open(path).map_err(io_error)?;
-    let metadata = file.metadata().map_err(io_error)?;
-    if !metadata.is_file() || metadata.len() > 64 * 1024 * 1024 {
-        return Err(Error::Input(
-            "legacy replay input must be a regular file at most 64 MiB".into(),
-        ));
-    }
-    let mut hash = Sha256::new();
-    let mut bytes = 0u64;
-    let mut buffer = [0u8; 64 * 1024];
-    loop {
-        let count = file.read(&mut buffer).map_err(io_error)?;
-        if count == 0 {
-            break;
-        }
-        bytes += count as u64;
-        if bytes > metadata.len() {
-            return Err(Error::Input(
-                "legacy replay input changed while reading".into(),
-            ));
-        }
-        hash.update(&buffer[..count]);
-        output.write_all(&buffer[..count]).map_err(io_error)?;
-    }
-    if bytes != metadata.len() {
-        return Err(Error::Input(
-            "legacy replay input changed while reading".into(),
-        ));
-    }
-    Ok((bytes, format!("{:x}", hash.finalize())))
-}
-
-fn stage_replay(root: &Path, plan: &Plan, concurrency: usize) -> Result<Option<String>, Error> {
-    if plan.replay_inputs.is_empty() {
-        return Ok(None);
-    }
-    private_directory(&root.join("inputs"), false)?;
-    for input in &plan.replay_inputs {
-        let destination = root.join(&input.private);
-        let pending = destination.with_extension("partial");
-        let mut options = OpenOptions::new();
-        options.create_new(true).write(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        let mut file = options.open(&pending).map_err(io_error)?;
-        let observed = transfer_input(&input.source, &mut file)?;
-        if observed != (input.bytes, input.sha256.clone()) {
-            return Err(Error::Input(
-                "replay input changed after execution planning; no agent was started".into(),
-            ));
-        }
-        file.sync_all()
-            .and_then(|()| fs::hard_link(&pending, &destination))
-            .map_err(io_error)?;
-        fs::File::open(root.join("inputs"))
-            .and_then(|file| file.sync_all())
-            .map_err(io_error)?;
-        fs::remove_file(pending).map_err(io_error)?;
-    }
-    let base = root.join("inputs/cassette.jsonl");
-    for slot in plan.slots.iter().take(concurrency) {
-        let source = &plan.replay_inputs[slot.replay_input.expect("replay slot")];
-        let destination = if concurrency == 1 {
-            base.clone()
-        } else {
-            super::replica_cassette(crate::tape::Mode::Record, &base, slot.replica)
-        };
-        fs::hard_link(root.join(&source.private), destination).map_err(io_error)?;
-    }
-    fs::File::open(root.join("inputs"))
-        .and_then(|file| file.sync_all())
-        .map_err(io_error)?;
-    path_text(&base).map(Some)
 }
 
 struct Observer {
@@ -1126,7 +1000,7 @@ mod tests {
             .unwrap()
             .set_len(64 * 1024 * 1024 + 1)
             .unwrap();
-        assert!(transfer_input(&large, &mut std::io::sink()).is_err());
+        assert!(legacy::transfer_input(&large, &mut std::io::sink()).is_err());
         fs::remove_dir_all(root).unwrap();
     }
 }

@@ -30,9 +30,15 @@ invocation is retained separately from canonical source identity, including
 cross-project symlinks. Recording inspection creates no missing directories;
 activation creates/rechecks them before campaign publication and any client.
 Inspection is not a reservation, and the journal's no-replace boundary remains
-authoritative. Unselected legacy inputs still use their prior hash-then-verified
-staging path rather than claiming pinned-source ownership. Sweep integration
-must preserve those sources across result rotation before activation.
+authoritative. Unselected legacy replay now retains one opened regular input per
+canonical-path-deduplicated source until private staging consumes its owner.
+Discovery still uses historical base/replica/sparse precedence. All observed
+metadata sizes and the aggregate bound pass before any initial hash; both hash
+and staging enforce the saved length, reject changed lengths before reading and
+use at most one sentinel byte to detect growth. Staging verifies exact saved
+checksums without reopening display paths. Result-tree moves, path replacement
+and unlinking cannot substitute another source; in-place changes fail before any
+batch/client. Selected-track and legacy staging have mutually exclusive owners.
 Prepared campaigns own saved policy and presentation/measurement-override
 settings; they borrow neither caller option strings nor their own configuration.
 Activation derives routing, mode, timing and counts from the frozen plan/source
