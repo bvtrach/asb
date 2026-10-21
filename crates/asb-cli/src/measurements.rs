@@ -511,6 +511,10 @@ impl Drop for Session {
 #[path = "../tests/unit/measurement_lifecycle_faults.rs"]
 mod lifecycle_fault_tests;
 
+#[cfg(all(test, target_os = "linux"))]
+#[path = "../tests/unit/collector_custody.rs"]
+mod collector_custody_tests;
+
 impl Session {
     pub fn started_unix_ms(&self) -> u128 {
         self.started_unix_ms

@@ -160,6 +160,10 @@ publication class:
   identity-pinned descendant custody. These need a coherent collector ownership
   follow-up, not a publication retry or a claim that independent finish attempts
   can advance past a blocked stop.
+  Class 35 now has a [custody/completeness design and red-test source](COLLECTOR_CUSTODY_REPAIR.md).
+  These fixtures are initially unexecuted while the publication qualification
+  owns build capacity; neither a production repair nor observed red result is
+  claimed by adding their source.
 - JSONL append streams and validates the complete historical file into a new
   private stage on every append. Memory is bounded per record, but total
   history length, staging space and owner I/O time are not bounded by the
