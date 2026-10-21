@@ -25,7 +25,13 @@ ASB is deliberately split into a small CLI and a file-backed workload directory:
   agents, providers, models, workloads, measurements, and concurrency, with filtering and
   keyboard navigation. Its model pane uses the existing provider discovery
   path and falls back only when a catalog is unavailable, then writes test
-  configurations and a sweep manifest;
+  configurations and a sweep manifest. Each choice carries a typed domain key
+  independently of its rendered/search label: prompt names and trial-set files
+  remain distinct even when their labels collide. Provider/model bindings,
+  installation and collector dependencies consume those keys; saved trial edits
+  reopen by trial ID. Six named pane kinds define navigation order and install
+  eligibility. Concurrency choices use the benchmark's shared maximum and
+  publish exactly one numeric value;
 - `install`: local copying of agent executables and workload prompt files;
 - `providers`: a registry of `ProviderAdapter` implementations, each owning
   its provider's model and endpoint metadata, catalog policy, process preparation,

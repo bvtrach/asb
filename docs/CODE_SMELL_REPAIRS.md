@@ -375,9 +375,18 @@ source/package/install-smoke CI passed in run `39611418478`. Post-merge
 verification and the signed v0.2.8 release are tracked in the PR. Coverage is
 optional under the user-confirmed policy above, not a remaining release gate.
 
-Unify intended limits (including TUI concurrency versus benchmark maximum),
-replace positional pane access and scattered protocol deadlines with named
-contracts, and audit shell-completion drift. Preserve signal-exit information
+TUI choice-identity candidate: selections now bind typed agent/provider/model,
+prompt, trial-set filename, collector, concurrency and trial-ID keys rather than
+rendered labels. Colliding prompt/trial-set labels and literal repeated suffixes
+retain distinct identities; reserved `all` is checked against the actual name.
+Named pane kinds replace positional navigation/installation decisions, and the
+concurrency pane uses the shared benchmark maximum of 64. Local regressions
+cover every generated numeric concurrency, label changes across domain consumers,
+saved trial-ID reopen and actual PTY publication of 64. Independent review and
+full delivery qualification remain pending; installer custody is preserved.
+
+Replace remaining scattered protocol deadlines with named contracts and audit
+shell-completion drift. Preserve signal-exit information
 where the wire protocol can represent it. Check error-type consistency,
 shadowing and redundant display implementations in their owning classes.
 The report's `install::json_string` claim is incorrect: it serializes a string;

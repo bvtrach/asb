@@ -82,6 +82,12 @@ edits replace subsets, and deselected workloads are excluded. Checkpoints
 inspect disk before finish and cancellation, then verify exact published
 subsets and terminal echo/canonical-mode restoration. No agent/provider runs
 or host changes are needed.
+The same PTY fixture publishes concurrency 64 through the actual setup wizard.
+`cargo test --locked --offline --lib tui::identity_tests` checks all concurrency
+values through generated TOML, colliding prompt/trial-set labels and repeated
+suffixes, reserved raw identifiers, label-independent installation/readiness,
+provider/model bindings, collector dependencies and saved trial IDs. Model
+discovery is injected and executable fixtures are local inert files.
 `cargo test --locked --offline --lib executables::tests` installs local shell
 fixtures through every registered agent/tool source-install route, then checks
 readiness and actually executes the selected fixture. Isolated subprocess

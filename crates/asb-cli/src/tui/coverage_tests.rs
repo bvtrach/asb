@@ -36,8 +36,7 @@ impl Drop for Project {
 fn choice(label: &str) -> Choice {
     Choice {
         label: label.into(),
-        provider: None,
-        model: None,
+        key: ChoiceKey::Prompt(label.into()),
         availability: Availability::Unknown,
     }
 }
@@ -50,7 +49,7 @@ fn workload_windows_render_both_levels_selected_rows_status_and_resizes() {
         app.workloads.selected[0] = true;
         app.workloads.choices[0].availability = Availability::Missing;
         if level == 1 {
-            let mut trials = Pane::new(vec![choice("first"), choice("second")]);
+            let mut trials = Pane::new(vec![trial_choice("first"), trial_choice("second")]);
             trials.selected[1] = true;
             trials.choices[1].availability = Availability::Available;
             app.wizard
@@ -185,7 +184,7 @@ fn workload_reducer_requires_explicit_finish_and_replaces_saved_subset() {
     assert!(app.wizard.reduce(WorkloadAction::Finish).is_err());
     let open = || WorkloadAction::Open {
         workload: "custom".into(),
-        trials: Pane::new(vec![choice("first"), choice("second")]),
+        trials: Pane::new(vec![trial_choice("first"), trial_choice("second")]),
     };
     assert!(!app.wizard.reduce(open()).unwrap());
     assert!(app.wizard.reduce(WorkloadAction::Save).is_err());
@@ -269,4 +268,11 @@ fn trial_publication_validates_every_subset_before_replacing_any_file() {
         !first.exists(),
         "a later validation failure must not create an earlier file"
     );
+}
+
+fn trial_choice(id: &str) -> Choice {
+    Choice {
+        key: ChoiceKey::Trial(id.into()),
+        ..choice(id)
+    }
 }

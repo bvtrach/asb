@@ -43,7 +43,7 @@ impl WorkloadWizard {
             } => {
                 if let Some(saved) = self.selections.get(&workload) {
                     for (choice, selected) in trials.choices.iter().zip(&mut trials.selected) {
-                        *selected = saved.contains(&choice.label);
+                        *selected = choice.key.trial().is_some_and(|id| saved.contains(id));
                     }
                 }
                 self.step = WorkloadStep::Editing { workload, trials };
@@ -59,7 +59,7 @@ impl WorkloadWizard {
                     workload.clone(),
                     trials
                         .selected_choices()
-                        .map(|choice| choice.label.clone())
+                        .filter_map(|choice| choice.key.trial().map(str::to_owned))
                         .collect(),
                 );
                 self.step = WorkloadStep::Saved {
