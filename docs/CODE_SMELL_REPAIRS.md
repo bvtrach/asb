@@ -14,14 +14,21 @@ informational, not a substitute for meaningful offline regressions. Required
 functional CI, independent review, exact-head validation and patch releases
 still apply to each repair class.
 
-Setup publication integration, coordinated staged patch **0.2.40**, source-only:
+Setup publication integration, coordinated staged patch **0.2.40**, locally qualified:
 reviewed collector39 `1d409705` is combined with independently approved setup
 `0caafe3d`, plus reviewed fixture-only permission restoration `e284b2b7`.
 Both merges were automatic; setup source and protected incoming production are
 preserved. The historical focused setup evidence is not integrated qualification.
-Independent integration review, fresh focused/full tests, lint/build/docs, hosted
+Root independently approved source `24d7a880` and fresh focus (576 passed,
+zero failed, ten optional skips). The fresh offline workspace/all-target/
+all-feature suite passed 1,391 tests, zero failed, 21 optional skips across
+24 top-level groups; nested reader subprocess summaries are not double-counted.
+Separate doctests (zero tests), strict Clippy/fmt and sequential offline build,
+private docs, pinned UML/flows/interactive views and completion syntax passed.
+Actual binary `cf2b2d2e…` remained unchanged. Logs are `target/setup40-*`.
+Independent final evidence review, current-main coordination, hosted/package
 CI, merge, both post-merge jobs and a coordinated release remain pending.
-No build, cache relink, push or PR accompanied this checkpoint. See
+No push or PR accompanied this evidence-only checkpoint. See
 [setup integration](SETUP_PUBLICATION_INTEGRATION.md) for exact scope and limits.
 
 Artifact integration, staged patch **0.2.35**, local qualification and package-fixture repair, delivery pending:
