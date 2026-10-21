@@ -113,7 +113,12 @@ fn adapter_metadata_only_recognizes_owned_profile_artifacts() {
     assert_eq!(ADAPTER.tool_id(), Some("bpftrace"));
     assert_eq!(ADAPTER.environment_flag(), Some("ASB_MEASURE_BPFTRACE"));
     assert!(ADAPTER.requires_pid());
-    assert!(ADAPTER.graceful_shutdown("bpftrace-custom"));
+    assert!(
+        ADAPTER
+            .producer_policy("bpftrace-custom")
+            .graceful
+            .is_some()
+    );
     assert!(ADAPTER.prioritizes_artifact("bpftrace-custom.json"));
     assert!(!ADAPTER.prioritizes_artifact("perfetto-custom.svg"));
     assert!(ADAPTER.display_artifact("bpftrace-custom.svg").is_some());

@@ -4,6 +4,10 @@ use super::super::{ProcessContext, ProcessData, SharedArtifact};
 use crate::measurements;
 use std::process::{Command, Stdio};
 
+#[cfg(all(test, target_os = "linux"))]
+#[path = "../../../tests/unit/perf_stop_contract.rs"]
+mod stop_contract_tests;
+
 /// Build the process-scoped `perf record` arguments.  Attaching to the runner
 /// root with inheritance is deliberate: the root may fork a bridge, agent
 /// helper, or workload process after attachment, and each descendant must be
@@ -64,8 +68,29 @@ impl CollectorAdapter for PerfCollector {
             super::super::selected_or_environment("perf", selected);
         Ok(())
     }
-    fn graceful_shutdown(&self, name: &str) -> bool {
+    fn producer_policy(&self, name: &str) -> measurements::ProducerPolicy {
+        measurements::ProducerPolicy {
+            stream_bytes: 256 * 1024 * 1024,
+            graceful: matches!(name, "perf" | "perf-stat")
+                .then_some(std::time::Duration::from_secs(5)),
+        }
+    }
+    fn accepts_termination(
+        &self,
+        name: &str,
+        completion: &measurements::ProducerCompletion,
+    ) -> bool {
         matches!(name, "perf" | "perf-stat")
+            && accepted_exit(
+                completion.exit,
+                completion.interruption_requested
+                    && completion.interruption_acknowledged
+                    && completion.guardian_cleanup_confirmed == Some(true)
+                    && completion.capture_complete,
+            )
+    }
+    fn retain_raw_on_processing_failure(&self) -> bool {
+        true
     }
     fn process(
         &self,
@@ -84,6 +109,10 @@ fn process(
     context: &ProcessContext<'_>,
 ) -> Result<ProcessData, String> {
     let mut result = ProcessData::from_output(context);
+    if !accepted_exit(context.status, context.controlled_interruption) {
+        result.status = "failed".into();
+        return Ok(result);
+    }
     if context.name == "perf-stat" {
         let file = context
             .stderr_reader()
@@ -112,26 +141,113 @@ fn process(
             }),
         )?;
         result.artifact = Some("perf-stat-quality.json".into());
-        if context.status.code().is_none() && !context.stderr.is_empty() {
-            result.status = "completed".into();
-        }
     } else {
-        result.artifact = session
+        let artifact = session
             .artifact(SharedArtifact::StackSamples)
             .filter(|path| path.is_file())
-            .map(measurements::file_name);
-        let exists = session
-            .artifact(SharedArtifact::StackSamples)
-            .is_some_and(|path| path.metadata().is_ok_and(|metadata| metadata.len() > 0));
-        result.status =
-            if context.status.success() || (context.status.code().is_none() && exists) {
-                "completed"
-            } else {
-                "failed"
-            }
-            .into();
+            .ok_or("perf record artifact is missing; cannot validate captured samples")?;
+        validate_record(
+            session,
+            artifact,
+            std::time::Duration::from_secs(300),
+            256 * 1024 * 1024,
+        )?;
+        result.artifact = Some(measurements::file_name(artifact));
     }
+    result.status = "completed".into();
     Ok(result)
+}
+
+// perf v6.12 builtin-stat.c sig_atexit and builtin-record.c record__sig_exit
+// restore the signal default and re-raise it AFTER flushing. A signal alone is
+// not success: only an acknowledged deliberate interrupt with settled complete
+// capture may reach the owning adapter's full-data validation above.
+// https://github.com/torvalds/linux/blob/v6.12/tools/perf/builtin-stat.c
+// https://github.com/torvalds/linux/blob/v6.12/tools/perf/builtin-record.c
+fn accepted_exit(status: Option<std::process::ExitStatus>, controlled: bool) -> bool {
+    status.is_some_and(|status| {
+        #[cfg(unix)]
+        let interrupt = {
+            use std::os::unix::process::ExitStatusExt;
+            status.signal() == Some(libc::SIGINT) || status.code() == Some(128 + libc::SIGINT)
+        };
+        #[cfg(not(unix))]
+        let interrupt = false;
+        status.success() || (controlled && interrupt)
+    })
+}
+
+/// Same built-in offline decoder used by flamegraphs, but bounded independently
+/// and supervised through the producer's exact guardian/capture custody. Never
+/// run a script extension, provider, live collection, sudo or network lookup.
+fn validate_record(
+    session: &measurements::Session,
+    artifact: &std::path::Path,
+    timeout: std::time::Duration,
+    stream_bytes: u64,
+) -> Result<(), String> {
+    let artifact = artifact
+        .canonicalize()
+        .map_err(|error| format!("cannot resolve perf record artifact: {error}"))?;
+    let executable = measurements::resolve_executable(session.tool_dir.as_deref(), "perf");
+    let executable = crate::tools::host_executable(&executable)
+        .ok_or("selected perf executable is unavailable for offline record validation")?;
+    let mut launch = crate::launch::ProcessLaunch::new(executable);
+    launch.arg("script").arg("-i").arg(&artifact);
+    let (mut command, route) = measurements::producer_command(&mut launch)?;
+    command
+        .env_clear()
+        .env("DEBUGINFOD_URLS", "")
+        .env("PERF_CONFIG_NOSYSTEM", "1")
+        .env("PERF_CONFIG_NOGLOBAL", "1")
+        .env("PERF_PAGER", "cat")
+        .env("LC_ALL", "C")
+        .current_dir(&session.dir);
+    let mut captures = [
+        crate::evidence::Capture::create(&session.dir.join("perf-validation.stdout"))?,
+        crate::evidence::Capture::create(&session.dir.join("perf-validation.stderr"))?,
+    ];
+    let mut producer = measurements::Producer::spawn_with_dependency(
+        &mut command,
+        route,
+        measurements::ProducerPolicy {
+            stream_bytes,
+            graceful: None,
+        },
+        [captures[0].writer()?, captures[1].writer()?],
+        None,
+    )?;
+    let deadline = std::time::Instant::now() + timeout;
+    let completion = loop {
+        if let Some(completion) = producer.poll()? {
+            break completion;
+        }
+        if std::time::Instant::now() >= deadline {
+            let settled = producer.stop();
+            return Err(format!(
+                "offline perf record validation timed out; cleanup confirmed: {:?}; validation captures retained",
+                settled.guardian_cleanup_confirmed
+            ));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    };
+    if !completion.capture_complete
+        || completion.guardian_cleanup_confirmed != Some(true)
+        || !completion.exit.is_some_and(|status| status.success())
+    {
+        return Err(format!(
+            "offline perf record decoder failed: exit {:?}; {}; validation captures retained",
+            completion.exit,
+            completion.error.unwrap_or_default()
+        ));
+    }
+    // Empty decoded output is a valid zero-sample record only when the actual
+    // installed decoder successfully consumed it. Never invent a sample count.
+    for capture in &mut captures {
+        capture.freeze()?;
+        capture.consume()?;
+    }
+    Ok(())
 }
 
 fn preflight(context: &mut PreflightContext<'_>) -> Result<(), String> {
@@ -179,11 +295,9 @@ fn preflight(context: &mut PreflightContext<'_>) -> Result<(), String> {
     Ok(())
 }
 
-use crate::collectors;
 use crate::measurements::{Collector, env_true, measurement_interval_ms, write_unavailable};
 use std::collections::BTreeMap;
 use std::io::{BufRead, Read};
-use std::time::Instant;
 
 #[derive(Default)]
 struct PerfState {
@@ -202,25 +316,20 @@ impl measurements::Session {
             crate::evidence::Capture::create(&stdout_path)?,
             crate::evidence::Capture::create(&stderr_path)?,
         ];
-        let output = captures[1].writer()?;
-        let stdout = captures[0].writer()?;
         // Attach to the runner root and inherit counters into every child.
         // Unlike a one-time comma-separated PID snapshot, perf's inheritance
         // follows helpers forked after attachment as well as descendants of
         // those helpers, while remaining scoped to this benchmark tree.
         let record_args = record_args(pid);
-        let child = match self
-            .command("perf")
+        let (mut command, route) = self.collector_command("perf")?;
+        command
             // Keep perf data bounded enough for the offline flamegraph
             // renderer while retaining process-scoped call samples.
             .args(&record_args)
             .args(["-o"])
-            .arg(&data)
-            .stderr(Stdio::from(output))
-            .stdout(Stdio::from(stdout))
-            .spawn()
-        {
-            Ok(child) => child,
+            .arg(&data);
+        let collector = match Collector::spawn("perf", &ADAPTER, command, route, captures) {
+            Ok(collector) => collector,
             Err(error) if !env_true("ASB_MEASURE_PERF") => {
                 write_unavailable(&self.dir.join("perf.json"), "perf", error.to_string())?;
                 return Ok(());
@@ -232,36 +341,19 @@ impl measurements::Session {
             }
         };
         self.set_artifact(SharedArtifact::StackSamples, data);
-        self.collectors.push(Collector {
-            name: "perf".into(),
-            adapter: collectors::find("perf").expect("registered collector"),
-            child,
-            started: Instant::now(),
-            captures,
-        });
+        self.collectors.push(collector);
         let stat_stdout_path = self.dir.join("perf-stat.stdout");
         let stat_stderr_path = self.dir.join("perf-stat.stderr");
         let captures = [
             crate::evidence::Capture::create(&stat_stdout_path)?,
             crate::evidence::Capture::create(&stat_stderr_path)?,
         ];
-        let stat_stdout = captures[0].writer()?;
-        let stat_stderr = captures[1].writer()?;
         let stat_args = stat_args(pid, measurement_interval_ms());
-        let stat = self
-            .command("perf")
-            .args(&stat_args)
-            .stdout(Stdio::from(stat_stdout))
-            .stderr(Stdio::from(stat_stderr))
-            .spawn();
+        let (mut command, route) = self.collector_command("perf")?;
+        command.args(&stat_args);
+        let stat = Collector::spawn("perf-stat", &ADAPTER, command, route, captures);
         match stat {
-            Ok(child) => self.collectors.push(Collector {
-                name: "perf-stat".into(),
-                adapter: collectors::find("perf").expect("registered collector"),
-                child,
-                started: Instant::now(),
-                captures,
-            }),
+            Ok(collector) => self.collectors.push(collector),
             Err(error) => write_unavailable(
                 &self.dir.join("perf-stat.json"),
                 "perf-stat",

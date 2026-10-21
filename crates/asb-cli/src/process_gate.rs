@@ -7,6 +7,8 @@ use std::io;
 use std::process::Command;
 
 #[cfg(target_os = "linux")]
+mod control;
+#[cfg(target_os = "linux")]
 mod descendants;
 #[cfg(target_os = "linux")]
 mod managed;
@@ -163,13 +165,31 @@ pub(crate) fn run_gate(args: &[OsString]) -> std::process::ExitCode {
         }
     };
     #[cfg(target_os = "linux")]
-    let owner = match owner::Owner::bind(receipt.as_ref().map(receipt::Sender::descriptor)) {
+    let mut control = match control::ChildControl::from_environment() {
+        Ok(control) => control,
+        Err(error) => {
+            eprintln!("asb process gate control setup failed: {error}");
+            return std::process::ExitCode::from(2);
+        }
+    };
+    #[cfg(target_os = "linux")]
+    let owner = match owner::Owner::bind(
+        receipt.as_ref().map(receipt::Sender::descriptor),
+        control.as_ref().map(control::ChildControl::descriptor),
+    ) {
         Ok(owner) => owner,
         Err(error) => {
             eprintln!("asb process gate could not bind its owner: {error}");
             return std::process::ExitCode::from(2);
         }
     };
+    #[cfg(target_os = "linux")]
+    if let Some(control) = control.as_mut()
+        && let Err(error) = control.ready()
+    {
+        eprintln!("asb process gate control capability failed: {error}");
+        return std::process::ExitCode::from(2);
+    }
     #[cfg(target_os = "linux")]
     if let Some(receipt) = receipt.as_mut()
         && let Err(error) = receipt.hello()
@@ -188,7 +208,7 @@ pub(crate) fn run_gate(args: &[OsString]) -> std::process::ExitCode {
             ));
         }
         let mut child = target_command(program, target_args, arg0).spawn()?;
-        owner.wait(&mut child)
+        owner.wait(&mut child, control.as_mut())
     })();
     #[cfg(not(target_os = "linux"))]
     let status = target_command(program, target_args, arg0).status();

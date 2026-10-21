@@ -18,6 +18,12 @@ impl CollectorAdapter for Failing {
 }
 struct Scoped;
 impl CollectorAdapter for Scoped {
+    fn producer_policy(&self, _: &str) -> ProducerPolicy {
+        ProducerPolicy {
+            stream_bytes: 1024 * 1024,
+            graceful: Some(Duration::from_secs(1)),
+        }
+    }
     fn id(&self) -> &'static str {
         "fixture-scoped"
     }
@@ -64,14 +70,9 @@ fn failing_adapter_and_full_journal_still_stop_process_collectors_before_evaluat
             crate::evidence::Capture::create(&root.join("stdout")).unwrap(),
             crate::evidence::Capture::create(&root.join("stderr")).unwrap(),
         ];
-        let child = Command::new("/bin/sleep").arg("20").spawn().unwrap();
-        session.collectors.push(Collector {
-            name: "fixture-scoped".into(),
-            adapter: &SCOPED,
-            child,
-            started: Instant::now(),
-            captures,
-        });
+        session
+            .collectors
+            .push(Collector::fixture("fixture-scoped", &SCOPED, captures));
         let error = session.event(LifecycleEvent::AgentExecuteEnd).unwrap_err();
         assert!(error.contains("fixture marker write failed"));
         assert_eq!(error.contains("too many benchmark lifecycle events"), full);
@@ -81,13 +82,11 @@ fn failing_adapter_and_full_journal_still_stop_process_collectors_before_evaluat
         );
         assert!(session.collectors.is_empty());
         assert_eq!(session.stopped_collectors.len(), 1);
-        assert!(
+        assert_eq!(
             session.stopped_collectors[0]
-                .collector
-                .child
-                .try_wait()
-                .unwrap()
-                .is_some()
+                .completion
+                .guardian_cleanup_confirmed,
+            Some(true)
         );
         assert!(
             sentinel.try_wait().unwrap().is_none(),

@@ -7,6 +7,7 @@ use std::fs;
 use std::path::Path;
 use std::process::{Command, Stdio};
 mod custom_scope;
+#[cfg(test)]
 mod startup;
 pub(super) struct BpftraceCollector;
 pub(super) static ADAPTER: BpftraceCollector = BpftraceCollector;
@@ -53,8 +54,11 @@ impl CollectorAdapter for BpftraceCollector {
         }
         Ok(())
     }
-    fn graceful_shutdown(&self, _: &str) -> bool {
-        true
+    fn producer_policy(&self, _: &str) -> measurements::ProducerPolicy {
+        measurements::ProducerPolicy {
+            stream_bytes: 256 * 1024 * 1024,
+            graceful: Some(std::time::Duration::from_secs(5)),
+        }
     }
     fn process(
         &self,
@@ -154,7 +158,6 @@ fn preflight(context: &mut PreflightContext<'_>) -> Result<(), String> {
     Ok(())
 }
 
-use crate::collectors;
 use crate::measurements::{Collector, env_true, escape_svg, parse_float, write_unavailable};
 use std::collections::BTreeMap;
 use std::time::Instant;
@@ -231,39 +234,35 @@ impl measurements::Session {
     fn start_bpftrace(&mut self, pid: u32) -> Result<(), String> {
         let programs = self.state::<BpftraceState>().borrow().custom.clone();
         for (index, program) in programs.into_iter().enumerate() {
-            let mut command = custom_command(
-                self.command("bpftrace"),
-                &program,
-                &measurements::process_tree_pids(pid),
-            );
+            let (command, route) = self.collector_command("bpftrace").map_err(|error| {
+                format!("cannot start bpftrace program {}: {error}", program.path)
+            })?;
+            let command = custom_command(command, &program, &measurements::process_tree_pids(pid));
             let stdout_path = self.dir.join(format!("bpftrace-{index}.stdout"));
             let stderr_path = self.dir.join(format!("bpftrace-{index}.stderr"));
             let captures = [
                 crate::evidence::Capture::create(&stdout_path)?,
                 crate::evidence::Capture::create(&stderr_path)?,
             ];
-            command
-                .stdout(Stdio::from(captures[0].writer()?))
-                .stderr(Stdio::from(captures[1].writer()?));
-            let mut child = startup::StartupChild::spawn(&mut command, &program.path)?;
+            let mut collector = Collector::spawn(
+                &format!("bpftrace-{index}"),
+                &ADAPTER,
+                command,
+                route,
+                captures,
+            )?;
             if let Err(error) = wait_for_profile_ready(
-                child.child(),
-                &captures[0],
-                &captures[1],
+                || collector.producer.poll(),
+                &collector.captures[0],
+                &collector.captures[1],
                 std::time::Duration::from_secs(30),
             ) {
-                return Err(child.failure(format!(
+                return Err(collector.startup_failure(format!(
                     "bpftrace program {} did not become ready: {error}",
                     program.path
                 )));
             }
-            self.collectors.push(Collector {
-                name: format!("bpftrace-{index}"),
-                adapter: collectors::find("bpftrace").expect("registered collector"),
-                child: child.ready(),
-                started: Instant::now(),
-                captures,
-            });
+            self.collectors.push(collector);
         }
         Ok(())
     }
@@ -281,38 +280,29 @@ impl measurements::Session {
                 crate::evidence::Capture::create(&stdout_path)?,
                 crate::evidence::Capture::create(&stderr_path)?,
             ];
-            let stdout = captures[0].writer()?;
-            let stderr = captures[1].writer()?;
-            let child = self
-                .command("bpftrace")
-                .args(["-B", "line"])
-                .args(["-e", &format!("{prelude}\n{}", profile.program)])
-                .arg(pid.to_string())
-                .stdout(Stdio::from(stdout))
-                .stderr(Stdio::from(stderr))
-                .spawn();
-            match child {
-                Ok(mut child) => {
+            let admitted = self
+                .collector_command("bpftrace")
+                .and_then(|(mut command, route)| {
+                    command
+                        .args(["-B", "line"])
+                        .args(["-e", &format!("{prelude}\n{}", profile.program)])
+                        .arg(pid.to_string());
+                    Collector::spawn(&name, &ADAPTER, command, route, captures)
+                });
+            match admitted {
+                Ok(mut collector) => {
                     if let Err(error) = wait_for_profile_ready(
-                        &mut child,
-                        &captures[0],
-                        &captures[1],
+                        || collector.producer.poll(),
+                        &collector.captures[0],
+                        &collector.captures[1],
                         std::time::Duration::from_secs(30),
                     ) {
-                        let _ = child.kill();
-                        let _ = child.wait();
-                        return Err(format!(
+                        return Err(collector.startup_failure(format!(
                             "bpftrace profile {} did not become ready: {error}",
                             profile.name
-                        ));
+                        )));
                     }
-                    self.collectors.push(Collector {
-                        name,
-                        adapter: collectors::find("bpftrace").expect("registered collector"),
-                        child,
-                        started: Instant::now(),
-                        captures,
-                    });
+                    self.collectors.push(collector);
                 }
                 Err(error) if !env_true("ASB_MEASURE_BPFTRACE") => write_unavailable(
                     &self.dir.join(format!("bpftrace-{}.json", profile.name)),
@@ -408,20 +398,24 @@ fn process_tree_prelude_from_pids(pids: impl IntoIterator<Item = u32>) -> String
 }
 
 fn wait_for_profile_ready(
-    child: &mut std::process::Child,
+    mut poll: impl FnMut() -> Result<Option<measurements::ProducerCompletion>, String>,
     stdout: &crate::evidence::Capture,
     stderr: &crate::evidence::Capture,
     timeout: std::time::Duration,
 ) -> Result<(), String> {
     let deadline = Instant::now() + timeout;
     loop {
+        if let Some(completion) = poll()? {
+            let diagnostic = stderr.startup_diagnostic(4096)?;
+            return Err(format!(
+                "collector exited before attachment acknowledgement: {:?}; {}; {diagnostic}",
+                completion.exit,
+                completion.error.unwrap_or_default()
+            ));
+        }
         let text = stdout.startup_diagnostic(4096)?;
         if text.lines().any(|line| line == "ASB_BPFTRACE_READY") {
             return Ok(());
-        }
-        if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
-            let diagnostic = stderr.startup_diagnostic(4096)?;
-            return Err(format!("exited {status}: {diagnostic}"));
         }
         if Instant::now() >= deadline {
             return Err("timed out waiting for attachment acknowledgement".into());
@@ -797,7 +791,14 @@ mod tests {
         let stderr_capture = crate::evidence::Capture::open(&stderr).unwrap();
         let mut failed = Command::new("sh").args(["-c", "exit 2"]).spawn().unwrap();
         let error = super::wait_for_profile_ready(
-            &mut failed,
+            || {
+                failed
+                    .try_wait()
+                    .map(|status| {
+                        status.map(crate::measurements::ProducerCompletion::test_completed)
+                    })
+                    .map_err(|error| error.to_string())
+            },
             &stdout_capture,
             &stderr_capture,
             Duration::from_secs(2),
@@ -808,7 +809,11 @@ mod tests {
         let mut waiting = Command::new("sleep").arg("10").spawn().unwrap();
         assert!(
             super::wait_for_profile_ready(
-                &mut waiting,
+                || waiting
+                    .try_wait()
+                    .map(|status| status
+                        .map(crate::measurements::ProducerCompletion::test_completed))
+                    .map_err(|error| error.to_string()),
                 &stdout_capture,
                 &stderr_capture,
                 Duration::ZERO
@@ -819,7 +824,11 @@ mod tests {
         fs::write(&stdout, "ASB_BPFTRACE_READY\n").unwrap();
         assert!(
             super::wait_for_profile_ready(
-                &mut waiting,
+                || waiting
+                    .try_wait()
+                    .map(|status| status
+                        .map(crate::measurements::ProducerCompletion::test_completed))
+                    .map_err(|error| error.to_string()),
                 &stdout_capture,
                 &stderr_capture,
                 Duration::ZERO

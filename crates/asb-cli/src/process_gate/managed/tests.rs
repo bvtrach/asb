@@ -34,6 +34,75 @@ impl Drop for ReleaseOnDrop {
 }
 
 #[test]
+fn actual_principal_interrupt_preserves_guardian_until_flush_and_leaves_sentinel_alive() {
+    struct Sentinel(Child);
+    impl Drop for Sentinel {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let mut sentinel = Sentinel(Command::new("/bin/sleep").arg("30").spawn().unwrap());
+    let root = root();
+    let ready = root.join("ready");
+    let interrupted = root.join("interrupted");
+    let release = root.join("release");
+    let flushed = root.join("flushed");
+    let release_guard = ReleaseOnDrop(release.clone());
+    let binary = std::env::current_exe()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("asb");
+    let script = format!(
+        "import os,pathlib,signal,time\nassert 'ASB_GATE_CONTROL_FD' not in os.environ\ndef flush(signum, frame):\n pathlib.Path({interrupted:?}).write_text('interrupt')\n while not pathlib.Path({release:?}).exists(): time.sleep(.005)\n pathlib.Path({flushed:?}).write_text('complete')\n raise SystemExit(7)\nsignal.signal(signal.SIGINT,flush)\npathlib.Path({ready:?}).write_text('ready')\nwhile True: time.sleep(.005)\n"
+    );
+    let (mut command, route) = command(
+        &binary,
+        "python3",
+        &["-I".into(), "-S".into(), "-c".into(), script],
+    );
+    let mut gate = Admission::with_principal_control(route.validate_gate(&mut command).unwrap())
+        .unwrap()
+        .spawn()
+        .unwrap();
+    gate.resume().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while !ready.exists() {
+        assert!(Instant::now() < deadline, "principal not ready");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    gate.interrupt_principal(deadline).unwrap();
+    while !interrupted.exists() || !gate.interruption_acknowledged() {
+        assert!(gate.try_wait().unwrap().is_none());
+        assert!(
+            Instant::now() < deadline,
+            "principal interrupt not acknowledged"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(gate.principal_exit().is_none());
+    assert!(!flushed.exists());
+    assert!(sentinel.0.try_wait().unwrap().is_none());
+    std::fs::write(&release, "release").unwrap();
+    while gate.try_wait().unwrap().is_none() {
+        assert!(
+            Instant::now() < deadline,
+            "guardian did not settle after flush"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(gate.principal_exit().unwrap().status().code(), Some(7));
+    assert_eq!(std::fs::read_to_string(flushed).unwrap(), "complete");
+    assert!(sentinel.0.try_wait().unwrap().is_none());
+    drop(gate);
+    drop(release_guard);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn failed_keeper_creation_never_spawns_a_launcher() {
     let scope = test_support::Scope::new();
     test_support::set_creation_failure(true);
