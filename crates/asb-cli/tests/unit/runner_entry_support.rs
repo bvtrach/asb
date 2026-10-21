@@ -16,6 +16,12 @@ struct Hook {
     admission_replacement: bool,
     capture_grade: Option<bool>,
     observe_original_provider: bool,
+    phase_fault: Option<PhaseFault>,
+}
+#[derive(Clone)]
+enum PhaseFault {
+    StoppedPreserved,
+    RemoveCwd(PathBuf),
 }
 thread_local! { static HOOK: RefCell<Option<Hook>> = const { RefCell::new(None) }; }
 
@@ -68,6 +74,7 @@ impl Scope {
                 admission_replacement: false,
                 capture_grade: None,
                 observe_original_provider: false,
+                phase_fault: None,
             });
         });
         Self
@@ -94,6 +101,7 @@ impl Scope {
                 admission_replacement: false,
                 capture_grade: None,
                 observe_original_provider: false,
+                phase_fault: None,
             });
         });
         Self
@@ -119,6 +127,7 @@ impl Scope {
                     .starts_with("capture-")
                     .then_some(!case.contains("false")),
                 observe_original_provider: false,
+                phase_fault: None,
             });
         });
         Self
@@ -126,6 +135,17 @@ impl Scope {
     pub fn recording(root: &Path, calls: Rc<RefCell<Vec<&'static str>>>, native: bool) -> Self {
         let scope = Self::provider(root, calls, false, native);
         HOOK.with_borrow_mut(|slot| slot.as_mut().unwrap().observe_original_provider = true);
+        scope
+    }
+    pub fn phase(root: &Path, calls: Rc<RefCell<Vec<&'static str>>>, case: &str) -> Self {
+        let scope = Self::provider(root, calls, false, case.contains("native"));
+        HOOK.with_borrow_mut(|slot| {
+            slot.as_mut().unwrap().phase_fault = Some(if case.ends_with("removed-cwd") {
+                PhaseFault::RemoveCwd(root.join("empty-cwd"))
+            } else {
+                PhaseFault::StoppedPreserved
+            });
+        });
         scope
     }
 }
@@ -290,21 +310,29 @@ pub(crate) fn observe_workload(
                     hook.grader_error,
                     hook.cleanup_error,
                     hook.capture_grade,
+                    hook.phase_fault.clone(),
                 )
             })
     });
     match calls {
-        Some((calls, native_reward, pending, grader_error, cleanup_error, capture_grade)) => {
-            Box::new(Observed {
-                inner: workload,
-                calls,
-                native_reward,
-                pending,
-                grader_error,
-                cleanup_error,
-                capture_grade,
-            })
-        }
+        Some((
+            calls,
+            native_reward,
+            pending,
+            grader_error,
+            cleanup_error,
+            capture_grade,
+            phase_fault,
+        )) => Box::new(Observed {
+            inner: workload,
+            calls,
+            native_reward,
+            pending,
+            grader_error,
+            cleanup_error,
+            capture_grade,
+            phase_fault,
+        }),
         None => workload,
     }
 }
@@ -316,6 +344,7 @@ struct Observed {
     grader_error: bool,
     cleanup_error: bool,
     capture_grade: Option<bool>,
+    phase_fault: Option<PhaseFault>,
 }
 impl workloads::WorkloadSession for Observed {
     fn initial_material_sha256(&self) -> Result<String, String> {
@@ -375,7 +404,7 @@ impl workloads::WorkloadSession for Observed {
                 reason: "fixture verifier unavailable".into(),
             };
         }
-        if self.native_reward {
+        let evaluation = if self.native_reward {
             std::fs::write(
                 self.invocation().workspace.join("native-grade.json"),
                 "fixture numeric evaluator evidence",
@@ -388,7 +417,16 @@ impl workloads::WorkloadSession for Observed {
             }
         } else {
             self.inner.evaluate_outcome(response)
+        };
+        if self.phase_fault.is_some() {
+            // Retain the actual evaluator result, not a second grading pass.
+            std::fs::write(
+                self.invocation().workspace.join("phase-grade.json"),
+                serde_json::to_vec(&evaluation).unwrap(),
+            )
+            .unwrap();
         }
+        evaluation
     }
     fn metric_policy(&self) -> workloads::outcome::MetricPolicy {
         if !self.native_reward {
@@ -418,6 +456,21 @@ impl workloads::WorkloadSession for Observed {
     fn finish(&mut self) -> Result<workloads::session::ResourceSettlement, String> {
         self.calls.borrow_mut().push("finish");
         let result = self.inner.finish();
+        if let Some(fault) = &self.phase_fault {
+            let mut settled = result?;
+            match fault {
+                PhaseFault::StoppedPreserved => {
+                    settled.disposition = workloads::ResourceDisposition::StoppedPreserved;
+                }
+                PhaseFault::RemoveCwd(path) => {
+                    assert_eq!(std::env::current_dir().unwrap(), *path);
+                    // The subprocess owns this empty directory. Measurements
+                    // live in its sibling; no recursive deletion or host cwd.
+                    std::fs::remove_dir(path).unwrap();
+                }
+            }
+            return Ok(settled);
+        }
         if self.cleanup_error {
             result?;
             Err("fixture workload cleanup uncertain".into())

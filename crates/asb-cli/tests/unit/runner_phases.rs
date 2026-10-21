@@ -1222,6 +1222,26 @@ fn full_runner_entry_keeps_grade_and_publication_errors_when_result_writer_also_
 }
 
 #[test]
+fn runner_phase_completion_red_stopped_warning_true_publishes_grade() {
+    isolated_full_entry_cases(&["phase-warning-true"]);
+}
+
+#[test]
+fn runner_phase_completion_red_stopped_warning_false_publishes_grade() {
+    isolated_full_entry_cases(&["phase-warning-false"]);
+}
+
+#[test]
+fn runner_phase_completion_red_stopped_warning_native_publishes_grade() {
+    isolated_full_entry_cases(&["phase-warning-native"]);
+}
+
+#[test]
+fn runner_phase_completion_red_removed_cwd_preserves_anchored_measurements() {
+    isolated_full_entry_cases(&["phase-removed-cwd"]);
+}
+
+#[test]
 fn full_runner_entry_observer_warning_is_redacted_and_broken_warning_writer_keeps_primary() {
     isolated_full_entry_cases(&["observer-failure", "observer-warning-writer"]);
 }
@@ -1511,6 +1531,7 @@ fn full_entry_child(case: &str) {
         }
     }
     let artifact_case = case.starts_with("artifact-loss-");
+    let phase_case = case.starts_with("phase-");
     let provider_case = case.starts_with("provider-");
     let disposition_case = case.starts_with("disposition-");
     let publication_case = case.contains("publication-");
@@ -1533,12 +1554,12 @@ fn full_entry_child(case: &str) {
     std::fs::create_dir(root.join("workloads")).unwrap();
     workloads::populate(&root.join("workloads")).unwrap();
     let mini_swe_case = case == "capture-mini-swe-read-failure";
-    let agent_id = if mini_swe_case || artifact_case {
+    let agent_id = if mini_swe_case || artifact_case || phase_case {
         "mini-swe"
     } else {
         "pi"
     };
-    let agent = root.join(if mini_swe_case || artifact_case {
+    let agent = root.join(if mini_swe_case || artifact_case || phase_case {
         "tools/mini-swe/bin/mini"
     } else {
         "tools/pi/bin/pi"
@@ -1557,7 +1578,11 @@ fn full_entry_child(case: &str) {
     };
     let row = serde_json::json!({"request":{"method":"POST","url":"/v1/chat/completions","body":body.to_string()},"response":{"status":200,"headers":{"content-type":"application/json"},"body":response_body}});
     std::fs::write(&cassette, format!("{row}\n")).unwrap();
-    if artifact_case || provider_case || capture_case || (disposition_case && !case.contains("run"))
+    if artifact_case
+        || phase_case
+        || provider_case
+        || capture_case
+        || (disposition_case && !case.contains("run"))
     {
         let node = crate::tools::host_executable(Path::new("node")).unwrap();
         let answer = if case == "provider-false-failed-finish"
@@ -1589,9 +1614,9 @@ fn full_entry_child(case: &str) {
             String::new()
         };
         std::fs::write(&agent, format!("#!{}\nrequire('node:fs').appendFileSync({counter_js},'called\\n');fetch(process.env.OPENAI_BASE_URL+'/chat/completions',{{method:'POST',headers:{{'content-type':'application/json'}},body:JSON.stringify({body})}}).then(async r=>{{if(!r.ok)throw new Error('fixture request failed');await r.text();{capture_js}console.log(JSON.stringify({response}));process.exitCode={exit};}}).catch(()=>{{process.exitCode=9;}});\n", node.display())).unwrap();
-        if artifact_case {
+        if artifact_case || phase_case {
             let trajectory = serde_json::json!({"trajectory_format":"mini-swe-agent-1.1", "info":{"model_stats":{"api_calls":4}},
-                "messages":[{"role":"assistant","content":"src/cli.py src/registry.py lookup",
+                "messages":[{"role":"assistant","content":answer,
                 "extra":{"response":{"usage":{"prompt_tokens":13,"completion_tokens":21}}}}]});
             std::fs::write(&agent, format!("#!{}\nconst fs=require('node:fs');fs.appendFileSync({counter_js},'called\\n');const out=process.argv[process.argv.indexOf('--output')+1];fs.writeFileSync(out,JSON.stringify({trajectory}));fetch(process.env.OPENAI_BASE_URL+'/chat/completions',{{method:'POST',headers:{{'content-type':'application/json'}},body:JSON.stringify({body})}}).then(async r=>{{if(!r.ok)throw Error('fixture replay');await r.text();}}).catch(()=>{{process.exitCode=9;}});\n", node.display())).unwrap();
         }
@@ -1632,7 +1657,9 @@ fn full_entry_child(case: &str) {
     let _capture_scope = case
         .contains("read-failure")
         .then(super::capture::test_support::Scope::read_failure);
-    let _scope = if artifact_case {
+    let _scope = if phase_case {
+        entry_test_support::Scope::phase(&root, calls.clone(), case)
+    } else if artifact_case {
         entry_test_support::Scope::artifact(&root, calls.clone(), !case.ends_with("disabled"))
     } else if disposition_case || capture_case {
         entry_test_support::Scope::disposition(&root, calls.clone(), case)
@@ -1659,6 +1686,7 @@ fn full_entry_child(case: &str) {
         bytes: Vec<u8>,
         fail_result: bool,
         fail_warning: bool,
+        fail_stopped_warning: bool,
         summary_done: bool,
         writes: usize,
         failures: usize,
@@ -1666,7 +1694,11 @@ fn full_entry_child(case: &str) {
     impl Write for Presentation {
         fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
             self.writes += 1;
-            if self.fail_result || (self.fail_warning && self.summary_done) {
+            if self.fail_result
+                || (self.fail_warning && self.summary_done)
+                || (self.fail_stopped_warning
+                    && bytes.starts_with(b"Warning: workload resources were stopped and preserved"))
+            {
                 self.failures += 1;
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::BrokenPipe,
@@ -1686,6 +1718,7 @@ fn full_entry_child(case: &str) {
         fail_result: case == "blocked-log-broken-output"
             || (disposition_case && case.contains("output")),
         fail_warning: case == "observer-warning-writer",
+        fail_stopped_warning: case.starts_with("phase-warning-"),
         summary_done: false,
         writes: 0,
         failures: 0,
@@ -1697,14 +1730,22 @@ fn full_entry_child(case: &str) {
         admitted_slots: vec![1],
     };
     let options = RunOptions {
-        json: !(disposition_case && case.contains("output")),
+        json: !(case.starts_with("phase-warning-")
+            || (disposition_case && case.contains("output"))),
         show_output: disposition_case && case.contains("output"),
         mode: Some(tape::Mode::Replay),
         cassette: Some(cassette.to_str().unwrap()),
         on_completion: Some(&observer),
         execution_cohort: (provider_case || disposition_case || capture_case).then_some(&cohort),
+        measurement_dir: (case == "phase-removed-cwd").then_some("../measurements"),
         ..Default::default()
     };
+    if case == "phase-removed-cwd" {
+        let cwd = root.join("empty-cwd");
+        std::fs::create_dir(&cwd).unwrap();
+        // This function runs only in the isolated libtest subprocess.
+        std::env::set_current_dir(cwd).unwrap();
+    }
     let result = run_mode(
         &config_path,
         config,
@@ -1712,6 +1753,21 @@ fn full_entry_child(case: &str) {
         &mut output,
         &Mutex::new(BTreeSet::new()),
     );
+    if phase_case {
+        // Preserve the owned red fixture and raw/frozen artifact evidence even
+        // when the publication assertions fail. No host namespace is touched.
+        std::mem::forget(fixture);
+        check_phase_completion(
+            case,
+            &root,
+            result,
+            &calls,
+            &counter,
+            observer.completed.load(Ordering::SeqCst),
+            output.failures,
+        );
+        return;
+    }
     if artifact_case {
         let error = result.unwrap_err().to_string();
         assert!(
@@ -2147,6 +2203,84 @@ fn full_entry_child(case: &str) {
             "never replace the blocking user directory"
         );
     }
+}
+
+fn check_phase_completion(
+    case: &str,
+    root: &Path,
+    result: Result<(), Error>,
+    calls: &Rc<RefCell<Vec<&'static str>>>,
+    counter: &Path,
+    completed: usize,
+    output_failures: usize,
+) {
+    let grade: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(root.join("workspace/phase-grade.json")).unwrap())
+            .unwrap();
+    assert_eq!(grade["status"], "completed");
+    if case.contains("native") {
+        assert!(grade["resolution"].is_null());
+        assert_eq!(grade["rewards"]["accuracy"], 0.5);
+    } else {
+        assert_eq!(grade["resolution"], !case.contains("false"));
+    }
+    assert_eq!(
+        calls.borrow().as_slice(),
+        ["evaluate", "finish", "provider-finish"]
+    );
+    assert_eq!(std::fs::read_to_string(counter).unwrap(), "called\n");
+    assert_eq!(
+        output_failures,
+        usize::from(case.starts_with("phase-warning-"))
+    );
+    let runs = replica::runtime_path(&root.join("workspace")).join("runs");
+    let attempts: Vec<_> = std::fs::read_dir(runs)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    assert_eq!(attempts.len(), 1);
+    let frozen = attempts[0].join("mini-swe/frozen-trajectory.json");
+    let log = root.join("run.jsonl");
+    let measured = root.join("measurements/run.json");
+    eprintln!(
+        "phase completion evidence: case={case} root={} grade={grade} calls={:?} result={result:?} log={} measurements={} handoff={} raw={}",
+        root.display(),
+        calls.borrow(),
+        log.is_file(),
+        measured.is_file(),
+        frozen.is_file(),
+        attempts[0].join("mini-swe/trajectory.json").is_file()
+    );
+    assert!(
+        log.is_file() && measured.is_file() && frozen.is_file(),
+        "post-grade failure must not bypass independent log/measurement publication or artifact handoff"
+    );
+    for path in [log, measured] {
+        let record: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        assert_eq!(record["benchmark_outcome"]["evaluation"], grade);
+        assert_eq!(record["workload_success"], grade["resolution"]);
+        assert_eq!(record["token_usage"]["total_tokens"], 34);
+        assert_eq!(record["steps"], 4);
+    }
+    if case.starts_with("phase-warning-") {
+        assert!(matches!(result, Err(Error::Io(_))), "{result:?}");
+    } else {
+        assert!(result.is_ok(), "{result:?}");
+    }
+    assert_eq!(completed, 1);
+    let outcomes: Vec<_> = std::fs::read_dir(root.join(".asb-completions"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    assert_eq!(outcomes.len(), 1);
+    let outcome: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&outcomes[0]).unwrap()).unwrap();
+    assert_eq!(outcome["scope"], "task-outcome-not-yet-a-resume-receipt");
+    assert_eq!(outcome["summary"]["benchmark_outcome"]["evaluation"], grade);
+    // A reporting-only outcome is not a sweep checkpoint/resume receipt. Actual
+    // repeated/sweep validation remains a separate matrix for the repair.
+    assert!(!root.join(".checkpoint").exists());
 }
 
 fn check_unmeasured_capture_sweep(
