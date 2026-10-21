@@ -210,6 +210,8 @@ fn daemon_logs_are_bounded_drained_private_and_not_overwritten() {
 }
 #[test]
 fn daemon_identity_checks_require_inherited_owned_lease_and_a_live_child() {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::fs::MetadataExt;
     for inherited in [false, true] {
         let fixture = Fixture::new();
         let lease = File::create(fixture.0.join("identity.lease")).unwrap();
@@ -218,13 +220,58 @@ fn daemon_identity_checks_require_inherited_owned_lease_and_a_live_child() {
             children: Arc::clone(&children),
             readers: Vec::new(),
         };
-        let mut command = Command::new("/bin/sleep");
-        command.arg("10");
+        let observation = fixture.0.join("post-exec-lease");
+        let expected = lease.metadata().unwrap();
+        let mut command = Command::new("python3");
+        command
+            .args([
+                "-I",
+                "-S",
+                "-B",
+                "-c",
+                r#"import json,os,signal,sys,time
+from pathlib import Path
+signal.alarm(10)
+try:
+    actual=os.fstat(int(sys.argv[1]))
+    retained=(actual.st_dev,actual.st_ino)==(int(sys.argv[2]),int(sys.argv[3]))
+except OSError:
+    retained=False
+receipt=Path(sys.argv[4])
+pending=receipt.with_name(receipt.name+'.pending')
+pending.write_text(json.dumps({'pid':os.getpid(),'retained':retained}))
+pending.replace(receipt)
+time.sleep(60)
+"#,
+            ])
+            .arg(lease.as_raw_fd().to_string())
+            .arg(expected.dev().to_string())
+            .arg(expected.ino().to_string())
+            .arg(&observation);
         if inherited {
             inherit_lease(&mut command, &lease);
         }
         children.lock().unwrap().push(command.spawn().unwrap());
         let service = fixture.service(Arc::clone(&children), lease);
+        // Observe the executable's own descriptor table before asserting its
+        // post-exec lease contract. Process creation alone is not our readiness
+        // protocol, and this test must not inspect a transient exec transition.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !observation.exists() {
+            assert!(
+                children.lock().unwrap()[0].try_wait().unwrap().is_none(),
+                "lease fixture exited before its post-exec observation"
+            );
+            assert!(
+                Instant::now() < deadline,
+                "lease fixture did not become ready"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let receipt: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(observation).unwrap()).unwrap();
+        assert_eq!(receipt["pid"], children.lock().unwrap()[0].id());
+        assert_eq!(receipt["retained"], inherited);
         let result = service.check_alive();
         if inherited {
             result.unwrap();

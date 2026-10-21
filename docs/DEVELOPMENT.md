@@ -208,6 +208,12 @@ the lease must be reacquirable while that incidental child remains alive. This
 deterministically covers a fork-before-exec inheritance window without relying
 on scheduling sleeps. Separate tests keep inherited ownership on uncertain
 cleanup and retain the unchanged owner-SIGKILL daemon-shutdown contract.
+The daemon-identity fixture separately waits for an atomically published,
+child-authored post-exec PID/descriptor observation before checking absent
+versus deliberately inherited lease descriptors. Process creation alone is
+not that observation: a spawn fast path can resume its parent during exec,
+before close-on-exec cleanup. Both live-child lease assertions and rejection
+of the subsequently reaped child remain mandatory; no tracing service runs.
 The ignored `live_perfetto_streaming_preserves_markers_beyond_the_service_ring_capacity`
 test writes fixed, non-secret marker pressure beyond the configured 128 MiB service
 buffer, then requires complete, loss-free capture and scoped agent measurements.
