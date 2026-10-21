@@ -22,6 +22,7 @@ class ConfiguredUserQualification(unittest.TestCase):
         from asb_execution import ExecutionError,ManagedDockerWorkspace
         from asb_runtime import bundle
         from asb_staging import prepare_guest_roots,root_execute,stage_runtime,upload
+        from asb_material_root import prepare as prepare_material
         binary = Path(os.environ["ASB_TEST_BENCHMARK_ASB"]).absolute()
         binary_hash = hashlib.sha256(binary.read_bytes()).hexdigest()
         sources = sorted((Path(__file__).parents[1]/"assets/benchmarks").glob("asb_*.py"))
@@ -40,7 +41,8 @@ class ConfiguredUserQualification(unittest.TestCase):
                     mem_limit=512*1024**2,nano_cpus=10**9,pids_limit=128)
                 container.start(); container.reload()
                 workspace = ManagedDockerWorkspace.attach(client,container,attempt,"/")
-                task = SimpleNamespace(workspace=workspace,attempt=attempt,artifacts=artifacts,
+                task = SimpleNamespace(client=client,workspace=workspace,attempt=attempt,artifacts=artifacts,
+                    cancelled=None,journal=SimpleNamespace(record=dict(resources=[]),labels=dict(container.attrs["Config"]["Labels"])),
                     invocation=dict(identity=dict(workload="terminal-bench-1.0",task_id="fixture",
                         attempt_id=attempt,dataset=None)))
                 def checked(arguments):
@@ -57,6 +59,16 @@ class ConfiguredUserQualification(unittest.TestCase):
                 # The capture-to-bootstrap handoff must verify and reuse bytes,
                 # not silently restage or chown an existing runtime.
                 self.assertEqual(stage_runtime(task,binary,files,checked,privileged,deadline=deadline),owner)
+                # The observer, unlike the client, must see protected root
+                # material. Its privilege is scoped to this owned fixture.
+                privileged(["/bin/sh","-c","mkdir -m 700 /root/asb-staging-fixture && printf initial > /root/asb-staging-fixture/input"])
+                with self.assertRaises(ExecutionError):checked(["cat","/root/asb-staging-fixture/input"])
+                sampler = prepare_material(task,[],binary,deadline)
+                baseline = sampler()
+                self.assertEqual(baseline,sampler())
+                privileged(["/bin/sh","-c","printf changed > /root/asb-staging-fixture/input"])
+                changed_material = sampler()
+                self.assertNotEqual(baseline["files"]["sha256"],changed_material["files"]["sha256"])
                 identity,receipt = prepare_guest_roots(task,owner,checked,privileged)
                 checked(["mkdir","-p","/opt/asb-project/.asb","/opt/asb-project/.asb-tools/pi/bin"])
                 upload(container,"/opt/asb-project/.asb",[("project.toml",
@@ -90,6 +102,8 @@ printf '%s\\n' '{"type":"result","result":"nonroot-root-cwd-fixture"}'
                 evidence = dict(scope="owned-container-nonroot-staging-fixture",
                     container=container.id,image=image.id,owner=owner,source_hashes=hashes,binary_sha256=binary_hash,
                     result=metadata,provider_called=False,original_sdk=False,grader_started=False)
+                evidence["protected_material"] = dict(baseline=baseline["files"]["sha256"],
+                    changed=changed_material["files"]["sha256"],configured_user_denied=True)
                 success = True
             finally:
                 if container is not None:

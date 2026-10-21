@@ -5,6 +5,7 @@ use std::path::Path;
 
 pub(crate) const PRIVATE: &str = "/opt/asb-private";
 const PREFIXES: [&str; 3] = ["/opt/asb-runtime", "/opt/asb-project", PRIVATE];
+#[cfg(target_os = "linux")]
 const RECEIPT: &str = ".asb-owner.json";
 
 pub(crate) fn contains_workspace(path: &Path) -> Result<bool, Error> {

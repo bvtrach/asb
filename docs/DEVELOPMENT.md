@@ -488,7 +488,10 @@ image with `/bin/sh`, `id`, `mkdir`, `tail` and `cat`), and
 `ASB_TEST_SWECATALOG_ROOT` (an evidence directory). Run it using a Python with
 Docker SDK installed. It uses an isolated networkless container, numeric nonroot
 UID/GID, the real guest driver and a fixture client at cwd `/`, with no provider
-or grading. It removes its successful container; a failed one is stopped and
+or grading. It also checks that protected root-owned material is unreadable by
+that client identity, is stable across privileged read-only observations, and
+changes its census fingerprint when the fixture controller edits its content.
+It removes its successful container; a failed one is stopped and
 preserved. `benchmark_live_sdk_session.py` additionally exercises the actual
 original SDK shell and root cwd, using the installed Terminal SDK/catalog.
 Both retain binary and all bundled Python source hashes. Neither is evidence of
