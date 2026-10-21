@@ -43,6 +43,15 @@ use std::process::ExitCode;
 /// Run the process CLI.
 #[must_use]
 pub fn entry(args: Vec<OsString>) -> ExitCode {
+    if args.first().is_some_and(|arg| arg == "__asb-staging") {
+        return workloads::staging::entry(&args[1..]);
+    }
+    if args.first().is_some_and(|arg| arg == "__asb-material") {
+        #[cfg(target_os = "linux")]
+        return workloads::census::entry(&args[1..]);
+        #[cfg(not(target_os = "linux"))]
+        return ExitCode::from(2);
+    }
     if args
         .first()
         .is_some_and(|arg| arg == "__asb-perfetto-probes")
@@ -154,10 +163,14 @@ mod adapter_layout_tests {
                 &[
                     "mod.rs",
                     "session.rs",
-                    "contracts.rs", // Generic module metadata and protocol schema.
-                    "outcome.rs",   // Generic evaluation, metric and lineage contract.
-                    "selection.rs", // Generic pre-execution catalog/identity contract.
-                    "recovery.rs",  // Generic attempt references and adapter dispatch.
+                    "material.rs",   // Generic bounded initial-file material identity.
+                    "census.rs",     // Descriptor-owned guest material observations.
+                    "attributes.rs", // Bounded visible Linux attribute observations.
+                    "contracts.rs",  // Generic module metadata and protocol schema.
+                    "selection.rs",  // Generic pre-execution catalog/identity contract.
+                    "recovery.rs",   // Generic attempt references and adapter dispatch.
+                    "outcome.rs",    // Generic evaluation, metric and lineage contract.
+                    "staging.rs",    // Fixed-prefix guest instrumentation ownership.
                     "controller.rs",
                     "remote.rs",
                     "relay.rs",

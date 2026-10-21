@@ -16,6 +16,8 @@ pub(super) struct NativePlan<'a> {
     pub project_root: &'a Path,
     pub project_config: &'a project::ProjectConfig,
     pub invocation: &'a workloads::session::TaskInvocation,
+    /// Explicit repeated attempts isolate agent state before adapter setup.
+    pub fresh_state: bool,
     pub route: NativeRoute<'a>,
 }
 
@@ -38,6 +40,7 @@ impl NativePlan<'_> {
             project_root,
             project_config,
             invocation,
+            fresh_state,
             route,
         } = self;
         let NativeRoute {
@@ -81,9 +84,17 @@ impl NativePlan<'_> {
             connection.as_ref().map(|connection| connection.interface),
         )?;
         let mut program = specification.program;
-        if let Some(local) = agents::resolve(&config.agent, project_root, &project_config.tools_dir)
-        {
-            program = local;
+        match agents::execution_lookup(&config.agent, project_root, &project_config.tools_dir) {
+            crate::executables::Lookup::Found(local) => {
+                program = local.to_string_lossy().into_owned();
+            }
+            crate::executables::Lookup::Missing => {}
+            crate::executables::Lookup::Unusable(path) => {
+                return Err(Error::Input(format!(
+                    "selected agent executable {} is not a usable executable file; repair the installation or explicit override before running",
+                    path.display()
+                )));
+            }
         }
         let launch = agents::find(&config.agent).map_or_else(
             || Ok(crate::launch::ProcessLaunch::new(&program)),
@@ -151,6 +162,9 @@ impl NativePlan<'_> {
             RUN_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         ));
         instrument_phase(measurements, LifecyclePhase::AgentPreparation, || {
+            if fresh_state {
+                agents::driver::prepare_fresh_state(&mut command, &run_dir.join("state"))?;
+            }
             if let Some(connection) = connection.as_ref() {
                 agents::prepare(
                     &config.agent,
@@ -195,6 +209,7 @@ impl PreparedNative {
         measurements: Option<&mut measurements::Session>,
         show_output: bool,
         output: &mut dyn Write,
+        launch: Option<&dyn workloads::session::LaunchReadiness>,
     ) -> Result<(ExecutionEvidence, AttemptIssues), Error> {
         // The process gate must execute the fully prepared command, not the
         // adapter's original executable. Some adapters (for example OpenJiuwen)
@@ -202,14 +217,17 @@ impl PreparedNative {
         // bypassing it at the gate would silently undo those fixes while still
         // appearing to attach collectors correctly.
         let target = self.route.target(&self.command);
-        let child = run_measured_agent_with_budget(
+        let child = run_measured_agent_with_launch(
             &mut self.command,
             &target,
             Some(self.route),
             measurements,
             show_output,
             output,
-            self.execution_budget,
+            NativeLaunch {
+                readiness: launch,
+                runtime: self.execution_budget,
+            },
         )?;
         Ok((
             ExecutionEvidence {
@@ -230,7 +248,117 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
 
     #[test]
+    fn codex_native_preference_retains_fresh_session_configuration() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/native-plan-fixtures")
+            .join(workloads::TaskIdentity::local("codex-native", None).attempt_id);
+        let adapter = agents::find("codex").unwrap();
+        let Some(tool) = adapter
+            .preferred_executables(&root.join("tools/codex"))
+            .into_iter()
+            .next()
+        else {
+            return; // The adapter declares no native package on this platform.
+        };
+        std::fs::create_dir_all(tool.parent().unwrap()).unwrap();
+        std::fs::write(&tool, "#!/bin/sh\nexit 99\n").unwrap();
+        std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let config: BenchmarkConfig = toml::from_str(
+            "agent='codex'\nprovider='openrouter'\nmodel='fixture'\nworkload='fixture'\n",
+        )
+        .unwrap();
+        let project = project::ProjectConfig {
+            tools_dir: "tools".into(),
+            ..Default::default()
+        };
+        let invocation = workloads::session::TaskInvocation {
+            identity: workloads::TaskIdentity::local("fixture", None),
+            input: "private fixture prompt".into(),
+            workspace: root.join("workspace"),
+        };
+        let connection = crate::endpoint::Connection {
+            interface: crate::endpoint::Interface::OpenAiResponses,
+            authentication: crate::endpoint::Authentication::Bearer,
+            base_url: "http://127.0.0.1:1/v1".into(),
+            credential: Some("asb-replay".into()),
+        };
+        let prepare = || {
+            NativePlan {
+                config_path: &root.join("benchmark.toml"),
+                config: &config,
+                project_root: &root,
+                project_config: &project,
+                invocation: &invocation,
+                fresh_state: true,
+                route: NativeRoute {
+                    connection: Some(&connection),
+                    provider_endpoint: Some(&connection.base_url),
+                    provider_credentials: None,
+                    tape_url: Some("http://127.0.0.1:1"),
+                    tape_mode: Some(tape::Mode::Replay),
+                },
+            }
+            .prepare(None)
+        };
+        let prepared = prepare().unwrap();
+        assert_eq!(
+            prepared.route.target(&prepared.command).program,
+            tool.canonicalize().unwrap().as_os_str()
+        );
+        let vars: std::collections::HashMap<_, _> = prepared.command.get_envs().collect();
+        let home = prepared.run_dir.join("state/home");
+        let codex_home = prepared.runtime_path.join("codex/config");
+        assert_eq!(vars[std::ffi::OsStr::new("HOME")], Some(home.as_os_str()));
+        assert_eq!(
+            vars[std::ffi::OsStr::new("CODEX_HOME")],
+            Some(codex_home.as_os_str())
+        );
+        assert!(home.is_dir());
+        assert!(codex_home.join("config.toml").is_file());
+        assert!(!codex_home.starts_with(&invocation.workspace));
+        assert_eq!(vars[std::ffi::OsStr::new("CODEX_SESSION_ID")], None);
+        let explicit = root.join("tools/codex/bin/codex");
+        std::fs::create_dir_all(explicit.parent().unwrap()).unwrap();
+        std::fs::write(&explicit, "#!/bin/sh\nexit 98\n").unwrap();
+        std::fs::set_permissions(&explicit, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let overridden = prepare().unwrap();
+        assert_eq!(
+            overridden.route.target(&overridden.command).program,
+            explicit.canonicalize().unwrap().as_os_str()
+        );
+        // A broken explicit override cannot silently choose the valid native package.
+        std::fs::set_permissions(&explicit, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(
+            prepare()
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("not a usable executable")
+        );
+        std::fs::remove_file(&explicit).unwrap();
+        // Nor may a broken native package become a host-PATH launch.
+        std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(
+            prepare()
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("not a usable executable")
+        );
+        std::fs::remove_file(&tool).unwrap();
+        let missing = prepare().unwrap();
+        assert_eq!(missing.route.target(&missing.command).program, "codex");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn prepared_command_keeps_adapter_wrapper_route_and_replay_guard_before_gating() {
+        for fresh_state in [false, true] {
+            prepared_command(fresh_state);
+        }
+    }
+
+    fn prepared_command(fresh_state: bool) {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../target/native-plan-fixtures")
             .join(workloads::TaskIdentity::local("native", None).attempt_id);
@@ -273,6 +401,7 @@ mod tests {
             project_root: &root,
             project_config: &project,
             invocation: &invocation,
+            fresh_state,
             route: NativeRoute {
                 connection: Some(&connection),
                 provider_endpoint: Some(&connection.base_url),
@@ -310,6 +439,14 @@ mod tests {
             Some(std::ffi::OsStr::new("127.0.0.1,localhost,::1"))
         );
         assert_eq!(vars[std::ffi::OsStr::new("CODEX_SESSION_ID")], None);
+        let home = vars.get(std::ffi::OsStr::new("HOME"));
+        if fresh_state {
+            let expected = prepared.run_dir.join("state/home");
+            assert_eq!(home, Some(&Some(expected.as_os_str())));
+            assert!(expected.is_dir());
+        } else {
+            assert!(home.is_none(), "legacy runs inherit the user's home");
+        }
         assert!(!prepared.run_dir.starts_with(&invocation.workspace));
         std::fs::remove_dir_all(root).unwrap();
     }

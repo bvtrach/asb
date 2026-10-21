@@ -4,33 +4,50 @@ No provider/agent registry lives here. Selection, package recipes, endpoint
 configuration and output interpretation remain in the same Rust adapters used
 by native execution. Host homes, venvs and project directories are not mounted.
 """
-import io
 from contextlib import ExitStack
 import hashlib
 import json
+import math
 from pathlib import Path
 import re
 import tarfile
 import tempfile
+import time
+import threading
 
 from asb_execution import ExecutionError
 from asb_runtime import bundle
+from asb_staging import upload, stage_runtime, root_execute, prepare_guest_roots
 from asb_relay import HostRelay, ForwardingCancellation, forward_request
 
 
-def upload(container, destination, files, temporary_dir=None):
-    with tempfile.TemporaryFile(dir=temporary_dir) as archive:
-        with tarfile.open(fileobj=archive, mode="w") as tar:
-            for name, content, mode in files:
-                entry = tarfile.TarInfo(name)
-                entry.size, entry.mode = len(content), mode
-                tar.addfile(entry, io.BytesIO(content))
-        archive.seek(0)
-        if not container.put_archive(destination, archive):
-            raise ExecutionError("could not stage the task's private runtime")
+class PreparationBudget:
+    """One bounded monotonic deadline shared by all launch preparation stages."""
+    def __init__(self, seconds):
+        if type(seconds) not in [int,float] or not math.isfinite(seconds) or not 0 < seconds <= 1800:
+            raise ExecutionError("invalid shared launch preparation budget")
+        self.deadline, self.active = time.monotonic()+seconds, True
+        self.on_failure, self.failed, self.lock = None, False, threading.Lock()
+
+    def remaining(self):
+        remaining = self.deadline-time.monotonic()
+        if remaining <= 0:
+            raise ExecutionError("shared launch preparation deadline exceeded")
+        return remaining
+
+    def expired(self):
+        return self.active and time.monotonic() >= self.deadline
+
+    def fail(self):
+        with self.lock:
+            notify = self.active and not self.failed
+            self.failed = True
+        if notify and self.on_failure is not None:
+            try:self.on_failure()
+            except BaseException:pass  # Notification must not skip settlement.
 
 
-def stage_public_cache(container, project, temporary_dir=None):
+def stage_public_cache(container, project, temporary_dir=None, owner=None):
     cache = project / ".asb-cache/npm/_cacache"
     if not cache.is_dir():
         return
@@ -48,13 +65,18 @@ def stage_public_cache(container, project, temporary_dir=None):
                         return  # Never stage a credential-bearing registry cache.
     with tempfile.TemporaryFile(dir=temporary_dir) as archive:
         with tarfile.open(fileobj=archive, mode="w") as tar:
-            tar.add(cache, arcname="npm/_cacache", recursive=True)
+            def ownership(entry):
+                if owner is not None:
+                    entry.uid,entry.gid = owner
+                    entry.uname,entry.gname = "",""
+                return entry
+            tar.add(cache, arcname="npm/_cacache", recursive=True,filter=ownership)
         archive.seek(0)
         if not container.put_archive("/opt/asb-project/.asb-cache", archive):
             raise ExecutionError("could not stage public package cache")
 
 
-def stage_bootstrap(task, plan, tools):
+def stage_bootstrap(task, plan, tools, owner=None):
     """Consume declared installer assets; never infer dependencies from names."""
     if (not isinstance(plan,dict) or not {"runtime_tools","assets"}.issubset(plan)
             or set(plan)-{"runtime_tools","assets","public_package_cache"}
@@ -92,7 +114,7 @@ def stage_bootstrap(task, plan, tools):
     for target in sorted({str(Path(name).parent) for name,_,_ in staged}):
         task.checked(["mkdir","-p",root+"/"+target])
     if staged:
-        upload(task.workspace.container,root,staged,temporary_dir=task.artifacts)
+        upload(task.workspace.container,root,staged,temporary_dir=task.artifacts,owner=owner)
     receipt = {"schema_version":1,"runtime_tools":runtimes,
                "assets":[{"target":name,"bytes":len(content),"sha256":hashlib.sha256(content).hexdigest()}
                          for name,content,_ in staged]}
@@ -102,7 +124,7 @@ def stage_bootstrap(task, plan, tools):
     return runtimes
 
 
-def prepare_agent(task, request, cancelled, resources=None, relays=None):
+def prepare_agent(task, request, cancelled, resources=None, relays=None, preparation_budget=None):
     """Install the exact selected client independently of provider execution."""
     guest = request.get("request")
     if not isinstance(guest, dict):
@@ -115,13 +137,19 @@ def prepare_agent(task, request, cancelled, resources=None, relays=None):
     if not (project / ".asb/project.toml").is_file():
         raise ExecutionError("host benchmark project is not initialized")
     container = task.workspace.container
+    check_budget = preparation_budget.remaining if preparation_budget else lambda:None
+    check_budget()
     files,receipt = bundle(request["binary"],getattr(task.workspace,"image_identity",{}).get("architecture"))
+    check_budget()
     runtime_receipt = task.artifacts / "runtime.json"
     runtime_receipt.write_text(json.dumps(receipt,sort_keys=True)+"\n")
     runtime_receipt.chmod(0o600)
-    task.checked(["mkdir", "-p", "/opt/asb-runtime/bin", "/opt/asb-runtime/lib", "/opt/asb-project/.asb",
-                  "/opt/asb-project/.asb-tools", "/opt/asb-project/.asb-cache"])
-    upload(container, "/opt/asb-runtime", files,temporary_dir=task.artifacts)
+    deadline = preparation_budget.deadline if preparation_budget else time.monotonic()+900
+    root_checked = lambda arguments:root_execute(task,arguments,deadline=deadline,cancelled=cancelled)
+    owner = stage_runtime(task,request["binary"],files,task.checked,root_checked,deadline=deadline,cancelled=cancelled)
+    task_identity,ownership = prepare_guest_roots(task,owner,task.checked,root_checked)
+    task.checked(["mkdir", "-m", "700", "/opt/asb-project/.asb", "/opt/asb-project/.asb-tools", "/opt/asb-project/.asb-cache"])
+    check_budget()
     configuration = request.get("project_configuration", "tools_dir='.asb-tools'\nworkloads_dir='workloads'\nworkspace_dir='workspace'\n")
     if not isinstance(configuration, str) or len(configuration.encode()) > 64 * 1024:
         raise ExecutionError("guest project configuration exceeds its limit")
@@ -139,15 +167,20 @@ def prepare_agent(task, request, cancelled, resources=None, relays=None):
     request = forward_request(dict(request, project_configuration=configuration), start_relay)
     configuration = request["project_configuration"]
     guest = request["request"]
-    upload(container, "/opt/asb-project/.asb", [("project.toml", configuration.encode(), 0o600)],temporary_dir=task.artifacts)
-    runtimes = stage_bootstrap(task,request.get("bootstrap"),tools)
+    guest = dict(guest,task_identity=task_identity,owned_instrumentation=ownership)
+    upload(container, "/opt/asb-project/.asb", [("project.toml", configuration.encode(), 0o600)],temporary_dir=task.artifacts,owner=owner)
+    runtimes = stage_bootstrap(task,request.get("bootstrap"),tools,owner=owner)
+    check_budget()
     if request["bootstrap"].get("public_package_cache",False):
-        stage_public_cache(container, project,temporary_dir=task.artifacts)
+        stage_public_cache(container, project,temporary_dir=task.artifacts,owner=owner)
+        check_budget()
     environment = request.get("environment", {})
     for selected in [*runtimes, tool]:
         result = task.workspace.execute(["/bin/sh", "-c", 'cd /opt/asb-project && exec /opt/asb-runtime/asb tool install "$1"', "asb", selected],
-                                        environment=environment, timeout=900, output_limit=256 * 1024,
-                                        cancelled=ForwardingCancellation(cancelled, relays))
+                                        environment=environment, timeout=min(900,preparation_budget.remaining()) if preparation_budget else 900, output_limit=256 * 1024,
+                                        cancelled=ForwardingCancellation(cancelled, relays),
+                                        on_preparation_failure=preparation_budget.fail if preparation_budget else None)
+        check_budget()
         for relay in relays:
             relay.check()
         for stream in ["stdout", "stderr"]:
@@ -166,15 +199,39 @@ def prepare_agent(task, request, cancelled, resources=None, relays=None):
     return guest,environment
 
 
-def execute_agent(task, request, before_resume, on_output, cancelled, on_ended=None):
+def execute_agent(task, request, before_resume, on_output, cancelled, on_ended=None, preparation_budget=None, on_preparation_failure=None):
     # The relay spans package installation AND agent execution and is closed
     # on success, cancellation and every preparation/execution exception.
+    seconds = request.get("preparation_seconds")
+    if preparation_budget is None and seconds is not None:
+        preparation_budget = PreparationBudget(seconds)
+    if preparation_budget is not None:
+        preparation_budget.on_failure = on_preparation_failure
+    upstream = cancelled
+    if preparation_budget is not None:
+        cancelled = ForwardingCancellation(lambda: preparation_budget.expired() or
+            (upstream.is_set() if upstream is not None else False), [])
     with ExitStack() as resources:
-        return _execute_agent(task, request, before_resume, on_output, cancelled, resources, [], on_ended)
+        try:
+            return _execute_agent(task, request, before_resume, on_output, cancelled, resources, [], on_ended, preparation_budget)
+        except BaseException:
+            if preparation_budget is not None:preparation_budget.fail()
+            raise
 
 
-def _execute_agent(task, request, before_resume, on_output, cancelled, resources, relays, on_ended):
-    guest,environment = prepare_agent(task,request,cancelled,resources,relays)
+def _execute_agent(task, request, before_resume, on_output, cancelled, resources, relays, on_ended, preparation_budget):
+    guest,environment = prepare_agent(task,request,cancelled,resources,relays,preparation_budget)
+    if preparation_budget is not None:
+        preparation_budget.remaining()
+        request = dict(request, preparation_deadline=preparation_budget.deadline,
+                       on_preparation_failure=preparation_budget.fail)
+    # Only final client execution uses a workload-owned launcher. Install and
+    # bootstrap commands remain ordinary managed Docker executions.
+    prepare_transport = getattr(task,"prepare_agent_transport",None)
+    transport = prepare_transport(request) if prepare_transport is not None else None
+    if preparation_budget is not None:preparation_budget.remaining()
+    if transport is not None:
+        guest = dict(guest,inherit_working_directory=transport.inherit_working_directory)
     container = task.workspace.container
     network = request.get("network")
     if network:
@@ -233,11 +290,16 @@ def _execute_agent(task, request, before_resume, on_output, cancelled, resources
                 raise ExecutionError("isolated process did not return valid measurement identity") from None
         if before_resume is not None:
             before_resume(target)
+        if preparation_budget is not None:
+            preparation_budget.remaining()
+            preparation_budget.active = False
     result = task.workspace.execute(["/opt/asb-runtime/asb", "__asb-agent"], environment=environment,
                                     timeout=request.get("timeout", getattr(task, "agent_timeout", 900)), output_limit=256 * 1024,
                                     gate="application", before_resume=attach,
-                                    preparation_timeout=90,
+                                    preparation_timeout=preparation_budget.remaining() if preparation_budget else 90,
+                                    on_preparation_failure=preparation_budget.fail if preparation_budget else None,
                                     on_output=on_output, cancelled=ForwardingCancellation(cancelled, relays),
+                                    transport_factory=transport,
                                     **lifetime_options)
     finish_execution(result)
     for relay in relays:

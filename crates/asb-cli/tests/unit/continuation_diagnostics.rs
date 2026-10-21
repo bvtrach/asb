@@ -189,8 +189,12 @@ fn a_failed_writer_does_not_mark_delivery_or_erase_the_primary_failure() {
         Err(Error::Run("original process or grader failure".into())),
         output,
     )
-    .unwrap_err()
-    .to_string();
+    .unwrap_err();
+    assert!(
+        matches!(error, Error::Io(_)),
+        "presentation failure must stop admission"
+    );
+    let error = error.to_string();
     assert!(error.contains("original process or grader failure"));
     assert!(error.contains("fixture writer closed"));
     let mut output = Vec::new();
