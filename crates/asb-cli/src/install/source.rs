@@ -71,12 +71,85 @@ impl Drop for Staging {
     }
 }
 
-struct DownloadChild(std::process::Child);
+struct DownloadChild {
+    child: Option<std::process::Child>,
+    reaper: crate::process_cleanup::OwnedReaper,
+}
+
+impl DownloadChild {
+    fn spawn(command: &mut Command, label: &str, dependency: Option<&str>) -> Result<Self, Error> {
+        // Establish fallback custody before admitting any external process.
+        let reaper = crate::process_cleanup::OwnedReaper::new("installation").map_err(Error::Io)?;
+        let child = command.logged_spawn().map_err(|error| match dependency {
+            Some(dependency) => super::missing_dependency(dependency, label, error),
+            None => Error::Io(format!("cannot start {label}: {error}")),
+        })?;
+        let owned = Self {
+            child: Some(child),
+            reaper,
+        };
+        #[cfg(all(test, target_os = "linux"))]
+        lifecycle_tests::record_admission(owned.child.as_ref().expect("admitted child").id());
+        Ok(owned)
+    }
+
+    fn child(&mut self) -> &mut std::process::Child {
+        self.child.as_mut().expect("owned installation child")
+    }
+
+    fn cleanup(&mut self) -> Result<(), Error> {
+        let Some(mut child) = self.child.take() else {
+            return Ok(());
+        };
+        if matches!(cleanup_poll(&mut child), Ok(Some(_))) {
+            return Ok(());
+        }
+        let _ = child.kill();
+        let timeout = Duration::from_secs(5);
+        #[cfg(all(test, target_os = "linux"))]
+        let timeout = lifecycle_tests::cleanup_timeout_override().unwrap_or(timeout);
+        let deadline = Instant::now() + timeout;
+        loop {
+            let reason = match cleanup_poll(&mut child) {
+                Ok(Some(_)) => return Ok(()),
+                Ok(None) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(25));
+                    continue;
+                }
+                Ok(None) => "child did not exit within five seconds".to_owned(),
+                Err(error) => format!("cannot confirm child exit: {error}"),
+            };
+            self.reaper.adopt(child);
+            return Err(Error::Io(format!(
+                "installation process cleanup was not confirmed: {reason}; an owned reaper retains the child"
+            )));
+        }
+    }
+
+    fn finish<T>(&mut self, result: Result<T, Error>) -> Result<T, Error> {
+        match (result, self.cleanup()) {
+            (result, Ok(())) => result,
+            (Ok(_), Err(cleanup)) => Err(cleanup),
+            (Err(error), Err(cleanup)) => Err(Error::Io(format!("{error}; {cleanup}"))),
+        }
+    }
+}
+
+fn cleanup_poll(
+    child: &mut std::process::Child,
+) -> std::io::Result<Option<std::process::ExitStatus>> {
+    #[cfg(all(test, target_os = "linux"))]
+    if let Some(result) = lifecycle_tests::cleanup_poll_override() {
+        return result;
+    }
+    child.try_wait()
+}
+
 impl Drop for DownloadChild {
     fn drop(&mut self) {
         // Every early failure owns exactly this subprocess, not a process group.
-        let _ = self.0.kill();
-        let _ = self.0.wait();
+        // Unwinding has the same bounded ownership handoff as ordinary errors.
+        let _ = self.cleanup();
     }
 }
 
@@ -134,14 +207,10 @@ fn download(
         .arg(staging)
         .arg(source);
     command.stdin(Stdio::null());
-    let mut child = DownloadChild(
-        command
-            .logged_spawn()
-            .map_err(|error| super::missing_dependency("curl", options.kind, error))?,
-    );
+    let mut child = DownloadChild::spawn(&mut command, options.kind, Some("curl"))?;
     let started = Instant::now();
-    loop {
-        let status = child.0.try_wait().map_err(|error| {
+    let result = (|| loop {
+        let status = child.child().try_wait().map_err(|error| {
             Error::Io(format!(
                 "cannot wait for {} download: {error}",
                 options.kind
@@ -171,7 +240,8 @@ fn download(
             )));
         }
         std::thread::sleep(Duration::from_millis(25));
-    }
+    })();
+    child.finish(result)
 }
 
 /// Check a staged pinned executable without an unbounded version subprocess.
@@ -180,20 +250,15 @@ pub(crate) fn check_executable_version(path: &Path, label: &str) -> Result<(), E
 }
 
 fn check_version_with_timeout(path: &Path, label: &str, timeout: Duration) -> Result<(), Error> {
-    let mut child = DownloadChild(
-        Command::new(path)
-            .arg("--version")
-            .stdin(Stdio::null())
-            .logged_spawn()
-            .map_err(|error| {
-                Error::Io(format!(
-                    "cannot start staged {label}: {error}; previous installation was preserved"
-                ))
-            })?,
-    );
+    let mut child = DownloadChild::spawn(
+        Command::new(path).arg("--version").stdin(Stdio::null()),
+        &format!("staged {label}"),
+        None,
+    )
+    .map_err(|error| Error::Io(format!("{error}; previous installation was preserved")))?;
     let started = Instant::now();
-    loop {
-        if let Some(status) = child.0.try_wait().map_err(crate::io_error)? {
+    let result = (|| loop {
+        if let Some(status) = child.child().try_wait().map_err(crate::io_error)? {
             return if status.success() {
                 Ok(())
             } else {
@@ -208,7 +273,8 @@ fn check_version_with_timeout(path: &Path, label: &str, timeout: Duration) -> Re
             )));
         }
         std::thread::sleep(Duration::from_millis(25));
-    }
+    })();
+    child.finish(result)
 }
 
 pub(super) fn install(
@@ -298,3 +364,6 @@ fn install_with_timeout(
 
 #[cfg(all(test, unix))]
 mod publication_tests;
+
+#[cfg(all(test, target_os = "linux"))]
+mod lifecycle_tests;

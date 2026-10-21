@@ -7,9 +7,9 @@ const CHILD: &str = "ASB_SOURCE_PUBLICATION_CHILD";
 const OLD: &[u8] = b"#!/bin/sh\nprintf 'old tool\\n'\n";
 const NEW: &[u8] = b"#!/bin/sh\nprintf 'new tool\\n'\n";
 
-struct Fixture(PathBuf);
+pub(super) struct Fixture(pub(super) PathBuf);
 impl Fixture {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         let path = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../target/publication-fixtures")
             .join(tools::runtime::unique_id());
@@ -82,7 +82,7 @@ esac
         command
     }
 
-    fn run(&self, case: &str) {
+    pub(super) fn run(&self, case: &str) {
         let output = self.command(case).output().unwrap();
         assert!(
             output.status.success(),
@@ -190,7 +190,7 @@ fn options<'a>(kind: &'a str, checksum: Option<&'a str>, limit: u64) -> Options<
     }
 }
 
-fn assert_old_ready(root: &Path, destination: &Path) {
+pub(super) fn assert_old_ready(root: &Path, destination: &Path) {
     assert_eq!(fs::read(destination).unwrap(), OLD);
     assert_eq!(
         fs::metadata(destination).unwrap().permissions().mode() & 0o777,
@@ -202,7 +202,7 @@ fn assert_old_ready(root: &Path, destination: &Path) {
     ));
 }
 
-fn no_scratch(destination: &Path) {
+pub(super) fn no_scratch(destination: &Path) {
     assert!(
         fs::read_dir(destination.parent().unwrap())
             .unwrap()
@@ -221,6 +221,11 @@ fn publication_fixture_child() {
     };
     let root = PathBuf::from(std::env::var_os("ASB_FIXTURE_ROOT").unwrap());
     let destination = root.join("tools/perf/bin/perf");
+    #[cfg(target_os = "linux")]
+    if case.starts_with("lifecycle-") {
+        super::lifecycle_tests::run_case(&root, &destination, &case);
+        return;
+    }
     match case.as_str() {
         "failures" => {
             for (source, limit, checksum, expected) in [

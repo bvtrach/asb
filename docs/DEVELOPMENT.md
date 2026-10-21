@@ -46,6 +46,17 @@ prevent the fast-forward, and no stash is automatically discarded.
 
 These checks are offline: replay tests start the embedded tape proxy and test
 clients on loopback, but CI never starts a real agent, bridge, or live provider.
+`cargo test --locked --offline --lib install::source` checks atomic installation
+with local fake downloads and version probes. The shared private `OwnedReaper`
+is established fallibly before each downloader or version subprocess starts.
+Normal errors and unwinding bound the caller's cleanup wait; an unconfirmed
+direct child transfers to that already-owned worker rather than being dropped
+or delaying the caller indefinitely. Uncertain cleanup prevents publication
+and preserves the original failure alongside its cleanup diagnostic. Worker
+creation failure launches no tool. Linux-only deterministic fault fixtures
+verify pending/error handoff, idle-worker exit, pidfd-backed reaping, unrelated
+sentinel survival and unchanged previously installed bytes/mode. No network,
+host settings or arbitrary descendant-tree supervision is involved.
 `cargo test --locked --offline --lib publication_tests` exercises source-file
 publication with an offline fake curl executable and real SHA-256 computation.
 It checks partial HTTP failures, empty/oversized bodies, checksum/probe failures,
