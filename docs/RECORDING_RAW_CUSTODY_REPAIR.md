@@ -90,4 +90,34 @@ post-unlink synchronization distinctions. A real CLI test records true/false
 local file grades using a bounded synthetic loopback provider, verifies immutable
 track evidence after raw consumption and then replays with that provider closed.
 This is not an original external SDK or live-provider qualification. Fresh
-focused build/test/lint evidence and independent source review are pending.
+focused evidence is recorded below; current-main integration, full qualification
+and delivery remain pending.
+
+## Focused source qualification
+
+Root independently source-reviewed signed `bffdfbaa` and the small OS-cause
+follow-up `85f73781`. The latter retains the actual failed `renameat` error
+alongside the source-not-consumed diagnostic; a real missing-source regression
+checks ENOENT and original survival. Version remains the baseline 0.2.32, not a
+reserved new release slot. The first implementation build failed on a
+`CString::new` error-conversion type mismatch; the specific conversion was fixed
+before the signed source candidate. Its failed transcript remains in
+`target/recording-raw-green-build.log`, not recast as a passing build.
+
+After building the actual ASB first at `85f73781`, the offline focused matrix
+passed **196 tests**, zero failed, with three explicit optional runner skips:
+runner 118, complete repeated-run target 30, cassette 46 and capture-session two.
+This includes the original three-window red case now green, custody failure and
+unwind fixtures, actual true/false record/replay and existing capture/report/
+typed-disposition/grade/recording-association regressions. Strict workspace,
+all-target, all-feature Clippy and formatting checks passed. All runtime handles
+were terminal before linting; source and actual executable remained frozen.
+The before/after actual ASB SHA-256 is
+`622ef8a7b3537b38b237cd7eea4d0d5cd48c99652c5128a6f5a8d40eb4f21801`.
+Logs and hash records are `target/recording-raw-cause-*`; earlier green `bffdfbaa`
+checks remain separate in `target/recording-raw-final-*`. Original red logs and
+source heads are retained. Only the allocated BPF target cache was used.
+
+No full suite, current-main integration qualification, Windows/native-other-Unix
+runtime qualification, hosted/package CI, PR, merge, push or release is claimed.
+This documentation checkpoint changes no production or test bytes.
