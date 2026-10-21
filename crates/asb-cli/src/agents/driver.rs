@@ -295,7 +295,7 @@ fn prepare(request: &GuestRequest) -> Result<PreparedGuest, Error> {
         interface: Some(request.connection.interface),
         prompt: &request.prompt,
     });
-    let mut command = adapter.process(&program)?;
+    let mut command = adapter.process(&program)?.direct();
     command.args(specification.args);
     if specification.append_prompt {
         command.arg(&request.prompt);
@@ -366,7 +366,7 @@ fn run(request: GuestRequest) -> Result<u8, Error> {
             &request.namespace_collectors,
         )
         .map_err(Error::Run)?;
-        session.agent_launch_prepared(&command);
+        session.agent_launch_prepared(&crate::launch::TargetLaunch::direct(&command));
         session.attach_pid(std::process::id()).map_err(Error::Run)?;
         Some(session)
     };

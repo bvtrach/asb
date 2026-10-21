@@ -1,43 +1,50 @@
 use super::*;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 #[test]
-fn install_preserves_explicit_argument_environment_and_removal_contracts() {
+fn gate_command_preserves_explicit_argument_environment_and_removal_contracts() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../target/gate-fixtures")
         .join(crate::workloads::TaskIdentity::local("fixture", None).attempt_id);
     fs::create_dir_all(&root).unwrap();
     let gate = root.join("mock-gate");
-    fs::write(&gate,"#!/bin/sh\n[ \"$1\" = __asb-gate ] || exit 11\n[ \"$2\" = fixture-client ] || exit 12\n[ \"$3\" = 'argument with spaces' ] || exit 13\n[ \"$4\" = 'literal;$value' ] || exit 14\n[ \"$ASB_GATE_FIXTURE\" = 'explicit-value' ] || exit 15\n[ -z \"${HOME+x}\" ] || exit 16\n[ -n \"$ASB_GATE_OWNER_PID\" ] || exit 17\nprintf 'fixture gate accepted\\n'\n").unwrap();
+    fs::write(
+        &gate,
+        r#"#!/bin/sh
+[ "$1" = __asb-gate ] || exit 11
+[ "$2" = --asb-launch-v1 ] || exit 12
+[ "$3" = 0 ] || exit 13
+[ "$4" = fixture-client ] || exit 14
+[ "$5" = 'argument with spaces' ] || exit 15
+[ "$6" = 'literal;$value' ] || exit 16
+[ "$ASB_GATE_FIXTURE" = 'explicit-value' ] || exit 17
+[ -z "${HOME+x}" ] || exit 18
+printf 'fixture gate accepted\n'
+"#,
+    )
+    .unwrap();
     fs::set_permissions(&gate, fs::Permissions::from_mode(0o700)).unwrap();
-    let mut command = Command::new("unused-original-program");
+    let mut launch = crate::launch::ProcessLaunch::new("fixture-client");
+    launch.arg("argument with spaces").arg("literal;$value");
+    let (mut command, _) = launch.native(Some(&gate));
     command
         .env("ASB_GATE_FIXTURE", "explicit-value")
         .env_remove("HOME");
-    install(
-        &mut command,
-        &gate,
-        "fixture-client",
-        &["argument with spaces".into(), "literal;$value".into()],
-    );
     let output = command.output().unwrap();
     assert!(output.status.success(), "{:?}", output.status);
     assert_eq!(output.stdout, b"fixture gate accepted\n");
-    let mut invalid = Command::new("unused-original-program");
-    install(
-        &mut invalid,
-        &gate,
-        "fixture-client",
-        &["invalid\0argument".into()],
-    );
+    let mut launch = crate::launch::ProcessLaunch::new("fixture-client");
+    launch.arg("invalid\0argument");
+    let (mut invalid, _) = launch.native(Some(&gate));
     assert_eq!(
         invalid.spawn().unwrap_err().kind(),
         io::ErrorKind::InvalidInput
     );
-    let mut missing = Command::new("unused-original-program");
-    install(&mut missing, &root.join("missing"), "fixture-client", &[]);
+    let (mut missing, _) =
+        crate::launch::ProcessLaunch::new("fixture-client").native(Some(&root.join("missing")));
     assert_eq!(missing.spawn().unwrap_err().kind(), io::ErrorKind::NotFound);
     fs::remove_dir_all(root).unwrap();
 }
