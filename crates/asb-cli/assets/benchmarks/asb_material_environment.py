@@ -109,7 +109,7 @@ def capture(task, definition, exclusions, binary, deadline):
             private[role] = {"id":resource.id,"image":attrs.get("Image"),
                 "pid":attrs.get("State",{}).get("Pid"),"files":raw_files,
                 "raw":canonical_digest({"config":attrs.get("Config"),"host":attrs.get("HostConfig"),
-                    "networks":attrs.get("NetworkSettings"),"mounts":attrs.get("Mounts")},"asb-private-service-runtime-v1")}
+                    "networks":attrs.get("NetworkSettings"),"mounts":mounts},"asb-private-service-runtime-v1")}
         if used_volumes != set(volume_attributes):
             raise MaterialError("prepared environment has an unobserved declared volume")
         for left,a in enumerate(source_list):

@@ -537,11 +537,60 @@ it used a known repair, not an AI-generated solution.
 
 The opt-in repeated fixture also accepts `ASB_TEST_BENCHMARK_SUITE` values
 `terminal-bench-1.0` and `terminal-bench-2.1`. Initial qualification exposed
-remaining failures before agent launch: 1.0's prepared census encounters SDK
-tmux/session instrumentation, while 2.1 reports mutation within a complete
-service round. These failures remain open and are not grounds for skipping
-material checks. Cross-service disjoint bind alias coverage also remains open.
-Focused SWE-bench/composer successes do not qualify these other SDK classes.
+failures before agent launch: 1.0's prepared census encountered SDK tmux/session
+instrumentation, while 2.1 reported mutation within a complete service round.
+Subsequent cross-slot comparison also exposed physical subnet keys in allocator
+status. These failures were repaired below, without skipping material checks.
+Cross-service disjoint bind alias coverage remains open. Representative SDK
+successes do not establish full-catalog or same-shell task support.
+
+The subsequent repairs address demonstrated causes, not broad exclusions.
+Terminal 1.0 tasks declaring `run_tests_in_same_shell: false` do not create an
+unused agent tmux/asciinema session: their verifier already creates its own test
+session. True declarations retain the original configured-user session. This
+does not establish full client/verifier same-shell integration for those tasks.
+Fresh lifecycle tests check both declarations and the exact session passed to
+the official grading method.
+
+Docker inspect mount enumeration is unordered. The private runtime witness now
+uses the same validated, destination-sorted mount list as the topology composer;
+source, access and all admitted mount fields remain bound. Regressions reorder
+mounts during a complete round and separately reject source/access mutations.
+
+The [Moby network status API](https://pkg.go.dev/github.com/moby/moby/api@v1.56.1/types/network)
+also keys allocator counters by actual subnet. Owned-network status validates
+exact pool correspondence and bounded unsigned counters, then tags only
+positively automatic subnet keys with their existing role/family/prefix identity.
+Explicit pools and counters remain observable; older missing/null status does
+not become fabricated zeroes. The private owned-network observation still
+detects status mutation within a round. On Docker's externally shared bridge,
+aggregate status is excluded before copying or hashing, like foreign membership:
+it describes unrelated peer allocation, not our owned endpoint or configuration.
+With one unchanged binary, both original Terminal SDK public repeat-two/
+concurrency-two qualifications now pass: four distinct attempts, eight synthetic
+loopback inference calls, four official resolved grades and confirmed cleanup
+per SDK. The representative tasks are 1.0 `hello-world` (separate verifier shell)
+and 2.1 `cancel-async-tasks`. Known repair commands qualify execution/grading,
+not AI solving. Other explicit feature requirements remain open.
+
+### Remaining cross-service bind alias component
+
+Reuse the existing bounded multi-root Rust census rather than inventing an inode
+transport. A joint observation of verified local, owned bind sources can retain
+file-level hardlink relationships across service roots alongside the existing
+guest-visible content scans. Order logical roots by qualified service/destination,
+not random source paths; keep a binding-to-root/view map and private expected
+inode witnesses. Reverify ownership, nofollow source chains and daemon locality
+around observations, bracketing the complete guest rounds with one shared budget.
+
+Exact-source deduplication must preserve guest visibility. Bindings can hide
+different subtrees behind nested mounts: prove identical views before merging or
+construct a union-visible view that excludes only subtrees hidden in every view.
+Do not hash arbitrary hidden host files. Retain all per-binding visibility and
+mount relationships. Test cross-service hardlinks versus independent equal bytes,
+alias mutation, nested roots/views, replaced/symlink sources, remote daemons,
+aggregate exhaustion/cancellation and actual owned fixture cleanup. This component
+is still a design, not implemented coverage.
 
 ## Current test coverage
 

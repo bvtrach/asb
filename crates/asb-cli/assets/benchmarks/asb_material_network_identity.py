@@ -75,6 +75,30 @@ def _aliases(values, explicit, generated):
         else generated[value] for value in values]
 
 
+def _status(value, pools, role):
+    """Bind Moby IPAM counters to positively observed pools, not physical names."""
+    if value is None:
+        return None
+    _require(isinstance(value,dict) and set(value) == {"IPAM"})
+    ipam = value["IPAM"]
+    _require(isinstance(ipam,dict) and set(ipam) == {"Subnets"})
+    subnets = ipam["Subnets"]
+    _require(isinstance(subnets,dict) and len(subnets) == len(pools))
+    actual = {}
+    for name,counts in subnets.items():
+        subnet = ipaddress.ip_network(name)
+        _require(subnet not in actual and isinstance(counts,dict)
+            and set(counts) == {"IPsInUse","DynamicIPsAvailable"}
+            and all(type(count) is int and 0 <= count <= 2**64-1 for count in counts.values()))
+        actual[subnet] = counts
+    _require(set(actual) == {subnet for subnet,_gateway,_automatic in pools})
+    result = []
+    for subnet,_gateway,automatic in pools:
+        result.append({"subnet":{"automatic_pool":role,"family":subnet.version,"prefix":subnet.prefixlen}
+            if automatic else str(subnet),"statistics":copy.deepcopy(actual[subnet])})
+    return {"IPAM":{"Subnets":result}}
+
+
 def canonicalize(snapshot):
     """Validate intent and derive logical topology plus scoped generated maps.
 
@@ -121,6 +145,9 @@ def _canonicalize(snapshot):
             _require(options[bridge_key] == "br-"+attrs["Id"][:12])
             selected["Options"][bridge_key] = {"automatic_bridge":role}
         selected["IPAM"],pools = _pools(role,definition,attrs,automatic=not shared)
+        if "Status" in selected:
+            _require(not shared)
+            selected["Status"] = _status(selected["Status"],pools,role)
         endpoints,used_addresses,used_macs = {},set(),set()
         for service,endpoint in sorted(item["endpoints"].items()):
             intent = snapshot["attachments"][service][role] or {}

@@ -134,6 +134,13 @@ class DirectTests(unittest.TestCase):
         network.attrs["Attachable"] = False
         self.assertNotEqual(public,canonicalize(self.observe(task))[0])
 
+    def test_shared_aggregate_allocation_counters_are_not_owned_endpoint_state(self):
+        task,network,_ = self.fixture()
+        baseline = self.observe(task)
+        network.attrs["Status"] = ForeignMembers({"IPAM":{"Subnets":{
+            "192.0.2.0/24":{"IPsInUse":55,"DynamicIPsAvailable":201}}}})
+        self.assertEqual(baseline,self.observe(task))
+
     def test_private_create_digest_and_attempt_names_do_not_enter_public_identity(self):
         task,_,_ = self.fixture()
         first = self.observe(task)

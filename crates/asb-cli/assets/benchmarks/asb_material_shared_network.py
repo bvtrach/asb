@@ -63,7 +63,9 @@ def observe(task, receipt, services, primary, deadline):
                 if (type(endpoint.get(prefix)) is not int
                         or endpoint[prefix] != ipaddress.ip_interface(member[member_key]).network.prefixlen):
                     raise MaterialError("owned shared-bridge endpoint prefixes disagree")
-        selected = {key:copy.deepcopy(value) for key,value in metadata.items() if key != "Containers"}
+        # Aggregate allocator counters describe all peers on this external
+        # bridge. Like membership itself, they are outside own-endpoint scope.
+        selected = {key:copy.deepcopy(value) for key,value in metadata.items() if key not in ["Containers","Status"]}
         canonical_digest(selected,"asb-private-shared-bridge-config-v1")
         result = {"primary":primary,"service_intent":copy.deepcopy(receipt["services"]),
             "services":{"main":service.id},"modes":{"main":mode},

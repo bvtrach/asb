@@ -24,10 +24,14 @@ class IdentityTests(unittest.TestCase):
 
     def test_automatic_pool_endpoint_mac_and_owned_names_normalize_across_fresh_attempts(self):
         first = self.snapshot()
+        first["networks"]["private"]["attributes"]["Status"] = {"IPAM":{"Subnets":{
+            "192.0.2.0/24":{"IPsInUse":5,"DynamicIPsAvailable":251}}}}
         changed = copy.deepcopy(first)
         network = changed["networks"]["private"]
         network["attributes"].update(Id="f"*64,Name="new-owned-network",Created="later")
         network["attributes"]["IPAM"]["Config"] = [{"Subnet":"198.51.100.0/24","Gateway":"198.51.100.1"}]
+        network["attributes"]["Status"]["IPAM"]["Subnets"] = {
+            "198.51.100.0/24":{"IPsInUse":5,"DynamicIPsAvailable":251}}
         for index,(role,endpoint) in enumerate(network["endpoints"].items()):
             identity = str(index+7)*64
             changed["services"][role] = identity
@@ -38,6 +42,41 @@ class IdentityTests(unittest.TestCase):
                 MacAddress="02:00:00:00:00:0"+str(index+1),Aliases=[role,"new-owned-"+role])
         self.assertEqual(canonicalize(first)[0],canonicalize(changed)[0])
         self.assertNotEqual(canonicalize(first)[1],canonicalize(changed)[1],"private raw address maps stay scoped")
+
+    def test_owned_status_requires_exact_pools_and_bounded_counters(self):
+        value = self.snapshot()
+        attrs = value["networks"]["private"]["attributes"]
+        stats = {"IPsInUse":5,"DynamicIPsAvailable":251}
+        attrs["Status"] = {"IPAM":{"Subnets":{"192.0.2.0/24":stats}}}
+        baseline,_ = canonicalize(value)
+        stats["IPsInUse"] = 6
+        self.assertNotEqual(baseline,canonicalize(value)[0])
+        for bad in [{"192.0.3.0/24":stats},{},
+                    {"192.0.2.0/24":{"IPsInUse":True,"DynamicIPsAvailable":251}},
+                    {"192.0.2.0/24":{"IPsInUse":-1,"DynamicIPsAvailable":251}},
+                    {"192.0.2.0/24":{"IPsInUse":5,"DynamicIPsAvailable":2**64}},
+                    {"192.0.2.0/24":{"IPsInUse":5,"DynamicIPsAvailable":251,"unknown":0}}]:
+            attrs["Status"]["IPAM"]["Subnets"] = bad
+            with self.subTest(bad=bad),self.assertRaises(MaterialError):
+                canonicalize(value)
+
+    def test_older_status_absence_is_not_fabricated_as_zero(self):
+        value = self.snapshot()
+        missing,_ = canonicalize(value)
+        self.assertNotIn("Status",missing["networks"]["private"]["configuration"])
+        value["networks"]["private"]["attributes"]["Status"] = None
+        null,_ = canonicalize(value)
+        self.assertIsNone(null["networks"]["private"]["configuration"]["Status"])
+        self.assertNotEqual(missing,null)
+
+    def test_explicit_status_pool_remains_literal(self):
+        value = self.snapshot()
+        network = value["networks"]["private"]
+        network["definition"]["ipam"] = {"config":[{"subnet":"192.0.2.0/24"}]}
+        network["attributes"]["Status"] = {"IPAM":{"Subnets":{
+            "192.0.2.0/24":{"IPsInUse":5,"DynamicIPsAvailable":251}}}}
+        public,_ = canonicalize(value)
+        self.assertIn("192.0.2.0/24",str(public["networks"]["private"]["configuration"]["Status"]))
 
     def test_explicit_subnet_gateway_and_auxiliary_addresses_remain_literal_and_checked(self):
         value = self.snapshot()
@@ -127,6 +166,9 @@ class IdentityTests(unittest.TestCase):
         network = value["networks"]["private"]
         network["definition"]["enable_ipv6"] = network["attributes"]["EnableIPv6"] = True
         network["attributes"]["IPAM"]["Config"].append({"Subnet":"2001:db8::/64","Gateway":"2001:db8::1"})
+        network["attributes"]["Status"] = {"IPAM":{"Subnets":{
+            "192.0.2.0/24":{"IPsInUse":5,"DynamicIPsAvailable":251},
+            "2001:db8::/64":{"IPsInUse":4,"DynamicIPsAvailable":2**64-4}}}}
         for index,endpoint in enumerate(network["endpoints"].values()):
             endpoint.update(GlobalIPv6Address="2001:db8::"+str(index+2),
                 GlobalIPv6PrefixLen=64,IPv6Gateway="2001:db8::1")
@@ -136,7 +178,15 @@ class IdentityTests(unittest.TestCase):
         first = self.dual_stack()
         changed = copy.deepcopy(first)
         changed["networks"]["private"]["attributes"]["IPAM"]["Config"].reverse()
+        statuses = changed["networks"]["private"]["attributes"]["Status"]["IPAM"]["Subnets"]
+        changed["networks"]["private"]["attributes"]["Status"]["IPAM"]["Subnets"] = dict(reversed(list(statuses.items())))
         self.assertEqual(canonicalize(first)[0],canonicalize(changed)[0])
+        invalid = copy.deepcopy(changed)
+        invalid["networks"]["private"]["attributes"]["Status"]["IPAM"]["Subnets"] = {
+            name:{"IPsInUse":4,"DynamicIPsAvailable":2**64-4}
+            for name in ["2001:db8::/64","2001:0db8::/64"]}
+        with self.assertRaises(MaterialError):
+            canonicalize(invalid)
         endpoints = list(changed["networks"]["private"]["endpoints"].values())
         endpoints[0]["GlobalIPv6Address"] = "2001:db8::2"
         endpoints[1]["GlobalIPv6Address"] = "2001:0db8:0000:0000:0000:0000:0000:0002"

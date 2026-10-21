@@ -144,6 +144,31 @@ class EnvironmentTests(unittest.TestCase):
         independent,_ = self.capture(self.fixture("b",volumes="independent"))
         self.assertNotEqual(shared,independent)
 
+    def test_daemon_mount_enumeration_order_is_not_runtime_mutation(self):
+        import copy
+        task = self.fixture(volumes="independent")
+        resources = list(task.client.containers.values.values())
+        for resource,other in zip(resources,reversed(resources)):
+            mount = copy.deepcopy(other.attrs["Mounts"][0])
+            mount["Destination"] = "/other"
+            resource.attrs["Mounts"].append(mount)
+        baseline,_ = self.capture(task)
+        def reorder(_task,role,_events):
+            resource = next(item for item in resources if item.name.endswith("-"+role))
+            resource.attrs["Mounts"].reverse()
+        observed,_ = self.capture(task,reorder)
+        self.assertEqual(baseline,observed)
+
+    def test_mount_source_and_access_mutations_are_not_enumeration_changes(self):
+        for key,value in [("Source","/changed-storage"),("RW",False)]:
+            with self.subTest(key=key):
+                task = self.fixture(volumes="shared")
+                def mutate(_task,role,_events):
+                    if role == "main":
+                        task.workspace.container.attrs["Mounts"][0][key] = value
+                with self.assertRaisesRegex(MaterialError,"complete service round"):
+                    self.capture(task,mutate)
+
     def test_single_network_none_binds_runtime_files_and_configuration(self):
         task = self.fixture(single=True)
         baseline,events = self.capture(task)

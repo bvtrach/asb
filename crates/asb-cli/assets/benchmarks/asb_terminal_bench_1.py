@@ -260,9 +260,15 @@ class TerminalBenchTask:
         self.artifacts = Path(artifacts).absolute()
         self.attempt = "asb-" + uuid.uuid4().hex
         self.workspace, self.terminal, self.invocation = None, None, None
+        self.agent_session = None
         self.cancelled = None
         self.interrupted = False
         self.journal = None
+
+    def prepare_agent_session(self):
+        """Create an SDK shell only when the task actually requires sharing it."""
+        if self.handler.task.run_tests_in_same_shell:
+            self.agent_session = self.terminal.create_session("agent", as_configured_user=True)
 
     @quiet_sdk
     def __enter__(self):
@@ -383,7 +389,7 @@ class TerminalBenchTask:
             self.original_networks = original_networks(container)
             self.workspace = ManagedDockerWorkspace.attach(self.client, container, self.attempt,
                 container.attrs["Config"].get("WorkingDir") or "/")
-            self.agent_session = self.terminal.create_session("agent", as_configured_user=True)
+            self.prepare_agent_session()
             definition_sha = hashlib.sha256(json.dumps(tree_manifest(self.definition), sort_keys=True).encode()).hexdigest()
             self.invocation = {"identity":{"workload":"terminal-bench-1.0", "task_id":self.task_id,
                 "attempt_id":self.attempt, "dataset":self.catalog["dataset"]}, "prompt":self.handler.instruction,
