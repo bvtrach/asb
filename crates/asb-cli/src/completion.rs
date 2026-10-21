@@ -163,6 +163,7 @@ mod tests {
 #[cfg(test)]
 mod coverage_tests {
     use super::*;
+    use crate::install;
 
     #[test]
     fn both_shells_publish_core_commands_registry_tools_and_stable_output() {
