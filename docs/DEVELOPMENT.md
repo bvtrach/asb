@@ -158,6 +158,15 @@ ordinary CI: service fixtures use local Unix sockets and mock daemons, check
 creator-thread exit, owner-process death, failed-client isolation, lease lifetime,
 and bounded log draining. Actual overlapping captures remain an opt-in local
 qualification; mock ownership tests do not prove real scheduler coverage.
+The ignored `live_perfetto_streaming_preserves_markers_beyond_the_old_ring_capacity`
+test writes fixed, non-secret marker pressure beyond the old 64 MiB service
+buffer, then requires complete, loss-free capture and scoped agent measurements.
+The ordinary offline coverage fixtures reject missing/duplicate boundaries,
+data loss and malformed processor output. The ignored
+`real_processor_validates_success_failure_and_duplicate_terminal_order` test
+uses synthetic JSON traces and the installed trace processor without kernel
+tracing; it checks normal completion, failed-then-finishing and failed-only
+termination, rejecting reversed or duplicate terminal markers.
 The separate ignored `real_trace_processor_verifies_synthetic_marker_capture`
 test uses the same tool path but only reads a synthetic trace; it does not
 start tracing or require tracing privileges.

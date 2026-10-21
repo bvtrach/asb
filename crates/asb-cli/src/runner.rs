@@ -1955,7 +1955,7 @@ mod tests {
         let dir = std::env::var_os("ASB_TEST_PERFETTO_OUTPUT")
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|| tools.parent().unwrap().join("trace-test-output"));
-        capture_perfetto_fixture(&tools, &dir, false, None);
+        capture_perfetto_fixture(&tools, &dir, false, None, false);
     }
 
     #[cfg(target_os = "linux")]
@@ -1973,7 +1973,9 @@ mod tests {
             let tools = tools.clone();
             let dir = root.join(if fail { "failed-sibling" } else { "survivor" });
             let barrier = std::sync::Arc::clone(&barrier);
-            std::thread::spawn(move || capture_perfetto_fixture(&tools, &dir, fail, Some(&barrier)))
+            std::thread::spawn(move || {
+                capture_perfetto_fixture(&tools, &dir, fail, Some(&barrier), false)
+            })
         });
         let outcomes = threads.map(|thread| thread.join());
         let [failed, survivor] = outcomes.map(Result::unwrap);
@@ -1993,11 +1995,38 @@ mod tests {
     }
 
     #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "requires project-local Perfetto, delegated tracefs and user namespaces"]
+    fn live_perfetto_streaming_preserves_markers_beyond_the_old_ring_capacity() {
+        let tools = std::path::PathBuf::from(std::env::var_os("ASB_TEST_PERFETTO_TOOLS").unwrap());
+        let dir = tools
+            .parent()
+            .unwrap()
+            .join(crate::workloads::TaskIdentity::local("perfetto-streaming", None).attempt_id);
+        capture_perfetto_fixture(&tools, &dir, false, None, true);
+        let output = std::process::Command::new(tools.join("perfetto/bin/trace_processor_shell"))
+            .arg("query")
+            .arg(dir.join("perfetto-scheduling.perfetto-trace"))
+            .arg("SELECT SUM(value) FROM stats WHERE name='traced_buf_bytes_written'")
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let text = String::from_utf8(output.stdout).unwrap();
+        let written: u64 = text.lines().nth(1).unwrap().parse().unwrap();
+        assert!(
+            written > 64 * 1024 * 1024,
+            "did not exceed the old ring: {written}"
+        );
+        println!("Streaming trace bytes before compression: {written}");
+    }
+
+    #[cfg(target_os = "linux")]
     fn capture_perfetto_fixture(
         tools: &std::path::Path,
         dir: &std::path::Path,
         fail: bool,
         barrier: Option<&(std::sync::Mutex<usize>, std::sync::Condvar)>,
+        pressure: bool,
     ) -> (u64, u64, std::time::Instant, std::time::Instant) {
         let mut session = crate::measurements::Session::start_with_collectors(
             dir,
@@ -2006,6 +2035,22 @@ mod tests {
         )
         .expect("start real Perfetto");
         let id = session.trace_id().to_owned();
+        if pressure {
+            // Fixed non-secret test data, paced below the owned kernel buffer's
+            // drain capacity. Compression happens after the service ring, so
+            // this exceeds the old ring without retaining an enormous file.
+            let marker = format!(
+                "I|{}|fixture.pressure.{}",
+                std::process::id(),
+                "x".repeat(1000)
+            );
+            for _ in 0..320 {
+                for _ in 0..256 {
+                    session.write_trace_marker(&marker).unwrap();
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        }
         if let Some(barrier) = barrier {
             let mut ready = barrier.0.lock().unwrap();
             *ready += 1;
@@ -2039,6 +2084,14 @@ mod tests {
         let agent_ended = std::time::Instant::now();
         let elapsed_ms = execution_started.elapsed().as_millis();
         assert_eq!(output.status.success(), !fail);
+        if fail {
+            session
+                .event(crate::collectors::LifecycleEvent::RunFailed)
+                .unwrap();
+        }
+        session
+            .event(crate::collectors::LifecycleEvent::RunFinishing)
+            .unwrap();
         session
             .finish(crate::measurements::RunMeasurement {
                 replica_index: None,
@@ -2105,6 +2158,8 @@ mod tests {
         assert_eq!(markers["marker_verified"], true);
         assert!(markers["marker_warning"].is_null(), "{markers}");
         assert!(markers["scope_warning"].is_null(), "{markers}");
+        assert_eq!(markers["capture_complete"], true, "{markers}");
+        assert!(markers["capture_warning"].is_null(), "{markers}");
         let data: serde_json::Value =
             serde_json::from_slice(&std::fs::read(dir.join("perfetto.json")).unwrap()).unwrap();
         assert!(
