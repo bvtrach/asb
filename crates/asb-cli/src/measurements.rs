@@ -511,7 +511,7 @@ impl Drop for Session {
         }
         self.stop_process_tree_snapshots();
         self.stop_process_sampler();
-        if self.run_started {
+        if self.run_started && !self.run_finishing {
             let _ = write_json(&self.dir.join("lifecycle.json"), &self.lifecycle);
         }
     }
@@ -961,23 +961,39 @@ impl Session {
     pub fn finish<'a>(mut self, measurement: RunMeasurement<'a>) -> Result<(), String> {
         self.stop_process_tree_snapshots();
         self.stop_process_sampler();
-        self.stop_collector_processes(false)?;
-        self.process_stopped_collectors()?;
-        write_json(&self.dir.join("run.json"), &measurement)?;
+        let mut errors = Vec::new();
+        let mut observe = |result: Result<(), String>| {
+            if let Err(error) = result {
+                errors.push(error);
+            }
+        };
+        observe(self.stop_collector_processes(false));
+        observe(self.process_stopped_collectors());
+        observe(write_json(&self.dir.join("run.json"), &measurement));
         if self.run_started {
-            write_json(&self.dir.join("lifecycle.json"), &self.lifecycle)?;
+            observe(write_json(
+                &self.dir.join("lifecycle.json"),
+                &self.lifecycle,
+            ));
         }
         for adapter in self.adapters.clone() {
-            adapter.finish(&mut self)?;
+            observe(adapter.finish(&mut self));
         }
-        self.write_component_measurements()?;
-        update_summary(&self.dir, &measurement)?;
+        observe(self.write_component_measurements());
+        observe(update_summary(&self.dir, &measurement));
+        // Every explicit publication has been attempted. Drop must not silently
+        // retry a failed/unconfirmed lifecycle commit or rewrite its evidence.
         self.run_finishing = true;
-        Ok(())
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors.join("; "))
+        }
     }
 
     fn stop_collector_processes(&mut self, execution_only: bool) -> Result<(), String> {
         let finished_at = Instant::now();
+        let mut errors = Vec::new();
         let (collectors, remaining) = std::mem::take(&mut self.collectors)
             .into_iter()
             .partition::<Vec<_>, _>(|collector| {
@@ -987,16 +1003,27 @@ impl Session {
         for mut collector in collectors {
             let status = match collector.child.try_wait() {
                 Ok(Some(status)) => status,
-                Ok(None) => stop_collector(
+                Ok(None) => match stop_collector(
                     &mut collector.child,
                     collector.adapter.graceful_shutdown(&collector.name),
-                )
-                .map_err(|error| format!("cannot finish {} collector: {error}", collector.name))?,
+                ) {
+                    Ok(status) => status,
+                    Err(error) => {
+                        errors.push(format!(
+                            "cannot finish {} collector: {error}",
+                            collector.name
+                        ));
+                        // Collector retains its existing fallback teardown on
+                        // Drop. One failed child cannot skip sibling cleanup.
+                        continue;
+                    }
+                },
                 Err(error) => {
-                    return Err(format!(
+                    errors.push(format!(
                         "cannot inspect {} collector: {error}",
                         collector.name
                     ));
+                    continue;
                 }
             };
             let elapsed_ms = finished_at.duration_since(collector.started).as_millis();
@@ -1006,12 +1033,17 @@ impl Session {
                 elapsed_ms,
             });
         }
-        Ok(())
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors.join("; "))
+        }
     }
 
     // Reporting remains after workload evaluation: optional export errors
     // must never cancel a completed agent before the official grader runs.
     fn process_stopped_collectors(&mut self) -> Result<(), String> {
+        let mut errors = Vec::new();
         for StoppedCollector {
             collector,
             status,
@@ -1054,9 +1086,17 @@ impl Session {
                 series: data.series,
                 series_timestamps: data.timestamps,
             };
-            write_json(&self.dir.join(format!("{}.json", collector.name)), &result)?;
+            if let Err(error) =
+                write_json(&self.dir.join(format!("{}.json", collector.name)), &result)
+            {
+                errors.push(error);
+            }
         }
-        Ok(())
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors.join("; "))
+        }
     }
 
     pub(crate) fn start_tree_snapshot(
@@ -1208,51 +1248,67 @@ pub fn steps_from_sources(agent: &str, stdout: &str, stderr: &str) -> Option<u64
 }
 
 fn update_summary(dir: &Path, run: &RunMeasurement<'_>) -> Result<(), String> {
+    update_summary_value(dir, serde_json::to_value(run).map_err(|e| e.to_string())?)
+}
+
+fn update_summary_value(dir: &Path, run: serde_json::Value) -> Result<(), String> {
     let path = dir.join("summary.json");
-    let mut runs: Vec<serde_json::Value> = if path.exists() {
-        let mut text = String::new();
-        File::open(&path)
-            .map_err(|e| format!("cannot open summary: {e}"))?
-            .read_to_string(&mut text)
-            .map_err(|e| format!("cannot read summary: {e}"))?;
-        serde_json::from_str::<serde_json::Value>(&text)
-            .ok()
-            .and_then(|v| v.get("runs").cloned())
-            .and_then(|v| serde_json::from_value(v).ok())
-            .unwrap_or_default()
-    } else {
-        Vec::new()
-    };
-    runs.push(serde_json::to_value(run).map_err(|e| e.to_string())?);
-    if runs.len() > MAX_RUNS {
-        runs.drain(..runs.len() - MAX_RUNS);
-    }
-    let mut resolution = crate::workloads::ResolutionSummary::default();
-    for run in &runs {
-        let kind = run
-            .get("workload_evaluation")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("unknown");
-        let kind = crate::workloads::scored_kind(
-            kind,
-            &crate::workloads::BaselineEvidence::from_record(run),
-        );
-        resolution.observe(
-            kind,
-            run.get("workload_success")
-                .and_then(serde_json::Value::as_bool)
-                == Some(true),
-        );
-    }
-    let summary = serde_json::json!({"schema_version": 2, "runs": runs, "success_count": resolution.resolved_count, "failure_count": resolution.unresolved_count, "task_count": resolution.task_count, "unscored_count": resolution.unscored_count, "success_rate": resolution.success_rate, "success_rate_definition": "resolved task attempts / all selected task attempts; smoke exercises excluded; not pass@k"});
-    write_json(&path, &summary)
+    crate::evidence::update_json(&path, |old| {
+        let mut document = if let Some(bytes) = old {
+            serde_json::from_slice::<serde_json::Value>(bytes)
+                .map_err(|_| "historical summary JSON is malformed; preserve it before repair")?
+                .as_object()
+                .cloned()
+                .ok_or("historical summary must be an object; preserve it before repair")?
+        } else {
+            serde_json::Map::new()
+        };
+        let mut runs = match document.remove("runs") {
+            Some(serde_json::Value::Array(runs))
+                if runs.iter().all(serde_json::Value::is_object) =>
+            {
+                runs
+            }
+            None if old.is_none() => Vec::new(),
+            _ => return Err(
+                "historical summary runs must be an array of objects; preserve it before repair"
+                    .into(),
+            ),
+        };
+        runs.push(run);
+        if runs.len() > MAX_RUNS {
+            runs.drain(..runs.len() - MAX_RUNS);
+        }
+        let mut resolution = crate::workloads::ResolutionSummary::default();
+        for run in &runs {
+            let kind = run
+                .get("workload_evaluation")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("unknown");
+            let kind = crate::workloads::scored_kind(
+                kind,
+                &crate::workloads::BaselineEvidence::from_record(run),
+            );
+            resolution.observe(
+                kind,
+                run.get("workload_success")
+                    .and_then(serde_json::Value::as_bool)
+                    == Some(true),
+            );
+        }
+        let fields = serde_json::json!({"schema_version": 2, "runs": runs, "success_count": resolution.resolved_count, "failure_count": resolution.unresolved_count, "task_count": resolution.task_count, "unscored_count": resolution.unscored_count, "success_rate": resolution.success_rate, "success_rate_definition": "resolved task attempts / all selected task attempts; smoke exercises excluded; not pass@k"});
+        document.extend(fields.as_object().expect("summary object").clone());
+        Ok(document)
+    })
 }
 
 pub(crate) fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
-    let file = File::create(path).map_err(|e| format!("cannot create {}: {e}", path.display()))?;
-    serde_json::to_writer_pretty(file, value)
-        .map_err(|e| format!("cannot write {}: {e}", path.display()))
+    crate::evidence::write_json(path, value)
 }
+
+#[cfg(test)]
+#[path = "../tests/unit/measurement_publication.rs"]
+mod publication_tests;
 pub(crate) fn write_unavailable(path: &Path, collector: &str, error: String) -> Result<(), String> {
     write_json(
         path,

@@ -723,6 +723,9 @@ fn native_postexecution_event_failure_retains_actual_child_output_and_grade() {
     }
 }
 
+#[path = "runner_publication.rs"]
+mod publication;
+
 fn result() -> RunResult<'static> {
     RunResult {
         planning: crate::planning::resolve(
@@ -799,7 +802,7 @@ fn postgrade_log_publication_is_independent_and_diagnostics_keep_primary_order()
         )
         .unwrap_err()
         .to_string();
-        assert!(error.contains("cannot open log file"));
+        assert!(error.contains("regular file"));
         assert!(error.contains(fixture.0.join("blocked.jsonl").to_str().unwrap()));
         assert!(error.contains("measurement write failure"));
         if primary.is_some() {
@@ -1002,6 +1005,7 @@ fn full_entry_child(case: &str) {
     }
     let provider_case = case.starts_with("provider-");
     let disposition_case = case.starts_with("disposition-");
+    let publication_case = case.contains("publication-");
     let fixture = Fixture::new();
     let root = fixture.0.canonicalize().unwrap();
     let project = project::ProjectConfig {
@@ -1119,6 +1123,7 @@ fn full_entry_child(case: &str) {
         writes: 0,
         failures: 0,
     };
+    let _publication_fault = publication_case.then(|| publication::prepare(case, &root));
     let cohort = measurements::ExecutionCohort {
         id: workloads::TaskIdentity::local("execution-cohort", None).attempt_id,
         selected_replicas: 1,
@@ -1140,6 +1145,18 @@ fn full_entry_child(case: &str) {
         &mut output,
         &Mutex::new(BTreeSet::new()),
     );
+    if publication_case {
+        publication::check(
+            case,
+            &root,
+            result,
+            &calls,
+            &output.bytes,
+            observer.completed.load(Ordering::SeqCst),
+        );
+        assert_eq!(std::fs::read_to_string(counter).unwrap(), "called\n");
+        return;
+    }
     if disposition_case {
         check_full_entry_disposition(
             case,
@@ -1317,7 +1334,7 @@ fn full_entry_child(case: &str) {
             error.contains("run log publication failed after task evaluation"),
             "{error}"
         );
-        assert!(error.contains("cannot open log file"), "{error}");
+        assert!(error.contains("regular file"), "{error}");
         assert!(
             error.contains(root.join("run.jsonl").to_str().unwrap()),
             "{error}"

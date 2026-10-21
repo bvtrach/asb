@@ -451,6 +451,18 @@ unrelated-process survival despite an earlier failing adapter or full journal.
 The native-plan fixture verifies wrapper/endpoint/replay preparation without
 executing an installed client. All fixtures are provider-free and unprivileged;
 controller fixtures do not qualify Docker, SDK installation or a live benchmark.
+`cargo test --locked --offline --lib evidence::` checks private staged writes,
+short/Interrupted/zero/ENOSPC writes, serializer failures, file/directory sync
+and rename faults, regular-file restrictions and coordinated real-process
+writers. Measurement publication fixtures preserve malformed summary bytes and
+unknown history metadata. `runner::phases::tests::publication` drives nine
+actual replay-only attempts with Boolean/native/pending grades, client and
+presentation failure, partial log/measurement writes and post-commit durability
+uncertainty. Client/evaluation/cleanup counts, identities, independent final
+outputs and withheld receipts are checked together. Reports refuse stale or
+malformed retained evidence instead of presenting it as the current attempt.
+The pre-fix serializer, malformed-history and two-process interleaving failures
+were observed before implementation; logs remain local qualification evidence.
 Human-terminal write/flush failures stop further presentation but finish an
 already-admitted execution, evaluation and explicit cleanup; broken guest-owner
 transport still cancels/preserves. Tests cover both policies. The elapsed clock

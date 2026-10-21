@@ -370,6 +370,33 @@ Both log and measurement publication must be confirmed before a completion
 record/observer receipt is permitted. Original run failures precede ancillary
 log/measurement diagnostics; repairing reporting does not repeat the agent.
 
+Post-grade evidence publication prepares serialized JSON before touching a
+published file. Each destination has a persistent-inode lock (shared lock
+mechanics, five-second contention observation) held across its opened regular
+snapshot, private sibling staging, atomic per-file rename and parent-directory
+synchronization. Symlinks, pipes and other nonregular destinations are rejected.
+Unix snapshots additionally bind device/inode identity. Other platforms retain
+conservative creation/last-write/size/permission consistency checks instead of
+rejecting all existing files; Linux fixtures do not qualify Windows runtime.
+Log history is streamed without truncating original bytes, validating complete
+JSONL records under the existing 16 MiB per-record consumer bound. A historical
+malformed record is preserved and reported, not joined to the next attempt.
+Summary read/modify/write holds the same lock and preserves unknown metadata;
+malformed historical JSON or runs never silently becomes empty history.
+Prepared encoding stops at the consumer's 16 MiB bound, including the newline
+for log records, before publishing oversized output.
+Pre-commit errors retain old published bytes; post-rename confirmation errors
+explicitly say that evidence was published but durability is unconfirmed. They
+do not roll back or repeat execution.
+Post-commit scratch retention after successful synchronization has its own
+published-and-synchronized diagnostic and retained path; it does not pretend
+that a known successful sync was uncertain. Explicit cleanup refusal retains
+that stage rather than silently retrying in Drop. Independent measurement outputs
+and adapter finish hooks are all attempted; one publication failure cannot skip the
+others. Explicit finish suppresses silent lifecycle-publication retries in Drop.
+This is per-file cooperating-writer ownership, not a multi-file transaction,
+hostile filesystem confinement or arbitrary crash-recovery protocol.
+
 `WorkloadAdapter` creates a distinct mutable `WorkloadSession` for each
 attempt. The session owns its task invocation, prepared workspace, initial
 baseline evidence and evaluator. The generic runner consumes those values

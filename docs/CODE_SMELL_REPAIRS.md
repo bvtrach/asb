@@ -14,6 +14,11 @@ informational, not a substitute for meaningful offline regressions. Required
 functional CI, independent review, exact-head validation and patch releases
 still apply to each repair class.
 
+The [full residual requirement/disposition matrix and ordered plan](CODE_SMELL_REMAINING_AUDIT.md)
+records the read-only 21 October comparison of exact main `4224472f` with
+qualified stack `48609d50`, including misreports, completed versus unmerged
+repairs and remaining evidence-publication/artifact/transport obligations.
+
 Integrated repair, released patch **0.2.21**: the independently reviewed
 launch-descriptor/one-shot admission repair (`b1a54fde`) is combined with the
 reviewed workload-wizard stack (`6af7939b`), retaining shared benchmark paths,
@@ -118,6 +123,28 @@ passed at that repaired main in run `39599622348`, and **v0.2.5** was released
 from that exact commit with a GitHub-verified signed tag.
 
 ## 3. Completion persistence, subprocess and cleanup failures
+
+Owned post-grade evidence-publication candidate (version unchanged **0.2.27**):
+four deterministic pre-fix regressions demonstrated partial log serialization,
+interleaved JSONL from two processes, clobbered measurement bytes and silent
+malformed-summary reset. Prepared serialization, persistent destination locks,
+opened regular snapshots and private same-filesystem staging now guard per-file
+atomic commits. Pre-commit failure preserves old bytes; post-commit directory
+sync failure reports published-but-unconfirmed rather than implying rollback.
+Historical log bytes, unknown summary metadata and independent grade/identity/
+planning/native evidence remain intact. Independent measurement finalization is
+attempted despite earlier publication failure, and no silent Drop retry can
+rewrite an explicitly settled lifecycle artifact. Offline low-level and nine
+actual replay-entry cases cover these obligations. Focused checks passed eleven
+publication tests, 65 measurement tests, 73 runner tests, 73 sweep tests,
+67 comparison tests and ten tests across three actual CLI targets (five
+optional skips), with strict Clippy/formatting and an unchanged actual binary
+hash. Intermediate fixture setup/report expectations and a test-only Clippy
+style failure remain recorded alongside the four original red reproductions.
+Independent source review, full qualification and all hosted delivery remain
+pending. This does not close
+the separate adapter-artifact, transport, installer or broader residual classes
+listed in the linked complete audit matrix.
 
 Completion-observer and checkpoint errors must not erase an already determined
 task grade or implicitly repeat a client. Their current fail-open treatment
