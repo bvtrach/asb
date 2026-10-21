@@ -1,7 +1,7 @@
 # Collector producer custody and completeness repair
 
-This is the class-35 design and red-test checkpoint, based on publication source
-`f8139463`. No production repair, runtime qualification, PR or release is claimed.
+This is the class-35 design and observed-red checkpoint, based on publication
+source `f8139463`. No production repair, passing qualification, PR or release is claimed.
 The retained version remains 0.2.32 until its later reviewed stack integration.
 
 ## Confirmed current gaps
@@ -66,10 +66,22 @@ First execute the three initially-red `measurements::collector_custody_tests`
 fixtures: an active 1.5-second command must cancel promptly; a retained duplicate
 stdout writer after command exit must not extend stop; `/dev/full` ENOSPC must
 be reported rather than discarded. Fixture safety bounds avoid indefinite hangs,
-and only fixture-owned process/FD/thread handles are used. These tests have not
-yet been built or executed: build capacity is intentionally reserved for the
-current publication qualification. Do not call an unexecuted test a reproduced
-runtime failure.
+and only fixture-owned process/FD/thread handles are used.
+
+All three failures were actually observed at `727000e5` using the exclusive
+diagnostics cache with `CARGO_INCREMENTAL=0` and `CARGO_BUILD_JOBS=2`:
+
+- Active-command stop blocked **1.501913556 s**, exceeding its 600 ms assertion.
+- The retained duplicate writer extended stop by **1.495494427 s**, likewise
+  exceeding its 600 ms assertion after the principal exited.
+- Actual `/dev/full` ENOSPC was discarded: stop returned `()` and stderr was empty.
+
+The focused suite exited 101: zero passed, three failed, zero skipped, in 1.53 s.
+The built baseline executable stayed unchanged before/after those actual cases:
+`57c123c847991f707c06d2a74eb7d65c516e6882baec7543aa2aa0fdcbe12ab3`.
+Local transcripts are `target/collector35-baseline-{build,red}.log`, with matching
+`collector35-baseline-binary-{before,after}.sha256` records. This establishes the
+three specific defects, not full tree-cleanup, graceful-flush or SDK qualification.
 
 Before production implementation, retain actual red transcripts and independently
 review this design. Then add deterministic private WriteZero, Interrupted, read
@@ -89,3 +101,34 @@ After source review, run focused tests, the full offline suite, strict Clippy,
 formatting and sequential documentation/build gates. Exact-head hosted/package
 CI, independent review, merge, both post-merge jobs and a patch release remain
 separate delivery obligations; the removed 90% coverage gate stays removed.
+
+## Candidate guardian-control seam, awaiting further review
+
+Do not implement this protocol merely from the first observed-red approval.
+The preferred seam is an optional dedicated nonblocking control socket created
+before admission alongside the existing keeper/receipt. Ordinary benchmark
+gates retain their existing receipt ABI and cancellation behavior. A collector
+requires an explicit bounded capability-ready frame before CONT, so an older
+runtime cannot silently ignore a graceful-control request and start anyway.
+All control descriptors are CLOEXEC for the target and closed in the wake-only
+child; no environment lookup or allocation is added to post-fork callbacks.
+
+A small fixed versioned request may ask only for interruption of the guardian's
+already pinned principal: no caller-supplied PID, process group, signal number,
+collector ID or executable. The guardian's wait loop polls this socket together
+with its owner/cancellation/principal pidfds. It performs identity-pinned SIGINT
+without setting the cancellation flag, acknowledges delivery separately and
+continues supervision through natural principal exit and existing tree quiescence.
+Owner loss and normal cancellation keep their present semantics. A malformed,
+duplicate, unsupported or expired control exchange cannot grant successful flush.
+
+Record exact principal exit code/signal as a separate bounded observation when
+this control mode is enabled; retain the existing gate-exit/quiescence contract.
+An interrupt acknowledgement, nonempty output or principal exit is never itself
+proof of a complete collector. Adapter-owned policy decides whether the actual
+termination is expected; generic settlement additionally requires confirmed
+quiescence, completed capture I/O and successful flush/publication obligations.
+On grace expiry, use proof-aware guardian cancellation and wait-only fallback,
+not KILL of an admitted guardian. This candidate requires independent review of
+framing, partial writes, late replies, descriptor inheritance and all races before
+production implementation; no new authorization/signing policy is proposed.
