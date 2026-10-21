@@ -437,6 +437,7 @@ fn summary_retention_is_bounded_and_unscored_success_is_not_a_resolved_task() {
         .collect::<Vec<_>>();
     fs::write(&path, serde_json::to_vec(&json!({"runs":runs})).unwrap()).unwrap();
     let run = RunMeasurement {
+        observation: Default::default(),
         workload_resource_disposition: None,
         workload_artifacts: &[],
         execution_plan_fingerprint: None,

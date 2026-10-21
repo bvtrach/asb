@@ -72,6 +72,8 @@ fn default_timeout() -> f64 {
 
 #[derive(Deserialize, Serialize)]
 pub(crate) struct GuestResult {
+    #[serde(flatten)]
+    pub observation: crate::process_termination::Observation,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub owned_instrumentation: Option<crate::workloads::staging::Ownership>,
     /// Exact effective directory selected before launch, not re-resolved later.
@@ -488,6 +490,7 @@ fn run(request: GuestRequest) -> Result<u8, Error> {
     // Until the first durable publication transfers the frozen evidence, Drop
     // retains raw artifacts. This interim record never asserts settlement.
     let mut result = GuestResult {
+        observation: crate::process_termination::Observation::observed(output.status),
         artifact_error: Some(
             "agent scratch settlement pending; source or custody may remain".into(),
         ),
@@ -642,6 +645,7 @@ mod artifact_publication_tests {
             fs::write(&raw, r#"{"answer":"submission","usage":34,"steps":4}"#).unwrap();
             let frozen = owner.freeze();
             let mut result = GuestResult {
+                observation: Default::default(),
                 owned_instrumentation: None,
                 execution_workspace: None,
                 artifact_error: Some(

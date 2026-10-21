@@ -117,6 +117,16 @@ pub(super) enum OwnedChild {
     Gated(crate::process_gate::ManagedGate),
 }
 impl OwnedChild {
+    fn observation(&self) -> crate::process_termination::Observation {
+        match self {
+            Self::Direct(child) => child
+                .observed
+                .map(crate::process_termination::Observation::observed)
+                .unwrap_or_default(),
+            #[cfg(target_os = "linux")]
+            Self::Gated(child) => child.principal_observation(),
+        }
+    }
     #[cfg(unix)]
     pub fn wait_stopped(&mut self) -> io::Result<()> {
         match self {
@@ -188,6 +198,7 @@ pub(super) enum PresentationPolicy {
     CancelOnTransportFailure,
 }
 pub(super) struct CapturedOutput {
+    pub observation: crate::process_termination::Observation,
     pub output: Output,
     pub output_error: Option<String>,
     pub capture_error: Option<String>,
@@ -497,6 +508,7 @@ fn capture_inner(
         append_prefix(&mut stderr.bytes, message.as_bytes());
     }
     Ok(CapturedOutput {
+        observation: child.observation(),
         output: Output {
             status: status.expect("exit observed before settlement"),
             stdout: stdout.bytes,

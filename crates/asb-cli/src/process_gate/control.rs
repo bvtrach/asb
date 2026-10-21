@@ -66,19 +66,7 @@ fn write_frame(socket: &mut UnixStream, bytes: &[u8; FRAME], deadline: Instant) 
 }
 
 /// Exact principal termination, not the guardian's synthetic exit code.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum PrincipalExit {
-    Code(u8),
-    Signal(u8),
-}
-impl PrincipalExit {
-    pub(crate) fn status(self) -> ExitStatus {
-        ExitStatus::from_raw(match self {
-            Self::Code(code) => i32::from(code) << 8,
-            Self::Signal(signal) => i32::from(signal),
-        })
-    }
-}
+pub(crate) type PrincipalExit = crate::process_termination::ProcessTermination;
 
 pub(super) struct Parent {
     socket: UnixStream,
@@ -88,6 +76,7 @@ pub(super) struct Parent {
     requested: bool,
     pub acknowledged: bool,
     pub exited: Option<PrincipalExit>,
+    failed: bool,
 }
 impl Parent {
     pub fn pair() -> io::Result<(Self, UnixStream)> {
@@ -107,6 +96,7 @@ impl Parent {
                 requested: false,
                 acknowledged: false,
                 exited: None,
+                failed: false,
             },
             child,
         ))
@@ -166,8 +156,8 @@ impl Parent {
                 }
                 EXITED if self.ready && self.exited.is_none() => {
                     self.exited = Some(match (detail, value) {
-                        (0, 0..=255) => PrincipalExit::Code(value as u8),
-                        (1, 1..=127) => PrincipalExit::Signal(value as u8),
+                        (0, 0..=255) => PrincipalExit::Code(value as i32),
+                        (1, 1..=127) => PrincipalExit::Signal(value as i32),
                         _ => return Err(invalid()),
                     });
                 }
@@ -176,6 +166,66 @@ impl Parent {
             self.frames += 1;
         }
         Ok(())
+    }
+
+    pub fn observe(&mut self, gate: u32, finished: bool) {
+        #[cfg(test)]
+        if observation_fault::active() {
+            self.failed = true;
+            self.exited = None;
+        }
+        if !self.failed {
+            self.failed = self.poll(gate).is_err()
+                || finished && (self.pending.len() != self.frames * FRAME || self.exited.is_none());
+            if self.failed {
+                self.exited = None;
+            }
+        }
+    }
+
+    pub fn observation(&self) -> crate::process_termination::Observation {
+        if self.failed {
+            crate::process_termination::Observation::malformed()
+        } else {
+            crate::process_termination::Observation {
+                process_termination: self.exited,
+                process_termination_diagnostic: None,
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod observation_fault {
+    static SHARED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    std::thread_local! { static ACTIVE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
+    pub(crate) fn active() -> bool {
+        ACTIVE.get() || SHARED.load(std::sync::atomic::Ordering::SeqCst)
+    }
+    /// Used only inside an isolated one-test subprocess owning all workers.
+    pub(crate) struct SharedScope;
+    impl SharedScope {
+        pub(crate) fn enter() -> Self {
+            assert!(!SHARED.swap(true, std::sync::atomic::Ordering::SeqCst));
+            Self
+        }
+    }
+    impl Drop for SharedScope {
+        fn drop(&mut self) {
+            SHARED.store(false, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+    pub(crate) struct Scope;
+    impl Scope {
+        pub(crate) fn enter() -> Self {
+            assert!(!ACTIVE.replace(true));
+            Self
+        }
+    }
+    impl Drop for Scope {
+        fn drop(&mut self) {
+            ACTIVE.set(false);
+        }
     }
 }
 
@@ -280,6 +330,26 @@ impl ChildControl {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn finalization_rejects_partial_or_missing_exit_without_waiting_for_eof() {
+        for payload in [
+            vec![],
+            frame(EXITED, 0, 7)[..7].to_vec(),
+            [frame(EXITED, 0, 7).as_slice(), b"partial"].concat(),
+        ] {
+            let (mut parent, mut peer) = Parent::pair().unwrap();
+            let held_writer = peer.try_clone().unwrap();
+            peer.write_all(&frame(READY, 0, 42)).unwrap();
+            parent.poll(42).unwrap();
+            peer.write_all(&payload).unwrap();
+            parent.observe(42, true);
+            assert_eq!(
+                parent.observation(),
+                crate::process_termination::Observation::malformed()
+            );
+            drop(held_writer);
+        }
+    }
     #[test]
     fn capability_ack_and_exit_are_distinct_bounded_ordered_facts() {
         let (mut parent, mut peer) = Parent::pair().unwrap();

@@ -100,6 +100,21 @@ class API:
 
 
 class ExecutionTests(unittest.TestCase):
+    def test_optional_principal_facts_never_infer_signal_from_carrier(self):
+        for code in [-(2**31), -1, 0, 137, 143, 2**31-1]:
+            exact = {"kind":"code", "code":code}
+            self.assertEqual(RUNTIME.principal_observation({"exit_code":1,"process_termination":exact}), {"process_termination":exact})
+        for signal in [1,9,15,127]:
+            exact = {"kind":"signal", "signal":signal}
+            self.assertEqual(RUNTIME.principal_observation({"exit_code":143,"process_termination":exact}), {"process_termination":exact})
+        for metadata in [{}, {"exit_code":137}, {"exit_code":143,"timed_out":True}]:
+            self.assertEqual(RUNTIME.principal_observation(metadata), {"process_termination":None})
+        for exact in [{"kind":"signal","signal":0}, {"kind":"signal","signal":128},
+                      {"kind":"code","code":True}, {"kind":"code","code":2**31},
+                      {"kind":"signal","signal":9,"code":137}, {"kind":"future"}]:
+            self.assertEqual(RUNTIME.principal_observation({"process_termination":exact}),
+                             {"process_termination":None,"process_termination_diagnostic":"malformed"})
+
     def owner(self):
         return {"controller_namespace":100, "guest_namespace":200, "token":"e" * 32}
 

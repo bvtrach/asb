@@ -16,6 +16,24 @@ class ExecutionError(RuntimeError):
     pass
 
 
+def principal_observation(metadata):
+    """Optional owner-authored evidence, never a Docker/carrier exit inference."""
+    exact = metadata.get("process_termination")
+    diagnostic = metadata.get("process_termination_diagnostic")
+    valid = exact is None or (isinstance(exact, dict) and (
+        (set(exact) == {"kind", "code"} and exact.get("kind") == "code"
+         and type(exact.get("code")) is int and -(2**31) <= exact["code"] < 2**31)
+        or (set(exact) == {"kind", "signal"} and exact.get("kind") == "signal"
+            and type(exact.get("signal")) is int and 1 <= exact["signal"] <= 127)))
+    if (not valid or diagnostic not in [None, "malformed", "unavailable"]
+            or diagnostic is not None and exact is not None):
+        return {"process_termination": None, "process_termination_diagnostic": "malformed"}
+    result = {"process_termination": exact}
+    if diagnostic is not None:
+        result["process_termination_diagnostic"] = diagnostic
+    return result
+
+
 GATE = 'printf "__ASB_GATE__:%s\\n" "$$"; kill -STOP "$$"; exec "$@"'
 STOPPED = 'while IFS=: read -r key value; do case "$key" in State) case "$value" in *T*) exit 0;; esac;; esac; done < "/proc/$1/status"; exit 1'
 MAX_ARGUMENT_BYTES = 1024 * 1024

@@ -44,6 +44,8 @@ pub(crate) struct Recorded {
 
 impl Recorded {
     pub fn check_measurement(&self, measured: &Value) -> Result<(), Error> {
+        crate::process_termination::agree(&self.summary, measured)
+            .map_err(|error| invalid(&self.path, error))?;
         if matches!(
             self.source,
             "imported-official-grade" | "recovered-official-grade"
@@ -577,6 +579,42 @@ mod log_boundary_tests;
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn known_termination_conflicts_reject_but_legacy_carriers_and_unknown_do_not() {
+        let mut record = super::Recorded {
+            path: "outcome.json".into(),
+            summary: serde_json::json!({"exit_code":1,"process_termination":{"kind":"signal","signal":15}}),
+            workload_cleanup: true,
+            proxy_cleanup: true,
+            source: "task-outcome",
+        };
+        assert!(
+            record
+                .check_measurement(&serde_json::json!({"exit_code":143}))
+                .is_ok()
+        );
+        assert!(record.check_measurement(&serde_json::json!({"exit_code":143,"process_termination":{"kind":"signal","signal":15}})).is_ok());
+        assert!(
+            record
+                .check_measurement(
+                    &serde_json::json!({"process_termination":{"kind":"code","code":143}})
+                )
+                .is_err()
+        );
+        assert!(
+            record
+                .check_measurement(
+                    &serde_json::json!({"process_termination":{"kind":"signal","signal":0}})
+                )
+                .is_err()
+        );
+        record.summary = serde_json::json!({});
+        assert!(
+            record
+                .check_measurement(&serde_json::json!({"process_termination":null}))
+                .is_ok()
+        );
+    }
     #[test]
     fn measurements_preserve_settlement_and_artifact_agreement() {
         let mut record = super::Recorded {

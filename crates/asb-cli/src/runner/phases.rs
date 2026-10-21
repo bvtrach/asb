@@ -94,6 +94,7 @@ impl AttemptIssues {
 }
 
 pub(super) struct MeasuredOutput {
+    pub observation: crate::process_termination::Observation,
     pub output: Output,
     pub elapsed_ms: u128,
     pub issues: AttemptIssues,
@@ -107,6 +108,7 @@ impl std::ops::Deref for MeasuredOutput {
 }
 
 pub(super) struct ExecutionEvidence {
+    pub observation: crate::process_termination::Observation,
     pub artifact_owner: Option<agents::ArtifactOwner>,
     pub output: Output,
     pub capture_complete: bool,
@@ -490,6 +492,7 @@ pub(super) fn finish_measurements(
     }
     issues.event(Some(&mut session), LifecycleEvent::RunFinishing);
     let measured = measurements::RunMeasurement {
+        observation: result.observation,
         workload_resource_disposition: result.workload_resource_disposition,
         workload_artifacts: &result.workload_artifacts,
         execution_plan_fingerprint: result

@@ -155,9 +155,19 @@ impl CompletedExecution {
             return Err("unexpected isolated execution event".into());
         }
         let result = &event["result"];
-        let metadata: crate::agents::driver::GuestResult =
+        let mut metadata: crate::agents::driver::GuestResult =
             serde_json::from_value(result["metadata"].clone())
                 .map_err(|_| "guest returned invalid agent result metadata")?;
+        if result.get("process_termination").is_some()
+            || result.get("process_termination_diagnostic").is_some()
+        {
+            let forwarded = crate::process_termination::Observation::from_record(result);
+            if forwarded.process_termination_diagnostic.is_some()
+                || matches!((forwarded.process_termination, metadata.observation.process_termination), (Some(left), Some(right)) if left != right)
+            {
+                metadata.observation = crate::process_termination::Observation::malformed();
+            }
+        }
         let delegated = lifetime == ProcessLifetime::ThroughEvaluation
             && result["workload_processes_retained"].as_bool() == Some(true)
             && metadata.workload_owner.as_ref().is_some_and(|owner| {
