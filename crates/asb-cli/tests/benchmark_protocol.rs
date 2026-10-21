@@ -4,6 +4,16 @@ mod support;
 use support::IsolatedEnvironment;
 
 #[test]
+fn configured_user_staging_reuses_only_verified_owned_instrumentation() {
+    python_protocol("benchmark_staging.py");
+}
+
+#[test]
+fn direct_creation_and_shared_default_bridge_bind_only_owned_workload_material() {
+    python_protocol("benchmark_material_direct.py");
+}
+
+#[test]
 fn sdk_harness_infrastructure_and_harbor_profiles_remain_independent_of_tb1() {
     python_protocol("benchmark_harness.py");
 }
@@ -11,6 +21,52 @@ fn sdk_harness_infrastructure_and_harbor_profiles_remain_independent_of_tb1() {
 #[test]
 fn python_subprocess_isolation_retains_only_coverage_instrumentation() {
     python_protocol("test_environment.py");
+}
+
+#[test]
+fn routed_runtime_preserves_explicit_settings_and_requires_owned_topology() {
+    python_protocol("benchmark_material_network_runtime.py");
+}
+
+#[test]
+fn owned_bridge_identity_checks_explicit_intent_before_normalizing_automatic_allocation() {
+    python_protocol("benchmark_material_network_identity.py");
+}
+
+#[test]
+fn owned_bridge_observation_requires_exact_bidirectional_endpoint_membership() {
+    python_protocol("benchmark_material_networks.py");
+}
+
+#[test]
+fn complete_environment_rounds_preserve_runtime_and_cross_service_storage_identity() {
+    python_protocol("benchmark_material_environment.py");
+    python_protocol("benchmark_material_bind_graph.py");
+}
+
+#[test]
+fn prepared_service_roles_bind_the_complete_live_owned_set() {
+    python_protocol("benchmark_material_services.py");
+}
+
+#[test]
+fn mounted_material_topology_uses_owned_inputs_and_global_guest_roots() {
+    python_protocol("benchmark_material_mounts.py");
+}
+
+#[test]
+fn owned_root_material_composes_complete_rounds_without_definition_fallbacks() {
+    python_protocol("benchmark_material_root.py");
+}
+
+#[test]
+fn material_helper_transport_is_bounded_cancellable_and_provider_free() {
+    python_protocol("benchmark_material_exec.py");
+}
+
+#[test]
+fn prepared_material_archive_identity_is_bounded_canonical_and_provider_free() {
+    python_protocol("benchmark_material.py");
 }
 
 #[test]
@@ -81,6 +137,7 @@ fn docker_transport_is_scoped_and_cleans_its_own_processes() {
 #[test]
 fn managed_execution_pauses_for_collectors_and_bounds_each_attempt() {
     python_protocol("benchmark_execution.py");
+    python_protocol("benchmark_sdk_session.py");
 }
 
 #[test]

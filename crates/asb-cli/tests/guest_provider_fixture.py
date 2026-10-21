@@ -15,6 +15,9 @@ def command():
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
+    def tool_command(self):
+        return command()
+
     def log_message(self, *_args):
         pass
 
@@ -64,7 +67,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 self.send_error(422, "fixture needs a declared shell tool")
                 return
             delta = {"role": "assistant", "tool_calls": [{"index": 0, "id": "fixture-call", "type": "function",
-                "function": {"name": function["name"], "arguments": json.dumps({"command": command()})}}]}
+                "function": {"name": function["name"], "arguments": json.dumps({"command": self.tool_command()})}}]}
             finish = "tool_calls"
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
@@ -92,7 +95,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if function is None:
                 self.send_error(422, "fixture needs a declared shell tool")
                 return
-            arguments = json.dumps({"command": command()})
+            arguments = json.dumps({"command": self.tool_command()})
             item = {"id": "fc_fixture", "type": "function_call", "call_id": "fixture-call",
                     "name": function["name"], "arguments": ""}
             events.append({"type": "response.output_item.added", "output_index": 0, "item": dict(item)})

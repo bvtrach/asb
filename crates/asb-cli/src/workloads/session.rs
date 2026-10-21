@@ -12,6 +12,45 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 static NEXT_ATTEMPT: AtomicU64 = AtomicU64::new(0);
 
+/// Confirmed disposition of adapter-owned execution resources, not a grade.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ResourceDisposition {
+    /// No adapter-owned execution resources required settlement.
+    NotRequired,
+    /// Owned execution resources were removed.
+    Removed,
+    /// No owned execution resources were created.
+    NotCreated,
+    /// Owned execution resources are stopped and retained for inspection.
+    StoppedPreserved,
+}
+
+impl ResourceDisposition {
+    /// Legacy records may omit disposition; present values must agree exactly.
+    pub(crate) fn matches_record(
+        disposition: Option<&serde_json::Value>,
+        confirmed: bool,
+        summary: &serde_json::Value,
+    ) -> bool {
+        match (disposition, summary.get("workload_resource_disposition")) {
+            (None, None) => true,
+            (Some(top), Some(value)) if top == value => {
+                serde_json::from_value::<Option<Self>>(value.clone())
+                    .is_ok_and(|recorded| confirmed == recorded.is_some())
+            }
+            _ => false,
+        }
+    }
+}
+
+/// Positive settlement may retain a failed normal-teardown diagnostic.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ResourceSettlement {
+    pub disposition: ResourceDisposition,
+    pub diagnostic: Option<String>,
+}
+
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum ProcessLifetime {
@@ -58,6 +97,7 @@ impl TaskIdentity {
 }
 
 pub(crate) struct PreparationContext<'a> {
+    pub verify_initial_material: bool,
     pub budgets: crate::planning::PhaseBudgets,
     pub on_allocation: Option<&'a super::recovery::AllocationObserver<'a>>,
     pub workload: &'a str,
@@ -209,7 +249,25 @@ mod input_tests {
 }
 
 /// The runner provides negotiated connections, never workload/agent dispatch.
+pub(crate) trait LaunchReadiness {
+    fn ready(&self) -> Result<(), String>;
+    fn abort(&self);
+    fn remaining(&self) -> Result<std::time::Duration, String>;
+}
+
+/// Declare after owned execution state so peers are notified before teardown.
+pub(crate) struct LaunchFailureGuard<'a>(pub Option<&'a dyn LaunchReadiness>);
+impl Drop for LaunchFailureGuard<'_> {
+    fn drop(&mut self) {
+        if let Some(launch) = self.0 {
+            launch.abort();
+        }
+    }
+}
+
+/// The runner provides negotiated connections, never workload/agent dispatch.
 pub(crate) struct ExecutionContext<'a> {
+    pub launch: Option<&'a dyn LaunchReadiness>,
     pub config: &'a crate::benchmark::BenchmarkConfig,
     pub connection: Option<&'a crate::endpoint::Connection>,
     pub project_root: &'a Path,
@@ -302,6 +360,15 @@ pub(crate) trait WorkloadSession {
     fn invocation(&self) -> &TaskInvocation;
     fn evaluation_kind(&self) -> &'static str;
     fn baseline_passed(&self) -> Option<bool>;
+    /// Adapter-owned initial material, captured before baseline evaluation.
+    /// Unsupported identity must not be replaced with an invented fingerprint.
+    fn initial_material_sha256(&self) -> Result<String, String> {
+        Err("workload adapter does not yet establish initial material identity".into())
+    }
+    /// Abort preparation without authorizing normal destructive teardown.
+    fn cancel_prepared(&mut self) -> Result<(), String> {
+        Ok(())
+    }
     fn baseline_evidence(&self) -> BaselineEvidence {
         BaselineEvidence::Measured {
             passed: self.baseline_passed(),
@@ -336,9 +403,12 @@ pub(crate) trait WorkloadSession {
     fn checkpoint_evidence(&self) -> Vec<PathBuf> {
         Vec::new()
     }
-    /// Confirm owned resource cleanup before reporting the run as completed.
-    fn finish(&mut self) -> Result<(), String> {
-        Ok(())
+    /// Settle execution resources independently of grading. Err means unconfirmed.
+    fn finish(&mut self) -> Result<ResourceSettlement, String> {
+        Ok(ResourceSettlement {
+            disposition: ResourceDisposition::NotRequired,
+            diagnostic: None,
+        })
     }
     fn execute(
         &mut self,
@@ -356,6 +426,7 @@ pub(super) struct FileSession {
     evaluator: Evaluator,
     evaluation_kind: &'static str,
     baseline_passed: Option<bool>,
+    initial_material: Result<String, String>,
 }
 
 impl FileSession {
@@ -365,9 +436,21 @@ impl FileSession {
         evaluator: Evaluator,
         evaluation_kind: &'static str,
     ) -> Self {
+        let initial_material = if context.verify_initial_material {
+            super::material::fingerprint(context.workspace)
+        } else {
+            Err("initial material identity was not requested for this legacy execution".into())
+        };
         let baseline_passed = evaluator(context.workload, context.workspace, "")
             .ok()
             .map(|result| result == Evaluation::Passed);
+        let initial_material = initial_material.and_then(|before| {
+            if super::material::fingerprint(context.workspace)? == before {
+                Ok(before)
+            } else {
+                Err("baseline evaluation changed initial workload material".into())
+            }
+        });
         Self {
             invocation: TaskInvocation {
                 identity: TaskIdentity::local(context.workload, context.trial),
@@ -377,11 +460,15 @@ impl FileSession {
             evaluator,
             evaluation_kind,
             baseline_passed,
+            initial_material,
         }
     }
 }
 
 impl WorkloadSession for FileSession {
+    fn initial_material_sha256(&self) -> Result<String, String> {
+        self.initial_material.clone()
+    }
     fn invocation(&self) -> &TaskInvocation {
         &self.invocation
     }
@@ -403,12 +490,121 @@ impl WorkloadSession for FileSession {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn recorded_settlement_is_strict_without_inventing_legacy_removal() {
+        use super::ResourceDisposition as D;
+        use serde_json::json;
+        let fields = [
+            None,
+            Some(json!(null)),
+            Some(json!("removed")),
+            Some(json!("stopped-preserved")),
+            Some(json!("unknown")),
+        ];
+        for top in &fields {
+            for nested in &fields {
+                for confirmed in [false, true] {
+                    let mut summary = json!({});
+                    if let Some(value) = nested {
+                        summary["workload_resource_disposition"] = value.clone();
+                    }
+                    let expected = match (top, nested) {
+                        (None, None) => true,
+                        (Some(a), Some(b)) if a == b => {
+                            (a.is_null() && !confirmed)
+                                || ((a == "removed" || a == "stopped-preserved") && confirmed)
+                        }
+                        _ => false,
+                    };
+                    assert_eq!(
+                        D::matches_record(top.as_ref(), confirmed, &summary),
+                        expected,
+                        "top={top:?}, summary={nested:?}, confirmed={confirmed}"
+                    );
+                }
+            }
+        }
+        for disposition in [
+            D::NotRequired,
+            D::Removed,
+            D::NotCreated,
+            D::StoppedPreserved,
+        ] {
+            let record = json!({"workload_resource_disposition":disposition});
+            assert!(D::matches_record(
+                record.get("workload_resource_disposition"),
+                true,
+                &record
+            ));
+            assert!(!D::matches_record(
+                record.get("workload_resource_disposition"),
+                false,
+                &record
+            ));
+            assert!(!D::matches_record(None, true, &record));
+        }
+        assert!(!D::matches_record(
+            None,
+            true,
+            &json!({"workload_resource_disposition":"unknown"})
+        ));
+    }
+
+    #[test]
+    fn evaluator_side_effects_cannot_become_the_verified_initial_material() {
+        use super::*;
+        fn changes_files(
+            _: &str,
+            workspace: &std::path::Path,
+            _: &str,
+        ) -> Result<super::Evaluation, String> {
+            std::fs::create_dir(workspace.join("__pycache__")).unwrap();
+            std::fs::write(
+                workspace.join("__pycache__/fixture.pyc"),
+                "evaluator side effect",
+            )
+            .unwrap();
+            Ok(super::Evaluation::Failed(
+                "expected baseline failure".into(),
+            ))
+        }
+        let root = std::env::temp_dir()
+            .join(TaskIdentity::local("material-before-evaluator", None).attempt_id);
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("fixture.py"), "original material").unwrap();
+        let project = crate::project::ProjectConfig::default();
+        let context = PreparationContext {
+            verify_initial_material: true,
+            budgets: Default::default(),
+            on_allocation: None,
+            workload: "fixture",
+            trial: None,
+            trial_set: None,
+            workload_directory: &root,
+            workspace: &root,
+            project_root: &root,
+            project_config: &project,
+        };
+        let session = FileSession::new(&context, "prompt".into(), changes_files, "bundled-fixture");
+        assert_eq!(session.baseline_passed(), Some(false));
+        assert_eq!(
+            session.initial_material_sha256().unwrap_err(),
+            "baseline evaluation changed initial workload material"
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("fixture.py")).unwrap(),
+            "original material"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn external_catalog_location_cannot_select_another_projects_tools() {
         let config = crate::project::ProjectConfig {
             tools_dir: "local-tools".into(),
             ..Default::default()
         };
         let context = super::PreparationContext {
+            verify_initial_material: false,
             budgets: Default::default(),
             on_allocation: None,
             workload: "fixture",
@@ -526,6 +722,7 @@ mod tests {
         std::fs::create_dir_all(&workloads).unwrap();
         super::super::populate(&workloads).unwrap();
         let mut session = super::super::prepare_task(&PreparationContext {
+            verify_initial_material: true,
             budgets: Default::default(),
             on_allocation: None,
             workload: "bug-fix",
@@ -541,6 +738,7 @@ mod tests {
         assert_eq!(session.invocation().identity.task_id, "bug-fix");
         assert!(!session.invocation().input.instructions.trim().is_empty());
         assert_eq!(session.baseline_passed(), Some(false));
+        let initial_material = session.initial_material_sha256().unwrap();
         assert_eq!(session.evaluation_kind(), "bundled-fixture");
         assert!(matches!(
             session.evaluate("done"),
@@ -550,7 +748,9 @@ mod tests {
         assert_eq!(session.evaluate(""), Ok(Evaluation::Passed));
         // Baseline evidence belongs to this attempt, not the mutated workspace.
         assert_eq!(session.baseline_passed(), Some(false));
+        assert_eq!(session.initial_material_sha256().unwrap(), initial_material);
         let later = super::super::prepare_task(&PreparationContext {
+            verify_initial_material: true,
             budgets: Default::default(),
             on_allocation: None,
             workload: "bug-fix",
@@ -563,6 +763,7 @@ mod tests {
         })
         .unwrap();
         assert_eq!(later.baseline_passed(), Some(true));
+        assert_ne!(later.initial_material_sha256().unwrap(), initial_material);
         assert_ne!(
             later.invocation().identity.attempt_id,
             session.invocation().identity.attempt_id

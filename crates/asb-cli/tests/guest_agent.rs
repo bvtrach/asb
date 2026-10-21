@@ -42,6 +42,8 @@ test -z "$ASB_GUEST_AGENT_REQUEST" || exit 90
 test -z "$CODEX_REMOTE_PAYLOAD" || exit 91
 test "$ASB_AGENT_API_KEY" = fixture-token || exit 92
 printf 'changed\n' > performed.txt
+if test -n "$ASB_SESSION_CONTEXT"; then printf '%s' "$ASB_SESSION_CONTEXT" > session-env.txt; fi
+if test "$ASB_RENAME_SESSION_CWD" = yes; then mv "$PWD" "$PWD-renamed" || exit 93; fi
 printf '%s\n' '{"type":"turn_end","usage":{"input":17,"output":5,"cacheRead":0}}'
 printf '%s\n' '{"type":"result","result":"fixture completed"}'
 printf 'fixture diagnostic\n' >&2
@@ -96,17 +98,60 @@ fn guest_refuses_unowned_or_controller_namespace_service_lifetimes_before_prepar
 
 #[test]
 fn guest_uses_registered_adapter_prepares_before_gate_and_preserves_output_usage_and_failure() {
+    qualify_guest_directory(false, false);
+}
+
+#[test]
+fn guest_preserves_inherited_shell_directory_and_environment_without_changing_project_authority() {
+    qualify_guest_directory(true, false);
+}
+
+#[test]
+fn guest_retains_inherited_directory_identity_after_client_renames_it() {
+    qualify_guest_directory(true, true);
+}
+
+#[test]
+fn guest_refuses_non_utf8_inherited_directory_before_the_application_gate() {
+    use std::os::unix::ffi::OsStringExt;
     let project = Project::new();
+    let directory = project
+        .0
+        .join(std::ffi::OsString::from_vec(b"non-utf8-\xff".to_vec()));
+    std::fs::create_dir(&directory).unwrap();
     let mut request = project.request();
+    request["inherit_working_directory"] = true.into();
+    let output = Command::new(env!("CARGO_BIN_EXE_asb"))
+        .arg("__asb-agent")
+        .current_dir(directory)
+        .isolated_env()
+        .env("ASB_GUEST_AGENT_REQUEST", request.to_string())
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("valid UTF-8"));
+    assert!(!project.0.join("private").exists());
+}
+
+fn qualify_guest_directory(inherit_directory: bool, rename: bool) {
+    let project = Project::new();
+    let launch_directory = project.0.join("session-cwd");
+    std::fs::create_dir(&launch_directory).unwrap();
+    let mut request = project.request();
+    request["inherit_working_directory"] = inherit_directory.into();
     request["timeout_seconds"] = serde_json::json!(3600);
     let mut process = Process(
         Command::new(env!("CARGO_BIN_EXE_asb"))
             .arg("__asb-agent")
+            .current_dir(&launch_directory)
             .isolated_env()
             .env("PATH", std::env::var_os("PATH").unwrap_or_default())
             .env("HOME", &project.0)
             .env("ASB_GUEST_AGENT_REQUEST", request.to_string())
             .env("CODEX_REMOTE_PAYLOAD", "must-not-leak")
+            .env("ASB_SESSION_CONTEXT", "inherited-context-marker")
+            .env("ASB_RENAME_SESSION_CWD", if rename { "yes" } else { "no" })
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
@@ -151,9 +196,31 @@ fn guest_uses_registered_adapter_prepares_before_gate_and_preserves_output_usage
     assert!(text.contains("fixture completed"));
     assert!(!text.contains("fixture diagnostic"));
     assert!(error.contains("fixture diagnostic"));
-    assert!(project.0.join("workspace/performed.txt").is_file());
+    let effective = if rename {
+        project.0.join("session-cwd-renamed")
+    } else if inherit_directory {
+        launch_directory
+    } else {
+        project.0.join("workspace")
+    };
+    assert!(effective.join("performed.txt").is_file());
+    assert_eq!(
+        std::fs::read_to_string(effective.join("session-env.txt")).unwrap(),
+        "inherited-context-marker"
+    );
+    if inherit_directory {
+        assert!(!project.0.join("workspace/performed.txt").exists());
+    }
     let bytes = std::fs::read(project.0.join("private/attempt/agent-result.json")).unwrap();
     let result: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(
+        result["execution_workspace"],
+        if inherit_directory {
+            project.0.join("session-cwd").to_string_lossy().into_owned()
+        } else {
+            project.0.join("workspace").to_string_lossy().into_owned()
+        }
+    );
     assert_eq!(result["exit_code"], 7);
     assert_eq!(result["token_usage"]["input_tokens"], 17);
     assert_eq!(result["token_usage"]["output_tokens"], 5);

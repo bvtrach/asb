@@ -91,6 +91,78 @@ fn expect_success(output: &Output) {
 }
 
 #[cfg(unix)]
+#[test]
+fn unusable_selected_agent_never_falls_back_to_a_different_path_installation() {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+    let project = Project::new();
+    project.init();
+    project.write("benchmark.toml", "agent='codex'\nworkload='bug-fix'\nprovider='openrouter'\nmodel='fixture/model'\nworkspace='workspace'\nlog_file='run.log'\n");
+    let marker = project.0.join("host-agent-started");
+    project.write(
+        "host-bin/codex",
+        &format!(
+            "#!/bin/sh\nprintf started > '{}'\nexit 7\n",
+            marker.display()
+        ),
+    );
+    std::fs::set_permissions(
+        project.0.join("host-bin/codex"),
+        std::fs::Permissions::from_mode(0o700),
+    )
+    .unwrap();
+    let path = std::env::join_paths(std::iter::once(project.0.join("host-bin")).chain(
+        std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()),
+    ))
+    .unwrap();
+    let body = serde_json::json!({"model":"fixture/model", "input":"fixture", "tools":[{"type":"function", "name":"fixture"}]}).to_string();
+    let interaction = serde_json::json!({"request":{"method":"POST","url":"/v1/responses","body":body},"response":{"status":200,"headers":{"content-type":"application/json"},"body":"{}"}});
+    project.write("input.jsonl", &format!("{interaction}\n"));
+    let run = || {
+        project.command_with_env(
+            &[
+                "run",
+                "benchmark.toml",
+                "--replay",
+                "--cassette",
+                "input.jsonl",
+            ],
+            &[("PATH", path.to_str().unwrap())],
+        )
+    };
+    let selected = project.0.join(".asb-tools/codex/bin/codex");
+    project.write(".asb-tools/codex/bin/codex", "not executable");
+    std::fs::set_permissions(&selected, std::fs::Permissions::from_mode(0o600)).unwrap();
+    for broken_symlink in [false, true] {
+        if broken_symlink {
+            std::fs::remove_file(&selected).unwrap();
+            symlink(project.0.join("absent-native-package"), &selected).unwrap();
+        }
+        let output = run();
+        assert!(!output.status.success());
+        assert!(
+            stderr(&output).contains("not a usable executable"),
+            "{}",
+            stderr(&output)
+        );
+        assert!(
+            !marker.exists(),
+            "an unusable selection must never start the host agent"
+        );
+    }
+    std::fs::remove_file(&selected).unwrap();
+    let output = run();
+    assert!(
+        !output.status.success(),
+        "fixture agent deliberately exits unsuccessfully"
+    );
+    assert!(
+        marker.is_file(),
+        "genuinely missing local installation must retain PATH fallback: {}",
+        stderr(&output)
+    );
+}
+
+#[cfg(unix)]
 fn fake_perf_distribution(project: &Project, bin: &str) {
     use std::os::unix::fs::PermissionsExt;
     for (name, script) in [
@@ -3869,8 +3941,11 @@ fn cli2key_success_stops_its_mock_bridge_after_model_discovery() {
         r##"#!/usr/bin/env node
 const http = require('http'), fs = require('fs');
 fs.writeFileSync(process.env.ASB_TEST_PIDFILE, String(process.pid));
-// Mark timeout separately so a slow test cannot mistake it for ASB cleanup.
-setTimeout(() => { fs.writeFileSync(process.env.ASB_TEST_EXPIRED, 'expired'); process.exit(0); }, 2000).unref();
+// Safety net, not the cleanup mechanism. Outlive the compatibility proxy's
+// five-second readiness budget under parallel test load; otherwise this fixture
+// can exit before a healthy ASB reaches it. The assertions below still require
+// ASB to reap the bridge before this timer fires.
+setTimeout(() => { fs.writeFileSync(process.env.ASB_TEST_EXPIRED, 'expired'); process.exit(0); }, 10000).unref();
 http.createServer((req,res) => {
   if (req.url !== '/v1/models') { res.writeHead(404); return res.end(); }
   res.writeHead(200, {'content-type':'application/json'});

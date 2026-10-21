@@ -154,6 +154,7 @@ fn isolated_bpftrace_preflight_and_attachment_failures() {
         };
     let mut sudo = BTreeSet::new();
     let mut context = PreflightContext {
+        project_root: None,
         measurement_dir: &root,
         selected: &selected,
         tool_dir: None,
