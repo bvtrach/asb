@@ -7,6 +7,7 @@ tests can run entirely offline using Python's standard library.
 """
 
 import argparse
+import fcntl
 import hashlib
 import importlib.metadata
 import json
@@ -392,6 +393,105 @@ def retained_evaluation_prefix(retained):
     return directories[0] + "/"
 
 
+def reconstruct_evaluation(retained, source, catalog, row, cancelled):
+    """Normalize already-completed official reports, never run tests again.
+
+    Keep every original byte (including a failed/missing wrapper) unchanged.
+    The derived evaluator binds those source bytes and is selected only after
+    its normal verifier accepts the complete frozen-input/report population.
+    """
+    from asb_retained import RetainedOutcome, require
+    from asb_resources import open_directory, private_file
+    prefix = source+"/"
+    descriptor, lock = open_directory(retained.child(source)),None
+    try:
+        lock = private_file(descriptor,"resources.lock",os.O_RDWR)
+        try:fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        except BlockingIOError:require(False,"official evaluator still has an active owner; no tests or reconstruction were started")
+        journal = retained.object(prefix+"resources.json")
+        run_id = journal.get("attempt", "")
+        require(journal.get("schema_version") == 1 and re.fullmatch(r"asb-[a-f0-9]{32}",str(run_id))
+                and journal.get("daemon") == retained.object("resources.json").get("daemon")
+                and re.fullmatch(r"[a-f0-9]{32}",str(journal.get("token",""))),
+                "raw official evaluator ownership does not match this attempt")
+        name = f"sweb.eval.{retained.identity['task_id'].lower()}.{run_id}"
+        require(journal.get("resources") == [{"kind":"containers","name":name}],
+                "raw evaluator resource declaration does not match its task")
+        cleanup = retained.object(prefix+"cleanup.json")
+        require(cleanup.get("container") == name and cleanup.get("status") in ["removed","absent"],
+                "raw official evaluator cleanup is not confirmed; no evaluator was rerun")
+        old = retained.object(prefix+"evaluation.json") if retained.child(prefix+"evaluation.json").exists() else None
+        if old is not None:
+            require(all(old.get(key) == retained.identity[key] for key in ["workload","task_id","dataset"])
+                    and old.get("run_id") == run_id and old.get("harness_revision") == HARNESS_REVISION
+                    and old.get("patch_sha256") == retained.submission["patch_sha256"],
+                    "lost wrapper metadata differs from its frozen attempt")
+        relative_report = (old or {}).get("official_report") or f"logs/evaluation/{run_id}/asb/{retained.identity['task_id']}/report.json"
+        relative_summary = (old or {}).get("official_summary") or f"logs/evaluation/{run_id}/results.json"
+        probe = RetainedOutcome({"reference":retained.reference},inspect=True)
+        report = probe.object(prefix+relative_report)
+        require(set(report) == {retained.identity["task_id"]}
+                and type(report[retained.identity["task_id"]].get("resolved")) is bool,
+                "raw official report has no completed task outcome")
+        resolved = report[retained.identity["task_id"]]["resolved"]
+        result = {"schema_version":1,"workload":catalog["workload"],"task_id":retained.identity["task_id"],
+            "dataset":catalog["dataset"],"run_id":run_id,"patch_sha256":retained.submission["patch_sha256"],
+            "harness_revision":HARNESS_REVISION,"resolved":resolved,"outcome":"resolved" if resolved else "unresolved",
+            "reason":None if resolved else "official_tests_not_resolved", "source_image":row.get("image"),
+            "image":probe.object(prefix+"image-identity.json"),"sdk":probe.object(prefix+"sdk-identity.json"),
+            "official_report":relative_report,"official_summary":relative_summary}
+        # Full frozen evaluator row equality binds the selected pinned test data,
+        # not merely an instance/base shared by several original populations.
+        expected_row = dict(row,image=retained.task["image"]["image_id"])
+        require(json.loads(probe.bytes(prefix+"dataset.json")) == [expected_row],
+                "raw evaluator input differs from the installed pinned task")
+        probe.select_grade(result)
+        verify_retained(probe,prefix=prefix,result=result)
+        files = ["dataset.json","submission.jsonl","sdk-identity.json","image-identity.json",relative_report,relative_summary,
+                 "resources.json","cleanup.json"]
+        require(len(set(files)) == len(files),"raw evaluator artifacts overlap")
+        inputs = {}
+        bodies = {}
+        for relative in files:
+            body = probe.bytes(prefix+relative)
+            bodies[relative] = body
+            inputs[prefix+relative] = {"sha256":hashlib.sha256(body).hexdigest(),"bytes":len(body)}
+        wrapper = prefix+"evaluation.json"
+        if old is None:inputs[wrapper] = None
+        else:
+            body = retained.bytes(wrapper)
+            inputs[wrapper] = {"sha256":hashlib.sha256(body).hexdigest(),"bytes":len(body)}
+        require(not cancelled.is_set(),"raw outcome reconstruction cancelled before publication")
+        directory = "recovered-evaluation-"+uuid.uuid4().hex
+        staging = ".outcome-reconstruction-"+uuid.uuid4().hex
+        destination = retained.child(staging)
+        destination.mkdir(mode=0o700)
+        for relative,body in bodies.items():
+            # RetainedOutcome validates the entire original relative path.
+            path = retained.child(staging+"/"+relative)
+            path.parent.mkdir(mode=0o700,parents=True,exist_ok=True)
+            with path.open("xb") as output:
+                os.fchmod(output.fileno(),0o600)
+                output.write(body)
+                output.flush()
+                os.fsync(output.fileno())
+        result["reconstruction"] = {"schema_version":1,"scope":"existing-official-reports-not-test-retry",
+                                    "source":source,"inputs":inputs}
+        atomic_write(destination/"evaluation.json",encoded(result))
+        preview = RetainedOutcome({"reference":retained.reference},inspect=True)
+        preview.select_grade(result)
+        verify_retained(preview,prefix=staging+"/")
+        require(not cancelled.is_set(),"raw outcome reconstruction cancelled before publication")
+        os.rename(destination,retained.child(directory))
+        retained.select_grade(result)
+        verify_retained(retained,prefix=directory+"/")
+        require(not cancelled.is_set(),"raw outcome reconstruction cancelled before selection")
+        retained.publish_selection(directory)
+    finally:
+        if lock is not None:os.close(lock)
+        os.close(descriptor)
+
+
 def grade_retained(retained, catalog_path, cancelled):
     """Grade the frozen patch, not a new client attempt or restarted workspace."""
     from asb_retained import require
@@ -411,6 +511,7 @@ def grade_retained(retained, catalog_path, cancelled):
         return
     candidates = []
     completed = []
+    raw = []
     for index,path in enumerate(retained.root.iterdir()):
         require(index < 256, "retained attempt has excessive top-level artifacts")
         if path.name.startswith(("evaluation-","recovered-evaluation-")):
@@ -438,8 +539,18 @@ def grade_retained(retained, catalog_path, cancelled):
                     run_id = retained.object(path.name+"/resources.json").get("attempt")
                 if isinstance(run_id,str) and re.fullmatch(r"asb-[a-f0-9]{32}",run_id):
                     reports.append("logs/evaluation/"+run_id+"/asb/"+retained.identity["task_id"]+"/report.json")
-                require(not any(retained.child(path.name+"/"+relative).exists() for relative in reports),
-                        "retained official reports need outcome reconstruction; the evaluator was not rerun")
+                    reports.append("logs/evaluation/"+run_id+"/results.json")
+                if any(retained.child(path.name+"/"+relative).exists() for relative in reports):raw.append(path.name)
+    require(len(raw) <= 1,"multiple raw official grades cannot be replaced or guessed")
+    if raw and len(completed) == 1:
+        receipt = retained.object(completed[0]+"/evaluation.json").get("reconstruction",{})
+        # A crash after derived publication but before selection can be
+        # reconciled through its complete source binding, not another test run.
+        if isinstance(receipt,dict) and receipt.get("source") == raw[0]:raw = []
+    require(not (raw and completed),"multiple completed or raw official grades cannot be replaced or guessed")
+    if raw:
+        reconstruct_evaluation(retained,raw[0],catalog,row,cancelled)
+        return
     require(len(completed) <= 1, "multiple completed retained evaluations cannot be replaced or guessed")
     if completed:
         # Validate every byte of the existing grade before selecting it. A bad
@@ -490,7 +601,7 @@ def inspect_retained(retained):
     verify_retained(retained)
 
 
-def verify_retained(retained, prefix=None):
+def verify_retained(retained, prefix=None, result=None):
     """Validate a closed SWE-bench record without executing tests or an agent."""
     from asb_retained import require
     require(retained.task.get("sdk") == sdk_identity(), "retained SWE-bench SDK identity differs")
@@ -501,7 +612,7 @@ def verify_retained(retained, prefix=None):
             and retained.submission.get("base_commit") == retained.task["baseline"].get("base_commit"),
             "retained SWE-bench submission hash or base commit differs")
     prefix = retained_evaluation_prefix(retained) if prefix is None else prefix
-    result = retained.object(prefix + "evaluation.json")
+    result = retained.object(prefix + "evaluation.json") if result is None else result
     require(result.get("schema_version") == 1
             and result.get("harness_revision") == HARNESS_REVISION
             and all(result.get(key) == retained.identity.get(key) for key in ["workload","task_id","dataset"]),
@@ -509,7 +620,8 @@ def verify_retained(retained, prefix=None):
     require(result.get("patch_sha256") == digest, "retained evaluator patch hash differs")
     if not patch.strip():
         require(result.get("resolved") is False and result.get("outcome") == "unresolved"
-                and result.get("reason") == "empty_submission" and retained.summary["workload_success"] is False,
+                and result.get("reason") == "empty_submission" and retained.summary["workload_success"] is False
+                and "reconstruction" not in result,
                 "retained empty submission has an invalid grade")
         return
     retained.grade(result)
@@ -522,19 +634,54 @@ def verify_retained(retained, prefix=None):
     submitted = retained.object(prefix + "submission.jsonl")
     require(submitted.get("instance_id") == retained.identity["task_id"]
             and submitted.get("model_patch") == patch.decode("utf-8"), "retained evaluator submission differs")
+    require(all(isinstance(result.get(key),str) and result[key] for key in ["official_report","official_summary"]),
+            "retained official report paths are malformed")
     report = retained.object(prefix + result["official_report"])
     summary = retained.object(prefix + result["official_summary"])
     task = retained.identity["task_id"]
-    require(set(report) == {task} and report[task].get("resolved") == result["resolved"]
-            and summary.get("total_instances") == 1 and summary.get("submitted_ids") == [task]
+    require(set(report) == {task} and type(report[task].get("resolved")) is bool and report[task].get("resolved") == result["resolved"]
+            and type(summary.get("total_instances")) is int and summary.get("total_instances") == 1 and summary.get("submitted_ids") == [task]
             and summary.get("completed_ids") == [task]
             and summary.get("resolved_ids") == ([task] if result["resolved"] else [])
             and (not result["resolved"] or report[task].get("patch_successfully_applied") is True),
             "retained official SWE-bench reports disagree")
     require(result.get("sdk") == retained.object(prefix + "sdk-identity.json")
+            and result.get("sdk") == retained.task.get("sdk")
             and result.get("image") == retained.object(prefix + "image-identity.json")
             and result["image"].get("image_id") == retained.task["image"].get("image_id"),
             "retained official evaluator image or SDK differs")
+    if "reconstruction" in result:
+        receipt = result["reconstruction"]
+        require(isinstance(receipt,dict) and receipt.get("schema_version") == 1
+                and receipt.get("scope") == "existing-official-reports-not-test-retry"
+                and re.fullmatch(r"(?:evaluation|recovered-evaluation)-[a-f0-9]{32}",str(receipt.get("source","")))
+                and receipt["source"]+"/" != prefix and isinstance(receipt.get("inputs"),dict)
+                and 1 <= len(receipt["inputs"]) <= 16,"reconstructed evaluator provenance is malformed")
+        expected_sources = {receipt["source"]+"/"+relative for relative in [
+            "dataset.json","submission.jsonl","sdk-identity.json","image-identity.json",result["official_report"],
+            result["official_summary"],"resources.json","cleanup.json","evaluation.json"]}
+        require(set(receipt["inputs"]) == expected_sources,"reconstructed evaluator source population is incomplete")
+        for relative,expected in receipt["inputs"].items():
+            require(isinstance(relative,str) and relative.startswith(receipt["source"]+"/"),
+                    "reconstructed evaluator source escapes its original directory")
+            if expected is None:
+                require(relative == receipt["source"]+"/evaluation.json" and not retained.child(relative).exists(),
+                        "missing original wrapper was replaced after reconstruction")
+            else:
+                body = retained.bytes(relative)
+                require(expected == {"sha256":hashlib.sha256(body).hexdigest(),"bytes":len(body)},
+                        "original official evaluator artifacts changed after reconstruction")
+        journal = retained.object(receipt["source"]+"/resources.json")
+        name = f"sweb.eval.{task.lower()}.{result.get('run_id')}"
+        require(journal.get("schema_version") == 1 and re.fullmatch(r"asb-[a-f0-9]{32}",str(result.get("run_id","")))
+                and journal.get("attempt") == result["run_id"]
+                and journal.get("daemon") == retained.object("resources.json").get("daemon")
+                and re.fullmatch(r"[a-f0-9]{32}",str(journal.get("token","")))
+                and journal.get("resources") == [{"kind":"containers","name":name}],
+                "reconstructed evaluator resource identity differs")
+        cleanup = retained.object(receipt["source"]+"/cleanup.json")
+        require(cleanup.get("container") == name and cleanup.get("status") in ["removed","absent"],
+                "reconstructed evaluator cleanup is not confirmed")
 
 
 def attempt_report(reporter):

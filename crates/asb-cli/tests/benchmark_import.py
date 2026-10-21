@@ -1,4 +1,5 @@
 """Grade-only sweep imports: no clients, providers, Docker or test runners."""
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -93,6 +94,48 @@ class SweepFixture:
 
 @unittest.skipUnless(os.environ.get("ASB_TEST_HOST_ASB"), "requires compiled ASB")
 class GradeImportTests(unittest.TestCase):
+    def test_reconstructed_swe_grades_import_and_compare_bind_original_raw_artifacts(self):
+        fixture = SweepFixture()
+        self.addCleanup(fixture.temporary.cleanup)
+        originals = []
+        for index in range(3):
+            artifacts = fixture.root/f".asb/attempts/a-{index}-1"
+            source = "evaluation-"+"e"*32
+            original = artifacts/source
+            (artifacts/"evaluation-fixture").rename(original)
+            result = json.loads((original/"evaluation.json").read_text())
+            result["run_id"] = "asb-"+"f"*32
+            name = "sweb.eval.case-1."+result["run_id"]
+            (original/"resources.json").write_text(json.dumps({"schema_version":1,"attempt":result["run_id"],
+                "daemon":"fixture-daemon","token":"d"*32,"resources":[{"kind":"containers","name":name}]}))
+            (original/"cleanup.json").write_text(json.dumps({"container":name,"status":"absent"}))
+            old = dict(result,outcome="evaluation_error")
+            (original/"evaluation.json").write_text(json.dumps(old))
+            directory = "recovered-evaluation-"+"d"*32
+            target = artifacts/directory
+            shutil.copytree(original,target)
+            inputs = {}
+            for relative in ["dataset.json","submission.jsonl","sdk-identity.json","image-identity.json",
+                             "report.json","summary.json","resources.json","cleanup.json","evaluation.json"]:
+                body = (original/relative).read_bytes()
+                inputs[source+"/"+relative] = {"sha256":hashlib.sha256(body).hexdigest(),"bytes":len(body)}
+            result["reconstruction"] = {"schema_version":1,"scope":"existing-official-reports-not-test-retry",
+                                        "source":source,"inputs":inputs}
+            (target/"evaluation.json").write_text(json.dumps(result))
+            identity = json.loads((artifacts/"task.json").read_text())["identity"]
+            (artifacts/"selected-evaluation.json").write_text(json.dumps({"schema_version":1,
+                "scope":"selected-retained-evaluator-not-agent-retry","attempt_id":identity["attempt_id"],"directory":directory}))
+            originals.append(original)
+        imported = fixture.run("sweep","sweep.toml","--import-grades","--json")
+        self.assertEqual(imported.returncode,0,imported.stderr.decode())
+        compared = fixture.run("compare","sweep.toml")
+        self.assertEqual(compared.returncode,0,compared.stderr.decode())
+        before = {path:path.read_bytes() for path in fixture.imports()}
+        (originals[0]/"report.json").write_text("{}")
+        compared = fixture.run("compare","sweep.toml")
+        self.assertNotEqual(compared.returncode,0)
+        self.assertEqual(before,{path:path.read_bytes() for path in fixture.imports()})
+
     def test_both_recovered_terminal_grade_imports_require_preserved_resource_cleanup(self):
         fixture = SweepFixture()
         self.addCleanup(fixture.temporary.cleanup)

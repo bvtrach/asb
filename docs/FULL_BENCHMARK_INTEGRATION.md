@@ -2393,3 +2393,48 @@ import/compare cases are included. Strict Clippy, formatting and `make build`
 with rustdoc, diagrams, interactive views and completions passed. Packaged-crate
 and exact-head hosted verification follow; the full delivery checklist remains
 open.
+
+### Existing official SWE-bench outcome reconstruction
+
+Explicit retained grading can now reconstruct a missing/failed wrapper result
+from already-completed official reports instead of refusing or rerunning the
+tests. It takes the original evaluator's inactive owner lock and validates its
+task-specific resource journal/cleanup, full frozen dataset row against the
+installed pinned task, candidate bytes, SDK and immutable image. The original
+instance report and population summary must agree on a completed true/false
+outcome. No Docker daemon, evaluator, client or provider is started by this
+path. Original inputs, reports and any failed wrapper remain unchanged.
+
+A separate metadata-only evaluator directory holds bounded copies and a source
+manifest, including the original wrapper's bytes or absence. Private staging
+keeps an interrupted metadata copy from masquerading as another official test
+invocation. A complete derived publication missed before selection can be
+reconciled without creating another grade. Current local inspection and
+import/compare revalidate original source bytes, declared ownership/cleanup and
+copied reports; source edits or replaced formerly-missing wrappers are errors.
+No execution status/time/tokens are reconstructed or historically attested.
+
+Provider-free tests cover both grades and missing/failed wrappers for all three
+populations, active owners, incomplete/mismatched data, changed SDK/image,
+malformed provenance, source edits, interrupted staging/selection and grade
+imports. Ordinary official retained grading and completed-grade reuse remain
+regressions. Runtime qualification and final source/package/hosted gates follow.
+The prior Harbor grading commit's hosted CI run 39539643992 passed. Terminal
+verifier outcome reconstruction, interrupted-slot continuation, population
+qualification/presentation, final review, merge/main CI and minor release remain
+in the full unchanged goal.
+
+Real public CLI reconstruction qualification passed in 165.627 seconds at
+`retained-original-grading-wwls14jp`: the original Full/Lite/Verified unresolved
+cases and a known-correct Lite case were graded once with the official SDK,
+then only their ASB wrapper/selection were archived as a controlled loss fixture.
+Reconstruction succeeded with a deliberately unavailable Docker endpoint;
+original SDK bytes, repeated results/inspection and stopped task state stayed
+unchanged. No live LLM was used. This exercises actual official reports, not a
+claim of full-population AI solving or recovery of unknowable crash gaps.
+Final source gates passed 447 unit tests, 87 offline CLI tests, twenty benchmark
+protocol suites, ten guest/lifecycle checks and the remaining integrations.
+Twelve retained SWE grading/reconstruction checks and ten public import/compare
+checks are included. Strict Clippy, formatting and `make build` with rustdoc,
+diagrams, interactive views and completions passed. Packaged-crate and exact-head
+hosted checks follow; the full delivery checklist remains incomplete.

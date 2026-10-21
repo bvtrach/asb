@@ -1,5 +1,6 @@
 """Provider-free retained SWE submission grading and owner-loss contracts."""
 import contextlib
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -29,7 +30,42 @@ class RetainedGradingTests(unittest.TestCase):
 
     def catalog(self, fixture):
         return ({"workload":fixture.request["reference"]["workload"],
-                 "dataset":fixture.request["reference"]["dataset"]}, {"base_commit":"b"*40})
+                 "dataset":fixture.request["reference"]["dataset"]},
+                {"instance_id":"case-1","base_commit":"b"*40,"image":"sha256:"+"c"*64})
+
+    def raw(self,workload="swe-bench-lite",resolved=False,missing=False):
+        fixture,value = self.new(workload,resolved,ungraded=False)
+        directory = fixture.root/("evaluation-"+"e"*32)
+        directory.chmod(0o700)
+        result = json.loads((directory/"evaluation.json").read_text())
+        run_id = "asb-"+"f"*32
+        container = "sweb.eval.case-1."+run_id
+        report = directory/f"logs/evaluation/{run_id}/asb/case-1/report.json"
+        report.parent.mkdir(parents=True)
+        (directory/"report.json").rename(report)
+        summary = directory/f"logs/evaluation/{run_id}/results.json"
+        (directory/"summary.json").rename(summary)
+        result.update(outcome="evaluation_error",run_id=run_id,
+            official_report=str(report.relative_to(directory)),official_summary=str(summary.relative_to(directory)))
+        (directory/"evaluation.json").write_text(json.dumps(result))
+        if missing:(directory/"evaluation.json").unlink()
+        (directory/"resources.json").write_text(json.dumps({"schema_version":1,"attempt":run_id,
+            "daemon":"fixture-daemon","token":"d"*32,"resources":[{"kind":"containers","name":container}]}))
+        (directory/"cleanup.json").write_text(json.dumps({"container":container,"status":"absent"}))
+        (directory/"resources.lock").touch()
+        for path in directory.rglob("*"):
+            if path.is_file():path.chmod(0o600)
+        return fixture,value,directory
+
+    def reconstruct(self,fixture,value):
+        with patch.object(swe,"sdk_identity",return_value=fixture.sdk), \
+             patch.object(swe,"read_task",return_value=self.catalog(fixture)), \
+             patch.object(swe,"evaluate_submission") as evaluator, \
+             patch("asb_docker.DockerSession") as docker:
+            try:swe.grade_retained(value,"unused",threading.Event())
+            finally:
+                evaluator.assert_not_called()
+                docker.assert_not_called()
 
     def evaluator(self, fixture, resolved):
         oracle = Fixture(fixture.request["reference"]["workload"],resolved)
@@ -95,19 +131,93 @@ class RetainedGradingTests(unittest.TestCase):
             evaluator.assert_not_called()
         self.assertFalse((fixture.root/"selected-evaluation.json").exists())
 
-    def test_lost_wrapper_result_with_existing_official_grade_is_not_regraded(self):
-        fixture,value = self.new(ungraded=False)
-        path = fixture.root/("evaluation-"+"e"*32)/"evaluation.json"
-        result = json.loads(path.read_text())
-        result["outcome"] = "evaluation_error"
-        path.write_text(json.dumps(result))
-        with patch.object(swe,"sdk_identity",return_value=fixture.sdk), \
-             patch.object(swe,"read_task",return_value=self.catalog(fixture)), \
-             patch.object(swe,"evaluate_submission") as evaluator:
-            with self.assertRaisesRegex(retained.RetainedError,"outcome reconstruction"):
-                swe.grade_retained(value,"unused",threading.Event())
-            evaluator.assert_not_called()
+    def test_all_populations_reconstruct_both_raw_grades_without_docker_or_evaluation(self):
+        for workload in ["swe-bench","swe-bench-lite","swe-bench-verified"]:
+            for resolved in [False,True]:
+                for missing in [False,True]:
+                    with self.subTest(workload=workload,resolved=resolved,missing=missing):
+                        fixture,value,directory = self.raw(workload,resolved,missing)
+                        before = {path:path.read_bytes() for path in directory.rglob("*") if path.is_file()}
+                        self.reconstruct(fixture,value)
+                        self.assertEqual({path:path.read_bytes() for path in before},before)
+                        self.assertEqual(set(before),{path for path in directory.rglob("*") if path.is_file()})
+                        self.assertEqual(value.inspected_grade()["workload_success"],resolved)
+                        selected = value.selected_evaluation()
+                        self.assertTrue(selected.startswith("recovered-evaluation-"))
+                        self.assertIn("reconstruction",value.object(selected+"evaluation.json"))
+                        with patch.object(swe,"sdk_identity",return_value=fixture.sdk):
+                            inspected = fixture.inspect()
+                        self.assertEqual(inspected["workload_success"],resolved)
+                        self.assertIsNone(inspected["process_success"])
+                        repeated = retained.RetainedOutcome(fixture.request,inspect=True)
+                        repeated.grading = True
+                        self.reconstruct(fixture,repeated)
+                        self.assertEqual(before,{path:path.read_bytes() for path in before})
+
+    def test_reconstructed_grade_cannot_hide_changed_sources_or_a_replaced_missing_wrapper(self):
+        for mutation in ["report","wrapper","manifest"]:
+            fixture,value,directory = self.raw(missing=True)
+            self.reconstruct(fixture,value)
+            if mutation == "report":
+                path = next(directory.glob("logs/evaluation/*/asb/case-1/report.json"))
+                path.write_text('{"case-1":{"resolved":true,"patch_successfully_applied":true}}')
+            if mutation == "wrapper":(directory/"evaluation.json").write_text("{}")
+            if mutation == "manifest":
+                path = fixture.root/value.selected_evaluation()/"evaluation.json"
+                result = json.loads(path.read_text())
+                result["reconstruction"]["inputs"].pop(next(iter(result["reconstruction"]["inputs"])))
+                path.write_text(json.dumps(result))
+            with self.subTest(mutation=mutation),patch.object(swe,"sdk_identity",return_value=fixture.sdk):
+                with self.assertRaises(retained.RetainedError):fixture.inspect()
+
+    def test_reconstruction_publication_before_selection_is_reconciled_without_new_tests(self):
+        fixture,value,directory = self.raw()
+        self.reconstruct(fixture,value)
+        (fixture.root/"selected-evaluation.json").unlink()
+        repeated = retained.RetainedOutcome(fixture.request,inspect=True)
+        repeated.grading = True
+        self.reconstruct(fixture,repeated)
+        self.assertIsNotNone(repeated.selected_evaluation())
+        self.assertEqual(len(list(fixture.root.glob("recovered-evaluation-*"))),1)
+
+    def test_partial_reconstruction_is_not_mistaken_for_another_official_grader(self):
+        fixture,value,_directory = self.raw()
+        with patch.object(swe,"atomic_write",side_effect=OSError("fixture publication failure")):
+            with self.assertRaises(OSError):self.reconstruct(fixture,value)
         self.assertFalse((fixture.root/"selected-evaluation.json").exists())
+        self.assertEqual(list(fixture.root.glob("recovered-evaluation-*")),[])
+        self.assertEqual(len(list(fixture.root.glob(".outcome-reconstruction-*"))),1)
+        repeated = retained.RetainedOutcome(fixture.request,inspect=True)
+        repeated.grading = True
+        self.reconstruct(fixture,repeated)
+        self.assertIsNotNone(repeated.selected_evaluation())
+        self.assertEqual(len(list(fixture.root.glob("recovered-evaluation-*"))),1)
+
+    def test_raw_reconstruction_requires_inactive_owner_and_matching_complete_reports(self):
+        from asb_resources import RecoveryError
+        for mutation in ["active","journal","cleanup","summary","row","sdk","image","wrapper","partial"]:
+            fixture,value,directory = self.raw()
+            descriptor = None
+            if mutation == "active":
+                descriptor = os.open(directory/"resources.lock",os.O_RDWR)
+                fcntl.flock(descriptor,fcntl.LOCK_EX|fcntl.LOCK_NB)
+            if mutation in ["journal","cleanup"]:(directory/("resources.json" if mutation == "journal" else "cleanup.json")).write_text("{}")
+            if mutation == "summary":next(directory.glob("logs/evaluation/*/results.json")).write_text("{}")
+            if mutation == "row":(directory/"dataset.json").write_text("[]")
+            if mutation == "sdk":(directory/"sdk-identity.json").write_text("{}")
+            if mutation == "image":(directory/"image-identity.json").write_text("{}")
+            if mutation == "wrapper":
+                result = json.loads((directory/"evaluation.json").read_text())
+                result["dataset"] = {}
+                (directory/"evaluation.json").write_text(json.dumps(result))
+            if mutation == "partial":next(directory.glob("logs/evaluation/*/asb/case-1/report.json")).unlink()
+            try:
+                with self.subTest(mutation=mutation),self.assertRaises((retained.RetainedError,RecoveryError,OSError)):
+                    self.reconstruct(fixture,value)
+            finally:
+                if descriptor is not None:os.close(descriptor)
+            self.assertFalse((fixture.root/"selected-evaluation.json").exists())
+            self.assertEqual(list(fixture.root.glob("recovered-evaluation-*")),[])
 
     def test_failed_recovered_grading_preserves_artifacts_without_selecting_a_grade(self):
         fixture,value = self.new()

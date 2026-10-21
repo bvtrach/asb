@@ -63,6 +63,30 @@ class OriginalRetainedGrading(unittest.TestCase):
                     for field in ["process_success","elapsed_ms","exit_code","token_usage","steps"]:
                         self.assertIsNone(report[field])
                     self.assertEqual((artifacts/"candidate.patch").read_bytes(),candidate)
+                    # Fault-inject loss of only ASB's wrapper/selection after
+                    # actual official completion. Archive them outside this
+                    # attempt; every original SDK input/report stays untouched.
+                    selection = json.loads((artifacts/"selected-evaluation.json").read_bytes())
+                    original = artifacts/selection["directory"]
+                    archived = qualification/(reference.stem+"-lost-wrapper")
+                    archived.mkdir(mode=0o700)
+                    (artifacts/"selected-evaluation.json").rename(archived/"selection.json")
+                    (original/"evaluation.json").rename(archived/"evaluation.json")
+                    raw = {path:path.read_bytes() for path in original.rglob("*") if path.is_file()}
+                    # Reconstruction must succeed with no usable daemon. An
+                    # accidental evaluator invocation cannot satisfy this test.
+                    reconstruction_env = dict(environment,DOCKER_HOST="unix://"+str(qualification/"no-docker.sock"))
+                    reconstructed = subprocess.run(command,cwd=root,env=reconstruction_env,capture_output=True,timeout=30)
+                    reference.with_suffix(".reconstructed.stdout").write_bytes(reconstructed.stdout)
+                    reference.with_suffix(".reconstructed.stderr").write_bytes(reconstructed.stderr)
+                    self.assertEqual(reconstructed.returncode,0,reconstructed.stderr.decode())
+                    report = json.loads(reconstructed.stdout)
+                    self.assertIs(report["workload_success"],resolved)
+                    self.assertEqual(raw,{path:path.read_bytes() for path in original.rglob("*") if path.is_file()})
+                    derived = json.loads((artifacts/"selected-evaluation.json").read_bytes())
+                    self.assertNotEqual(derived["directory"],selection["directory"])
+                    self.assertEqual(json.loads((artifacts/derived["directory"]/"evaluation.json").read_bytes())
+                                     ["reconstruction"]["source"],selection["directory"])
                     before = {path:path.read_bytes() for path in artifacts.rglob("*") if path.is_file()}
                     repeated = subprocess.run(command,cwd=root,env=environment,capture_output=True,timeout=30)
                     self.assertEqual(repeated.returncode,0,repeated.stderr.decode())

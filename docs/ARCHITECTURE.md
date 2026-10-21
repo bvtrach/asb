@@ -626,6 +626,19 @@ of guessing the latest directory. Unfinished evaluator journals are independentl
 locked and quiesced before another grading attempt. Missing ownership evidence,
 conflicting completed grades, changed patches/catalogs and unavailable images
 are errors. Grading failure preserves artifacts without selecting a grade.
+If complete official SWE-bench reports remain after a missing/failed ASB
+wrapper, explicit grading instead reconstructs their normalized outcome without
+Docker, another evaluator or an agent. The original evaluator lock must be
+inactive and its task-specific cleanup confirmed. Frozen SDK inputs must match
+the installed pinned task, candidate patch, image and SDK; the official summary
+and instance report must agree. A new metadata-only evaluation directory keeps
+bounded copies plus a manifest binding every original input/report and the
+old wrapper's bytes or absence. No original artifact is replaced. Private
+staging keeps an interrupted copy from looking like another official grader;
+a complete derived result missed before selection can be reconciled without
+rerunning tests. Inspection/import/compare revalidate the source manifest,
+ownership and cleanup as well as the copied reports. Changed/incomplete or
+ambiguous raw outcomes remain errors, never permission to repeat tests.
 The helper observes EOF/SIGTERM to cancel its official evaluator; raw descriptor
 reads avoid a buffered-stdin daemon shutdown race. Returned reports use the same
 grade-only inspection schema and still cannot invent missing execution metrics
@@ -663,8 +676,8 @@ Transport output and child shutdown are bounded, including full-pipe failure.
 Normal Harbor grading now publishes the same durable verifier-start record.
 Completed false/true grades are preserved and reused, recovered cleanup must
 confirm stopped preservation before selection, and inspection/import/compare
-follow the explicit selected evaluator. Raw-outcome reconstruction and complete
-interrupted-slot continuation remain unfinished.
+follow the explicit selected evaluator. Terminal verifier raw-outcome
+reconstruction and complete interrupted-slot continuation remain unfinished.
 See the full benchmark delivery
 checklist before claiming complete upstream benchmark support.
 Their shared installer also downloads a checksum-pinned original

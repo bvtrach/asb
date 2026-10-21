@@ -235,6 +235,12 @@ both grades, immutable submissions, preservation of completed grades and failed
 predecessors, malformed/missing ownership, active prior graders, cancellation,
 catalog/patch mismatch, explicit evaluator selection and clean helper shutdown
 while stdin remains open. EOF and SIGTERM cancellation do not rerun agents.
+The same suite covers raw official-outcome reconstruction for both grades in
+all three populations, missing/failed wrappers, active owners, incomplete or
+changed reports/inputs, changed SDK/image, interrupted metadata publication,
+and source changes after reconstruction. This path never starts Docker or an
+evaluator. Import/compare additionally binds reconstructed outcomes to the
+original raw bytes, not just copied reports.
 The opt-in `benchmark_live_grading.py` uses the installed original catalogs/SDK,
 Docker and `ASB_TEST_BENCHMARK_ASB`/`ASB_TEST_SWECATALOG_ROOT`. It captures and
 preserves actual patches without grading, then invokes public `--grade` for
@@ -243,6 +249,12 @@ checks unchanged repeat requests/inspection, original task containers remaining
 stopped, unknown execution metrics and positively-owned fixture cleanup. No LLM
 is used, and this is not full-population or AI-solving qualification. Do not
 rebuild the selected binary while this qualification is running.
+After each real grade the fixture now archives only its wrapper/selection to
+simulate lost ASB publication, leaves all official SDK files untouched, and
+requires public reconstruction to succeed with a deliberately unavailable
+Docker endpoint. Repeat grading/inspection must retain the reconstructed
+result, original raw bytes and stopped task without another evaluation. This
+is controlled fixture fault injection, not proof of every possible crash gap.
 
 `benchmark_terminal_grading.py` supplies provider-free original 1.0 SDK seams
 for retained true/false grading, completed-grade preservation, definition/capture
