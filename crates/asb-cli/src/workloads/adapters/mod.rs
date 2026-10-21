@@ -31,6 +31,9 @@ mod terminal_bench_1_0;
 mod terminal_bench_2_1;
 
 pub(super) trait WorkloadAdapter: Sync {
+    fn descriptor(&self, name: &str) -> super::contracts::ModuleDescriptor {
+        super::contracts::ModuleDescriptor::local(name, self.evaluation_kind(name))
+    }
     fn process_lifetime(&self) -> super::session::ProcessLifetime {
         super::session::ProcessLifetime::Quiesce
     }
@@ -176,6 +179,14 @@ impl WorkloadAdapter for StaticExternalAdapter {
 
 pub(super) struct PromptAdapter;
 impl WorkloadAdapter for PromptAdapter {
+    fn descriptor(&self, name: &str) -> super::contracts::ModuleDescriptor {
+        let mut descriptor =
+            super::contracts::ModuleDescriptor::local(name, self.evaluation_kind(name));
+        if self.evaluation_kind(name) == "response-review" {
+            descriptor.protocol.submission = super::contracts::SubmissionKind::ResponseText;
+        }
+        descriptor
+    }
     fn evaluation_kind(&self, name: &str) -> &'static str {
         if name == "repository-navigation" {
             "response-review"
