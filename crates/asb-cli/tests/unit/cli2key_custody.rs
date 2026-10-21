@@ -98,6 +98,38 @@ fn command(script: &str) -> Command {
     command
 }
 
+fn assert_original_socket_released(identity: (u64, u64)) {
+    use std::os::unix::fs::MetadataExt;
+    for entry in std::fs::read_dir("/proc/self/fd").unwrap() {
+        if let Ok(metadata) = std::fs::metadata(entry.unwrap().path()) {
+            assert_ne!(
+                (metadata.dev(), metadata.ino()),
+                identity,
+                "original socket retained in parent FD custody"
+            );
+        }
+    }
+    // Allow bounded fork/exec transients to close CLOEXEC copies; numeric
+    // ephemeral-port reuse by parallel actors is not an ownership failure.
+    let end = Instant::now() + Duration::from_secs(3);
+    let inode = identity.1.to_string();
+    loop {
+        let present = std::fs::read_to_string("/proc/net/tcp")
+            .unwrap()
+            .lines()
+            .any(|line| line.split_whitespace().nth(9) == Some(inode.as_str()));
+        if !present {
+            break;
+        }
+        assert!(
+            Instant::now() < end,
+            "original listening socket inode {} remained after confirmed cleanup",
+            identity.1
+        );
+        std::thread::sleep(POLL);
+    }
+}
+
 #[test]
 fn output_limits_and_post_readiness_drain_are_bounded() {
     for (script, expected) in [
@@ -303,6 +335,66 @@ fn high_descriptor_listener_must_not_escape_to_the_owned_curl() {
     embedded_proxy_finish_fixture(true);
 }
 
+#[test]
+fn explicit_runtime_launcher_is_preserved_for_high_fd_exec_handoff() {
+    const CHILD: &str = "ASB_OWNED_EXEC_LAUNCHER_FIXTURE";
+    if std::env::var_os(CHILD).is_some() {
+        embedded_proxy_finish_fixture(true);
+        return;
+    }
+    use std::os::unix::fs::PermissionsExt;
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/cli2key-launcher")
+        .join(crate::workloads::TaskIdentity::local("launcher", None).attempt_id);
+    std::fs::create_dir_all(&root).unwrap();
+    let root = root.canonicalize().unwrap();
+    let actual = std::env::current_exe()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("asb");
+    let launcher = root.join("asb-launcher");
+    let marker = root.join("launcher-used");
+    std::fs::write(
+        &launcher,
+        format!(
+            "#!/bin/sh\nprintf 'invoked\\n' >> '{}'\nexec '{}' \"$@\"\n",
+            marker.display(),
+            actual.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let name = format!(
+        "{}::explicit_runtime_launcher_is_preserved_for_high_fd_exec_handoff",
+        module_path!().split_once("::").unwrap().1
+    );
+    let mut command = Command::new(std::env::current_exe().unwrap());
+    command
+        .env_clear()
+        .env("PATH", std::env::var_os("PATH").unwrap())
+        .env("HOME", &root)
+        .env(CHILD, "1")
+        .env("ASB_RUNTIME_EXECUTABLE", &launcher)
+        .args(["--exact", &name, "--nocapture"]);
+    if let Some(profile) = std::env::var_os("LLVM_PROFILE_FILE") {
+        command.env("LLVM_PROFILE_FILE", profile);
+    }
+    let output = command.output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        std::fs::read_to_string(marker).unwrap().lines().count() >= 3,
+        "configured launcher was bypassed"
+    );
+}
+
 fn embedded_proxy_finish_fixture(high_descriptor: bool) {
     use std::net::{TcpListener, TcpStream};
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -348,6 +440,7 @@ fn embedded_proxy_finish_fixture(high_descriptor: bool) {
         local.spawn_proxy(proxy).unwrap()
     };
     let port = address.port();
+    let original_socket = local.reservation.as_ref().unwrap().socket_identity();
     let proxy_pid = local.children[0].id();
     let mut request = TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port)).unwrap();
     request
@@ -431,10 +524,7 @@ fn embedded_proxy_finish_fixture(high_descriptor: bool) {
     assert!(fd >= 0);
     let pinned = unsafe { File::from_raw_fd(fd) };
     local.finish().unwrap();
-    assert!(
-        TcpListener::bind(address).is_ok(),
-        "finish retained a parent/Command/socket duplicate"
-    );
+    assert_original_socket_released(original_socket);
     readers_finished();
     assert_eq!(
         std::fs::read_to_string(root.join("exit-status")).unwrap(),
@@ -642,7 +732,8 @@ fn owned_proxy_sessions_are_parallel_distinct_and_release_every_parent_reference
                     let mut local = Local::new().unwrap();
                     let address = local.spawn_proxy(command).unwrap();
                     local.confirm_ready().unwrap();
-                    (local, address)
+                    let identity = local.reservation.as_ref().unwrap().socket_identity();
+                    (local, address, identity)
                 })
             })
             .collect();
@@ -652,17 +743,15 @@ fn owned_proxy_sessions_are_parallel_distinct_and_release_every_parent_reference
             .collect::<Vec<_>>()
     });
     let addresses: std::collections::BTreeSet<_> =
-        sessions.iter().map(|(_, address)| *address).collect();
+        sessions.iter().map(|(_, address, _)| *address).collect();
     assert_eq!(addresses.len(), 4);
-    for (local, address) in sessions {
+    for (local, address, identity) in sessions {
         assert!(
             TcpListener::bind(address).is_err(),
             "session released the reserved socket"
         );
         local.finish().unwrap();
-        let reclaimed =
-            TcpListener::bind(address).expect("finished session retained its owned socket");
-        drop(reclaimed);
+        assert_original_socket_released(identity);
         assert!(
             TcpStream::connect(sentinel_address).is_ok(),
             "unrelated sentinel listener was closed"
@@ -726,7 +815,8 @@ while True: time.sleep(1)
     );
     command.current_dir(&root).stdin(Stdio::piped());
     let mut local = Local::new().unwrap();
-    let address = local.spawn_proxy(command).unwrap();
+    local.spawn_proxy(command).unwrap();
+    let original_socket = local.reservation.as_ref().unwrap().socket_identity();
     local.confirm_ready().unwrap();
     std::fs::write(root.join("release"), "release").unwrap();
     let end = Instant::now() + Duration::from_secs(2);
@@ -736,7 +826,7 @@ while True: time.sleep(1)
     }
     assert!(local.confirm_ready().is_err());
     assert!(local.finish().unwrap_err().contains("duplicate ready"));
-    assert!(std::net::TcpListener::bind(address).is_ok());
+    assert_original_socket_released(original_socket);
     readers_finished();
 }
 
@@ -748,7 +838,7 @@ fn proxy_preparation_errors_unwind_and_uncertain_handoff_release_the_reservation
     for failure in ["reader", "spawn", "startup", "unwind", "handoff"] {
         let scope = crate::process_cleanup::test_support::Scope::new();
         let reservation = super::super::proxy::Reservation::new().unwrap();
-        let address = reservation.address();
+        let identity = reservation.socket_identity();
         READER_FAIL.set(failure == "reader");
         AFTER_SPAWN.set(match failure {
             "unwind" => 2,
@@ -790,9 +880,7 @@ fn proxy_preparation_errors_unwind_and_uncertain_handoff_release_the_reservation
         assert_eq!(result.is_err(), failure == "unwind");
         // This checks BOTH the child reference and the parent's Command
         // pre_exec closure/reference, after exact reaper settlement if needed.
-        let reclaimed = TcpListener::bind(address)
-            .unwrap_or_else(|error| panic!("{failure} retained reservation {address}: {error}"));
-        drop(reclaimed);
+        assert_original_socket_released(identity);
         IDENTITIES.with_borrow_mut(|identities| {
             for (_, identity) in identities.drain(..) {
                 let mut poll = libc::pollfd {
@@ -859,7 +947,7 @@ fn builtin_proxy_rejects_invalid_or_nonsocket_fd_without_rebinding_a_foreign_lis
             }
         }
         let reservation = super::super::proxy::Reservation::new().unwrap();
-        let address = reservation.address();
+        let identity = reservation.socket_identity();
         let mut local = Local::new().unwrap();
         let error = local
             .spawn_reserved_proxy(command, reservation)
@@ -871,7 +959,7 @@ fn builtin_proxy_rejects_invalid_or_nonsocket_fd_without_rebinding_a_foreign_lis
         for pid in pids {
             assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists());
         }
-        assert!(TcpListener::bind(address).is_ok());
+        assert_original_socket_released(identity);
         assert!(TcpStream::connect(sentinel_address).is_ok());
         assert_eq!(
             std::fs::read_to_string(root.join("not-a-socket")).unwrap(),

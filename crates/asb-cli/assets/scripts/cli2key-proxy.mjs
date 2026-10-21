@@ -7,6 +7,7 @@
 
 import http from "node:http";
 import { Readable } from "node:stream";
+import { fstatSync } from "node:fs";
 import { cancelNetworkRequests, networkFetch, quiesceNetworkRequests } from "./network-fetch.mjs";
 
 function usage(message) {
@@ -24,8 +25,29 @@ const value = (name) => {
   return args[index + 1];
 };
 const listenerFd = Number(value("--listen-fd"));
+const execHelper = value("--exec-helper");
 const upstream = value("--upstream").replace(/\/$/, "");
 if (!Number.isInteger(listenerFd) || listenerFd < 3) usage("--listen-fd must be an inherited socket descriptor");
+function ownedIdentity(fd, kind) {
+  const stat = fstatSync(fd, { bigint: true });
+  if ((kind === "socket" && !stat.isSocket()) || (kind === "file" && !stat.isFile())) {
+    throw new Error("invalid owned descriptor kind");
+  }
+  return { fd, device: stat.dev.toString(), inode: stat.ino.toString(), kind };
+}
+let outboundLaunch;
+try {
+  const owned = [ownedIdentity(listenerFd, "socket")];
+  if (args.includes("--owned-image-fd")) {
+    const fd = Number(value("--owned-image-fd"));
+    if (!Number.isInteger(fd) || fd < 3 || fd === listenerFd) throw new Error("invalid image descriptor");
+    owned.push(ownedIdentity(fd, "file"));
+  }
+  outboundLaunch = Object.freeze({ program: execHelper,
+    args: Object.freeze(["__asb-owned-fd-exec", JSON.stringify(owned), "--"]) });
+} catch {
+  usage("invalid owned descriptor handoff");
+}
 
 function normalizeBody(path, body) {
   if (!body || !path.includes("/responses")) return body;
@@ -67,7 +89,7 @@ const server = http.createServer(async (request, response) => {
       method: request.method,
       headers,
       body: body || undefined,
-    });
+    }, 0, outboundLaunch);
     response.writeHead(result.status, Object.fromEntries(result.headers));
     if (result.body) {
       const bodyStream = Readable.fromWeb(result.body);
