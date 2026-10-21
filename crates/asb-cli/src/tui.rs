@@ -978,14 +978,28 @@ fn draw_workload(frame: &mut ratatui::Frame<'_>, app: &WorkloadApp) {
 
 fn write_trial_sets(app: &WorkloadApp) -> Result<usize, Error> {
     let directory = project::resolve(&app.root, &app.project.workloads_dir);
-    let mut written = 0;
+    // Catalogs may change while the wizard is open. Validate and serialize the
+    // complete selection before replacing any previously published subset.
+    let mut pending = Vec::new();
     for choice in app.workloads.selected_choices() {
         let workload = &choice.label;
         let ids =
             app.wizard.selections.get(workload).ok_or_else(|| {
                 Error::Input(format!("save trials for {workload} before finishing"))
             })?;
+        if ids.is_empty() {
+            return Err(Error::Input(format!(
+                "select at least one trial for {workload}"
+            )));
+        }
         let catalog = workloads::installed_trials(workload, &directory).map_err(Error::Input)?;
+        for id in ids {
+            if !catalog.iter().any(|trial| &trial.id == id) {
+                return Err(Error::Input(format!(
+                    "saved trial {id} is no longer available for {workload}; reopen its trials"
+                )));
+            }
+        }
         let trials = catalog
             .into_iter()
             .filter(|trial| ids.contains(&trial.id))
@@ -997,8 +1011,11 @@ fn write_trial_sets(app: &WorkloadApp) -> Result<usize, Error> {
         let path = directory.join(format!("{workload}.workload.toml"));
         let text =
             toml::to_string_pretty(&config).map_err(|error| Error::Input(error.to_string()))?;
+        pending.push((path, text));
+    }
+    let written = pending.len();
+    for (path, text) in pending {
         fs::write(path, text).map_err(|error| Error::Io(error.to_string()))?;
-        written += 1;
     }
     Ok(written)
 }

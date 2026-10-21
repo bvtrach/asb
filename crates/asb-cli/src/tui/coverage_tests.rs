@@ -220,3 +220,53 @@ fn workload_reducer_requires_explicit_finish_and_replaces_saved_subset() {
         0
     );
 }
+
+#[test]
+fn trial_publication_validates_every_subset_before_replacing_any_file() {
+    let project = Project::new();
+    let mut app = project.app();
+    app.workloads = Pane::new(vec![choice("custom"), choice("later")]);
+    app.workloads.selected.fill(true);
+    app.wizard
+        .selections
+        .insert("custom".into(), BTreeSet::from(["smoke".into()]));
+    let first = project.0.join("workloads/custom.workload.toml");
+    let later = project.0.join("workloads/later.workload.toml");
+    fs::write(&first, "prior first subset").unwrap();
+    fs::write(&later, "prior later subset").unwrap();
+    for ids in [
+        None,
+        Some(BTreeSet::new()),
+        Some(BTreeSet::from(["removed-trial".into()])),
+        Some(BTreeSet::from(["smoke".into(), "removed-trial".into()])),
+    ] {
+        app.wizard.selections.remove("later");
+        if let Some(ids) = ids {
+            app.wizard.selections.insert("later".into(), ids);
+        }
+        assert!(write_trial_sets(&app).is_err());
+        assert_eq!(fs::read_to_string(&first).unwrap(), "prior first subset");
+        assert_eq!(fs::read_to_string(&later).unwrap(), "prior later subset");
+    }
+    // A late adapter catalog failure must also occur before the valid first
+    // configuration is written. No original SWE-bench catalog is installed.
+    app.workloads.choices[1] = choice("swe-bench-lite");
+    app.wizard
+        .selections
+        .insert("swe-bench-lite".into(), BTreeSet::from(["smoke".into()]));
+    assert!(write_trial_sets(&app).is_err());
+    assert_eq!(fs::read_to_string(&first).unwrap(), "prior first subset");
+    assert_eq!(fs::read_to_string(&later).unwrap(), "prior later subset");
+    assert!(
+        !project
+            .0
+            .join("workloads/swe-bench-lite.workload.toml")
+            .exists()
+    );
+    fs::remove_file(&first).unwrap();
+    assert!(write_trial_sets(&app).is_err());
+    assert!(
+        !first.exists(),
+        "a later validation failure must not create an earlier file"
+    );
+}

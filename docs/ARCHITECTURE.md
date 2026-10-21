@@ -1236,6 +1236,9 @@ while Tab reopens the saved choices. Back discards unsaved edits. Browsing or
 deselecting a workload retains its saved subset for later reselection, but
 publication includes only selected workloads and requires each to have a saved
 subset. Saving and cancellation publish no trial-set files.
+Finish checks every saved ID against the current catalogs and serializes all
+selected configurations before writing any file. File I/O remains individually
+fallible; this is not an atomic transaction across multiple trial-set files.
 
 `asb compare BENCHMARK_OR_SWEEP.toml` dispatches by TOML shape, not filename.
 Standalone reports reuse the normal replica-path helper, read the most recent
