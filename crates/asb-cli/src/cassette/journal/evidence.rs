@@ -36,9 +36,26 @@ impl Default for ProofLimits {
     }
 }
 
+impl ProofLimits {
+    /// Validate per-archive and whole-operation resource budgets.
+    pub fn validate(self) -> Result<(), Error> {
+        self.archive.validate()?;
+        if self.max_references == 0
+            || self.max_reference_bytes == 0
+            || self.max_metadata_bytes == 0
+            || self.max_directory_bytes == 0
+            || self.max_archive_bytes == 0
+            || self.max_selected_bytes == 0
+        {
+            return Err(Error("track evidence budgets must be positive".into()));
+        }
+        Ok(())
+    }
+}
+
 /// Exact committed track identity, independent of growing archive/staging bytes.
 /// The journal retains immutable metadata after payload cleanup.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct TrackEvidence {
     /// Evidence format, distinct from the manifest schema.
@@ -111,27 +128,21 @@ impl TrackEvidence {
     /// A recording ID cannot denote two different destinations in one batch.
     /// This checks selected entries, not whole-archive SHA-256 or authentication.
     pub fn verify_batch(expected: &[Self], limits: ProofLimits) -> Result<(), Error> {
-        limits.archive.validate()?;
-        if limits.max_references == 0
-            || limits.max_reference_bytes == 0
-            || limits.max_metadata_bytes == 0
-            || limits.max_directory_bytes == 0
-            || limits.max_archive_bytes == 0
-            || limits.max_selected_bytes == 0
-            || expected.len() > limits.max_references
-        {
+        limits.validate()?;
+        if expected.len() > limits.max_references {
             return Err(Error("track evidence batch exceeds catalogue limit".into()));
         }
         let mut groups: BTreeMap<&Path, Group<'_>> = BTreeMap::new();
         let mut identities = BTreeMap::new();
-        let mut reference_bytes = ReferenceBytes {
-            bytes: 0,
-            limit: limits.max_reference_bytes,
-        };
+        let mut reference_bytes = 0;
         let mut selected_bytes = 0u64;
         for evidence in expected {
             evidence.validate(limits.archive)?;
-            serde_json::to_writer(&mut reference_bytes, evidence).map_err(json_error)?;
+            reference_bytes += crate::cassette::serialization::encoded_size(
+                evidence,
+                limits.max_reference_bytes - reference_bytes,
+            )
+            .map_err(|error| Error(format!("track evidence reference metadata: {error}")))?;
             if let Some(previous) = identities.insert(&evidence.recording_id, &evidence.destination)
                 && previous != &evidence.destination
             {
@@ -381,26 +392,6 @@ impl<'a> Prepared<'a> {
             }
         }
         check_root_identity(&self.root, &self.original)
-    }
-}
-
-struct ReferenceBytes {
-    bytes: u64,
-    limit: u64,
-}
-impl Write for ReferenceBytes {
-    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        self.bytes = self
-            .bytes
-            .checked_add(bytes.len() as u64)
-            .filter(|total| *total <= self.limit)
-            .ok_or_else(|| {
-                std::io::Error::other("track evidence reference metadata exceeds aggregate limit")
-            })?;
-        Ok(bytes.len())
-    }
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
     }
 }
 

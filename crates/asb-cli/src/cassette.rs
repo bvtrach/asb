@@ -8,12 +8,16 @@ mod archive;
 mod journal;
 mod metadata;
 mod selection;
+mod serialization;
 mod source;
 
 pub use archive::{Archive, Limits};
-pub use journal::{ProofLimits, Publication, RecordingJournal, TrackEvidence};
+pub use journal::{
+    ProofLimits, Publication, RecordingJournal, RecordingReservation, TrackEvidence,
+};
 pub use selection::{Metric, SelectionPlan, Selector};
 use serde::{Deserialize, Serialize};
+pub use serialization::CompatibilityShape;
 pub use source::{LegacyTrack, Source};
 use std::fmt;
 
@@ -33,7 +37,7 @@ impl fmt::Display for Error {
 impl std::error::Error for Error {}
 
 /// Canonical content identity; excludes concurrency, repetition and measurements.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Compatibility {
     /// Logical coding agent name.
@@ -153,7 +157,7 @@ impl Track {
 }
 
 /// Versioned recording identity and immutable track catalogue.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Manifest {
     /// Must equal [`SCHEMA_VERSION`].
@@ -179,12 +183,7 @@ impl Manifest {
             )));
         }
         self.compatibility.validate()?;
-        if self.recording_id.is_empty()
-            || self.recording_id.len() > 128
-            || !self
-                .recording_id
-                .bytes()
-                .all(|value| value.is_ascii_alphanumeric() || value == b'-')
+        if !valid_recording_id(&self.recording_id)
             || !(1..=64).contains(&self.concurrency)
             || self.tracks.len() > limits.max_tracks
         {
@@ -244,6 +243,14 @@ pub(crate) fn valid_digest(value: &str) -> bool {
 pub fn digest(bytes: &[u8]) -> String {
     use sha2::{Digest, Sha256};
     format!("{:x}", Sha256::digest(bytes))
+}
+
+fn valid_recording_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
 }
 
 #[cfg(test)]

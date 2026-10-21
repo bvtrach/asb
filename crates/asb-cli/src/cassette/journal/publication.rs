@@ -36,6 +36,16 @@ pub(super) struct Published {
     pub(super) archive_bytes: u64,
 }
 
+pub(super) fn publication_capacity(recording_id: &str, limits: Limits) -> Result<u64, Error> {
+    let marker = Published {
+        recording_id: recording_id.into(),
+        manifest_sha256: "f".repeat(64),
+        archive_sha256: "f".repeat(64),
+        archive_bytes: limits.max_archive_bytes,
+    };
+    crate::cassette::serialization::encoded_size(&marker, MAX_RECORD_BYTES)
+}
+
 impl RecordingJournal {
     /// Freeze and publish a verified ZIP, without replacing any destination.
     ///

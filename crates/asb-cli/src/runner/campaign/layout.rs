@@ -96,6 +96,17 @@ impl Plan {
         if crate::cassette::digest(&configuration) != self.configuration_sha256 {
             return Err(invalid("configuration fingerprint differs"));
         }
+        let capacity = self.recording_capacity()?;
+        if capacity != self.recording_reservation {
+            return Err(invalid(
+                "recording metadata reservation differs from selection",
+            ));
+        }
+        if let Some(capacity) = capacity {
+            capacity
+                .validate(crate::cassette::ProofLimits::default())
+                .map_err(|error| invalid(&error.to_string()))?;
+        }
         if (self.mode == ExecutionMode::Record) != self.recording.is_some()
             || (self.measurement_storage.is_some()
                 && self.measurement_root.as_ref().is_none_or(|root| {

@@ -103,6 +103,17 @@ impl Prepared {
         options: RunOptions<'_>,
         campaign_parent: Option<&Path>,
     ) -> Result<Self, Error> {
+        Self::prepare_selected(config_path, config, repeat, options, campaign_parent, None)
+    }
+
+    pub(crate) fn prepare_selected(
+        config_path: &Path,
+        config: BenchmarkConfig,
+        repeat: u64,
+        options: RunOptions<'_>,
+        campaign_parent: Option<&Path>,
+        selection: Option<&crate::workloads::TaskSelection>,
+    ) -> Result<Self, Error> {
         // Reject unsupported combinations and excessive populations before any IO
         // publication or dependency/environment preparation.
         repeat
@@ -140,7 +151,7 @@ impl Prepared {
             return Err(Error::Input("--repeat cannot combine with a nondefault planning.repetition; choose automated batches or manually identified configurations".into()));
         }
         let admission = crate::planning::BatchAdmissionPolicy::current();
-        let (project_root, _) = crate::project::load(config_path)?;
+        let (project_root, settings) = crate::project::load(config_path)?;
         let project_root = project_root.canonicalize().map_err(io_error)?;
         let campaign = crate::workloads::TaskIdentity::local("execution-campaign", None).attempt_id;
         let measured = options.measurement_dir.is_some()
@@ -194,7 +205,26 @@ impl Prepared {
             })
             .transpose()
             .map_err(io_error)?;
-        let plan = Plan {
+        let recording_selection = if recording_destination.is_some() {
+            Some(if let Some(selection) = selection {
+                selection.clone()
+            } else {
+                let directory = std::env::var_os("ASB_WORKLOAD_DIR")
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| {
+                        crate::project::resolve(&project_root, &settings.workloads_dir)
+                    });
+                let catalog = crate::workloads::planning_catalog(&config.workload, &directory)
+                    .map_err(Error::Input)?;
+                crate::workloads::describe_selection(&config, &directory, catalog.as_ref())
+                    .map_err(Error::Input)?
+            })
+        } else {
+            None
+        };
+        let mut plan = Plan {
+            recording_selection,
+            recording_reservation: None,
             replay_source,
             measurement_storage: measured.then_some(if options.measurement_dir.is_some() {
                 super::campaign::MeasurementStorage::Override
@@ -227,6 +257,7 @@ impl Prepared {
             replay_inputs,
             slots,
         };
+        plan.recording_reservation = plan.recording_capacity()?;
         plan.validate_layout()?;
         let bytes = encode(&plan)?;
         Ok(Self {
@@ -271,6 +302,10 @@ impl Prepared {
                 .map(|input| input.bytes)
                 .sum(),
         )
+    }
+
+    pub(crate) fn recording_reservation(&self) -> Option<&crate::cassette::RecordingReservation> {
+        self.plan.recording_reservation.as_ref()
     }
 
     /// Open source handles remain pinned; only their durable display locations
@@ -420,6 +455,7 @@ pub(crate) fn execute(
             campaign.clone(),
             repeat,
             config.concurrency,
+            Some(&plan),
         ))
     });
     if options.json {

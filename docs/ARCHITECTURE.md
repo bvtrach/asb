@@ -1559,7 +1559,15 @@ a descriptor-count cap on valid sweeps. Each receipt length check and decoder
 share one opened regular file. Whole-operation `ProofLimits` bound references,
 metadata, directory/end-record snapshots, compressed input and distinct selected
 bytes separately from per-archive format limits; single proofs retain their
-independent journal and manifest allowances. Sweep and cassette output
+independent journal and manifest allowances. Capacity planning uses the same
+private compatibility/manifest/reference wire
+projections, with a separate size-only digest type that cannot enter observed
+compatibility. Metadata reservations bind real read-only selections and are
+recomputed rather than trusted on load. Fresh sweeps sum them before publication
+or dependency warming; genuine material admission checks selected names and
+capacity before journal creation. Response sizes remain runtime bounds, not
+guessed reservations. Association receipts retain their separate runner-owned
+128-byte-per-slot policy. Sweep and cassette output
 owners share a private persistent-inode lock implementation, with domain-owned
 paths and diagnostics. Finalization requires the caller to stop/join recording
 producers; freezing the journal does not drain a proxy itself. This backend is a

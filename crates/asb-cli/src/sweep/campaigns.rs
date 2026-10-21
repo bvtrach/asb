@@ -116,6 +116,7 @@ pub(super) fn prepare(
     let mut input_bytes = 0u64;
     let mut input_count = 0usize;
     let mut plan_bytes = 0u64;
+    let mut recording_reservation = crate::cassette::RecordingReservation::default();
     for (index, ((entry, source), bundle)) in plan
         .entries
         .iter_mut()
@@ -126,7 +127,7 @@ pub(super) fn prepare(
         let campaign_parent = results
             .join(execution::result_name(index, Path::new(&entry.reference)))
             .join("campaigns");
-        let mut prepared = runner::repeated::Prepared::prepare(
+        let mut prepared = runner::repeated::Prepared::prepare_selected(
             &parent.join(&entry.reference),
             entry.configuration.clone(),
             repeat,
@@ -142,7 +143,16 @@ pub(super) fn prepare(
                 ..Default::default()
             },
             Some(&campaign_parent),
+            Some(&entry.selection),
         )?;
+        if let Some(capacity) = prepared.recording_reservation() {
+            recording_reservation = recording_reservation
+                .checked_add(capacity)
+                .map_err(|failure| error(&failure.to_string()))?;
+            recording_reservation
+                .validate(crate::cassette::ProofLimits::default())
+                .map_err(|failure| error(&failure.to_string()))?;
+        }
         prepared.preserve_source_locations(results, preserved)?;
         let reference = prepared.reference(results)?;
         let (count, bytes) = prepared.input_cost();
@@ -162,6 +172,8 @@ pub(super) fn prepare(
         entry.campaign = Some(reference);
     }
     plan.bind_execution(plan::ExecutionIntent {
+        recording_reservation: (options.mode == Some(tape::Mode::Record))
+            .then_some(recording_reservation),
         repeat,
         seed,
         user_seed: options.seed.is_some(),

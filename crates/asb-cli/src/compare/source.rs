@@ -273,6 +273,11 @@ fn load_campaign_sweep(request: Request) -> Result<LoadedReport, Error> {
                     .expect("validated campaign reference"),
             )?;
             if layout.plan.configuration != entry.configuration
+                || layout
+                    .plan
+                    .recording_selection
+                    .as_ref()
+                    .is_some_and(|selection| selection != &entry.selection)
                 || layout.plan.repeat != intent.repeat
                 || layout.plan.mode != plan.execution_mode
                 || layout.plan.respect_record_timings != plan.respect_record_timings
@@ -294,6 +299,22 @@ fn load_campaign_sweep(request: Request) -> Result<LoadedReport, Error> {
         return Err(Error::Input(
             "sweep seed has no bundled replay configuration".into(),
         ));
+    }
+    if let Some(expected) = &intent.recording_reservation {
+        let mut actual = crate::cassette::RecordingReservation::default();
+        for layout in &layouts {
+            let capacity = layout.plan.recording_reservation.as_ref().ok_or_else(|| {
+                Error::Input("sweep recording capacity has no matching campaign reservation".into())
+            })?;
+            actual = actual
+                .checked_add(capacity)
+                .map_err(|error| Error::Input(error.to_string()))?;
+        }
+        if &actual != expected {
+            return Err(Error::Input(
+                "sweep recording capacity differs from its retained campaign plans".into(),
+            ));
+        }
     }
     let mut primary_bytes = 0u64;
     for layout in &layouts {

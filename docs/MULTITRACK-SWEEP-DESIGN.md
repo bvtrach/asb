@@ -150,7 +150,7 @@ spool concurrency bounds separate from campaign presentation counts.
 This is not full feature-five readiness: modern continuation/reconciliation
 and grade import explicitly refuse before historical writes instead of falling
 through to legacy receipts. Aggregate input validation before any legacy hash,
-deterministic recording-proof budget reservation, campaign input/continuation seals
+campaign input/continuation seals
 and complete source/package/hosted qualification remain required. The preceding
 integrated-head regression gate passed 1312 tests with 21 existing ignored and
 zero failures before this fresh-sweep wiring; that evidence does not qualify the
@@ -190,10 +190,54 @@ failure before earlier payloads, selected/unselected corruption, publication
 cleanup races, disappeared targets, between-pass mutation, descriptor pathname
 replacement, large reference paths and the original single-proof boundary.
 Fresh-sweep revision `4499e6ac` completed its full offline suite with 1322 passed,
-21 existing ignored and zero failures. Subsequent grouped-proof edits require
-their own complete gates. Deterministic whole-sweep metadata reservation before
-paid execution, modern continuation/reconciliation, global pre-hash input
-validation and final delivery qualification remain unfinished.
+21 existing ignored and zero failures. Grouped-proof revision `3b10be01` passed
+its complete offline suite with 1335 passed, 21 existing ignored and zero
+failures. Newer main's artifact/raw-custody integration and reservation edits
+require their own complete gates. Modern continuation/reconciliation, global
+pre-hash input validation and final delivery qualification remain unfinished.
+
+## Recording metadata reservation checkpoint
+
+Fresh recording plans retain the real read-only task selection and a categorized
+metadata reservation. Standalone runs use the existing planning catalog/selection
+API; sweeps pass cached selections instead of reloading a catalog per task.
+Reservations are recomputed from names, destination, recording identity and N/C.
+A saved number that merely fits a quota is not trusted: layout validation
+requires exact recomputation, and comparison binds the global sum to all retained
+campaign plans and original selections before reading outcomes.
+
+Actual compatibility, manifest and track-reference serialization share private
+wire projections with a capacity-only shape. The shape has no observed digest
+contents and cannot initialize a journal or pass replay compatibility. The pure
+estimator counts bytes without allocating encoded copies, using maximum-width
+statistics/false outcomes and present optional digest fields. Journal creation
+reuses the same serializer-based reservation. ZIP32 directory/end-record widths
+are shared with the bounded parser and tested against the pinned writer across
+decimal-ID transitions. Payload lengths are not guessed from their maxima.
+
+Each recording and the whole sweep must fit deterministic metadata budgets
+before publishing campaigns, warming dependencies or launching clients. At the
+genuine material gate, the recorder independently checks selected names/task and
+recomputed capacity before journal creation/start. Only actual verified
+compatibility is persisted; capacity is neither dataset/material provenance nor
+completion/continuation authority. Historical absent fields remain unknown and
+do not grant modern resume permission.
+
+Producer association receipts have a separate runner-owned 128-byte allowance
+per slot, not part of backend track-reference encoding. The complete sweep's
+65,533-slot bound limits their aggregate to less than 8 MiB, within the existing
+16 MiB allowance. Response-dependent payload/compressed lengths still use
+runtime archive/proof bounds; metadata preflight cannot predict them.
+
+Tests preserve byte-exact historical wire order/optional fields and escaped
+logical strings; actual maximum-statistics journals/manifests/ZIPs/proofs fit the
+reservation. Exact/one-byte-short quotas, overflow, invalid shapes and the full
+pure ZIP32 population are covered without introducing a smaller cardinality cap.
+Layout/index mutation matrices reject forged capacity. Genuine-gate tests reject
+same-length wrong identities before journal creation and retain observed hashes.
+Real CLI tests reject 60 configurations at N1000 with long model names before
+any client/provider call or previous-result rotation; ordinary recording,
+all-execution comparison and offline replay still pass.
 
 ## Ownership and shared contracts
 

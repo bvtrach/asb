@@ -88,6 +88,8 @@ fn repeated_sweep_records_one_bundle_per_configuration_and_replays_identically_a
     let index: Value = serde_json::from_slice(&fs::read(&index_path).unwrap()).unwrap();
     assert_eq!(index["schema_version"], 2);
     assert_eq!(index["execution"]["repeat"], 2);
+    assert_eq!(index["execution"]["recording_reservation"]["references"], 8);
+    let mut reserved = asb_cli::cassette::RecordingReservation::default();
     for (number, name) in ["a", "b"].into_iter().enumerate() {
         assert!(
             index["entries"][number]["campaign"]["root"]
@@ -101,6 +103,18 @@ fn repeated_sweep_records_one_bundle_per_configuration_and_replays_identically_a
         let archive =
             asb_cli::cassette::Archive::open(&path, asb_cli::cassette::Limits::default()).unwrap();
         assert_eq!(archive.manifest().tracks.len(), 4);
+        let campaign = project.0.join("sweep-results").join(
+            index["entries"][number]["campaign"]["root"]
+                .as_str()
+                .unwrap(),
+        );
+        let retained: Value =
+            serde_json::from_slice(&fs::read(campaign.join("plan.json")).unwrap()).unwrap();
+        assert_eq!(retained["recording_selection"]["task_id"], "bug-fix");
+        let capacity: asb_cli::cassette::RecordingReservation =
+            serde_json::from_value(retained["recording_reservation"].clone()).unwrap();
+        assert_eq!(capacity.references, 4);
+        reserved = reserved.checked_add(&capacity).unwrap();
     }
     assert!(
         project
@@ -113,6 +127,38 @@ fn repeated_sweep_records_one_bundle_per_configuration_and_replays_identically_a
     assert_eq!(report["benchmarks"].as_array().unwrap().len(), 8);
     assert_eq!(report["selection_plan"]["execution_mode"], "record");
     assert_eq!(provider.calls.load(std::sync::atomic::Ordering::SeqCst), 8);
+    assert_eq!(
+        serde_json::to_value(&reserved).unwrap(),
+        index["execution"]["recording_reservation"]
+    );
+    let report_bytes = fs::read(&report_path).unwrap();
+    let index_bytes = fs::read(&index_path).unwrap();
+    for field in [
+        "references",
+        "reference_bytes",
+        "journal_bytes",
+        "manifest_bytes",
+        "publication_bytes",
+        "directory_bytes",
+        "schema_version",
+    ] {
+        let mut changed = index.clone();
+        let value = changed["execution"]["recording_reservation"][field]
+            .as_u64()
+            .unwrap();
+        changed["execution"]["recording_reservation"][field] = json!(value + 1);
+        fs::write(&index_path, serde_json::to_vec(&changed).unwrap()).unwrap();
+        let refused = Command::new(env!("CARGO_BIN_EXE_asb"))
+            .current_dir(&project.0)
+            .isolated_env()
+            .args(["compare", "sweep.toml"])
+            .output()
+            .unwrap();
+        assert!(!refused.status.success(), "accepted changed {field}");
+        assert_eq!(fs::read(&report_path).unwrap(), report_bytes);
+        assert_eq!(provider.calls.load(std::sync::atomic::Ordering::SeqCst), 8);
+    }
+    fs::write(&index_path, index_bytes).unwrap();
     let mut previous = None;
     for jobs in ["1", "2"] {
         let replayed = sweep(
@@ -183,6 +229,45 @@ fn repeated_sweep_records_one_bundle_per_configuration_and_replays_identically_a
         records(&fs::read(project.0.join("attempts.jsonl")).unwrap()).len(),
         32
     );
+}
+
+#[test]
+fn recording_sweep_global_metadata_preflight_preserves_old_results_without_clients() {
+    let project = Project::new();
+    project.config(1);
+    let config = fs::read_to_string(project.0.join("benchmark.toml"))
+        .unwrap()
+        .replace("provider='fixture'", "provider='openrouter'")
+        .replace("model='fixture'", &format!("model='{}'", "m".repeat(4096)));
+    let mut names = Vec::new();
+    for index in 0..60 {
+        let name = format!("config-{index:02}.toml");
+        fs::write(project.0.join(&name), &config).unwrap();
+        names.push(name);
+    }
+    fs::write(
+        project.0.join("sweep.toml"),
+        format!("configs={}\n", serde_json::to_string(&names).unwrap()),
+    )
+    .unwrap();
+    let index = project.0.join("sweep-results/plan.json");
+    let report = project.0.join("results/sweep-comparison/comparison.json");
+    fs::create_dir_all(index.parent().unwrap()).unwrap();
+    fs::create_dir_all(report.parent().unwrap()).unwrap();
+    fs::write(&index, b"preserved original index").unwrap();
+    fs::write(&report, b"preserved original report").unwrap();
+    let provider = RecordingProvider::new();
+    let refused = sweep(&project, Some(&provider), &["--record", "--repeat", "1000"]);
+    assert!(!refused.status.success());
+    let message = String::from_utf8_lossy(&refused.stderr);
+    assert!(message.contains("aggregate metadata budget"), "{message}");
+    assert_eq!(provider.calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert!(!project.0.join("attempts.jsonl").exists());
+    assert!(!project.0.join("barrier-1-1").exists());
+    assert!(!project.0.join("cassettes").exists());
+    assert!(!project.0.join("sweep-history").exists());
+    assert_eq!(fs::read(index).unwrap(), b"preserved original index");
+    assert_eq!(fs::read(report).unwrap(), b"preserved original report");
 }
 
 #[test]

@@ -443,6 +443,18 @@ they are not production fault switches. Grouped reports perform two bounded
 catalogue passes per published recording, with one open archive at a time, not
 one pass per row. Per-archive format limits and whole-operation `ProofLimits`
 are separate; single proofs retain independent journal/manifest allowances.
+`cassette::tests::reservation` checks byte-exact wire compatibility, all optional
+digest combinations, escaped logical values, actual maximum-statistics journal/
+manifest/proof sizes and ZIP directory digit transitions. Capacity planning uses
+the same private serialization projections as real evidence and creates no
+observed fingerprint or file. Exact/minus-one/overflow quotas and a pure full
+ZIP32 population remain covered. Campaign layout and compare reject altered
+reservations; the genuine material-gate fixture refuses same-length wrong names
+before journal creation and persists actual hashes, never sizing placeholders.
+The repeated-sweep CLI suite additionally selects 60 configurations at repeat
+1000 with long model names: each fits independently, but the aggregate must be
+rejected with zero synthetic-provider/client calls and unchanged previous
+index/report. No live credentials, SDK or containers are involved.
 `cargo test --locked --offline --lib runner::recording` includes deterministic
 source-name and parent-namespace replacement after original validation, private
 custody move/restore/unlink/sync faults, EEXIST arrivals, no recursive deletion,

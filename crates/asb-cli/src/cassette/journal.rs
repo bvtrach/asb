@@ -1,12 +1,14 @@
 //! Immutable recording intent/start/commit records under one output owner.
 mod evidence;
 mod publication;
+mod reservation;
 use super::{Error, Limits, Manifest, Statistics, Track, digest};
 use crate::output_lock::OutputLock;
 pub use evidence::{ProofLimits, TrackEvidence};
 #[cfg(test)]
 pub(super) use evidence::{set_hook, take_observations};
 pub use publication::Publication;
+pub use reservation::RecordingReservation;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -20,8 +22,8 @@ const MAX_RECORD_BYTES: u64 = 64 * 1024;
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct Intent {
-    manifest: Manifest,
+struct Intent<M = Manifest> {
+    manifest: M,
     repeat: u64,
     destination_name: String,
 }
@@ -87,7 +89,7 @@ impl RecordingJournal {
             destination_name: name,
         };
         let encoded = serde_json::to_vec(&intent).map_err(json_error)?;
-        reserve_metadata(&intent, count, encoded.len() as u64, limits)?;
+        reserve_metadata(&intent, count, limits)?;
         let (destination, root, _, owner) = paths_and_lock(destination)?;
         if exists(&destination)? {
             return Err(Error(
@@ -494,7 +496,9 @@ fn check_root_identity(root: &Path, original: &fs::Metadata) -> Result<(), Error
 fn validate_count(repeat: u64, concurrency: u64, limits: Limits) -> Result<u64, Error> {
     repeat
         .checked_mul(concurrency)
-        .filter(|count| repeat > 0 && *count <= limits.max_tracks as u64)
+        .filter(|count| {
+            repeat > 0 && (1..=64).contains(&concurrency) && *count <= limits.max_tracks as u64
+        })
         .ok_or_else(|| {
             Error("recording repeat/concurrency product is invalid or exceeds track limit".into())
         })
@@ -504,62 +508,15 @@ fn validate_count(repeat: u64, concurrency: u64, limits: Limits) -> Result<u64, 
 /// admitting clients. Numeric observations may grow to u64::MAX and nullable
 /// outcomes may become false; reserve their longest valid JSON representation.
 /// One maximum-width slot bounds every slot without allocating the population.
-fn reserve_metadata(
-    intent: &Intent,
-    count: u64,
-    intent_bytes: u64,
-    limits: Limits,
-) -> Result<(), Error> {
-    let track = Track {
-        id: count,
-        batch: intent.repeat,
-        replica: intent.manifest.concurrency,
-        complete: false,
-        process_success: Some(false),
-        workload_success: Some(false),
-        bytes: limits.max_track_bytes,
-        sha256: "f".repeat(64),
-        statistics: Statistics {
-            tokens: Some(u64::MAX),
-            duration_ms: Some(u64::MAX),
-            requests: Some(u64::MAX),
-            steps: Some(u64::MAX),
-        },
-    };
-    let start = Started {
-        recording_id: intent.manifest.recording_id.clone(),
-        id: count,
-        batch: intent.repeat,
-        replica: intent.manifest.concurrency,
-    };
-    let track_bytes = serde_json::to_vec(&track).map_err(json_error)?.len() as u64;
-    let start_bytes = serde_json::to_vec(&start).map_err(json_error)?.len() as u64;
-    let commit_bytes = serde_json::to_vec(&Committed {
-        recording_id: intent.manifest.recording_id.clone(),
-        track,
-    })
-    .map_err(json_error)?
-    .len() as u64;
-    let manifest_bytes = serde_json::to_vec(&intent.manifest)
-        .map_err(json_error)?
-        .len() as u64;
-    let journal = start_bytes
-        .checked_add(commit_bytes)
-        .and_then(|slot| slot.checked_mul(count))
-        .and_then(|slots| slots.checked_add(intent_bytes));
-    let catalogue = track_bytes
-        .checked_add(1)
-        .and_then(|slot| slot.checked_mul(count))
-        .and_then(|slots| slots.checked_sub(1))
-        .and_then(|slots| slots.checked_add(manifest_bytes));
-    if start_bytes > MAX_RECORD_BYTES
-        || commit_bytes > MAX_RECORD_BYTES
-        || journal.is_none_or(|bytes| bytes > limits.max_manifest_bytes)
-        || catalogue.is_none_or(|bytes| bytes > limits.max_manifest_bytes)
-    {
-        return Err(Error("planned recording metadata exceeds the manifest budget; reduce repeat/concurrency or choose larger explicit limits".into()));
-    }
-    Ok(())
+fn reserve_metadata(intent: &Intent, count: u64, limits: Limits) -> Result<(), Error> {
+    reservation::metadata_budget(
+        intent,
+        &intent.manifest.recording_id,
+        intent.manifest.concurrency,
+        count,
+        limits,
+    )
+    .map(|_| ())
 }
 
 fn paths_and_lock(destination: &Path) -> Result<(PathBuf, PathBuf, String, OutputLock), Error> {

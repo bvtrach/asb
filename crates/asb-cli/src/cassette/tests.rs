@@ -9,6 +9,8 @@ use zip::{CompressionMethod, ZipWriter, write::SimpleFileOptions};
 mod proof;
 #[path = "publication_tests.rs"]
 mod publication;
+#[path = "reservation_tests.rs"]
+mod reservation;
 
 #[test]
 fn source_detection_uses_content_and_preserves_unknown_legacy_metadata() {

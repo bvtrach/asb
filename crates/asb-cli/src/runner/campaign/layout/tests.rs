@@ -2,11 +2,79 @@ use super::*;
 use crate::runner::campaign::ReplayInput;
 use serde_json::{Value, json};
 
+#[test]
+fn recording_capacity_is_recomputed_and_historical_absence_stays_unknown() {
+    let mut value = plan(ExecutionMode::Record, 2, 3, false);
+    assert!(value.validate_layout().is_ok());
+    value.recording_selection = Some(crate::workloads::TaskSelection {
+        module: None,
+        workload: "bug-fix".into(),
+        task_id: "bug-fix".into(),
+        dataset: None,
+        evaluation_kind: "fixture".into(),
+        population_size: None,
+    });
+    value.recording_reservation = value.recording_capacity().unwrap();
+    value.validate_layout().unwrap();
+    let original = serde_json::to_value(&value).unwrap();
+    for field in [
+        "schema_version",
+        "references",
+        "reference_bytes",
+        "journal_bytes",
+        "manifest_bytes",
+        "publication_bytes",
+        "directory_bytes",
+    ] {
+        let mut changed = original.clone();
+        let before = changed["recording_reservation"][field].as_u64().unwrap();
+        changed["recording_reservation"][field] = json!(before + 1);
+        assert!(
+            serde_json::from_value::<Plan>(changed)
+                .unwrap()
+                .validate_layout()
+                .is_err(),
+            "{field}"
+        );
+    }
+    for field in ["workload", "task_id", "evaluation_kind"] {
+        let mut changed = original.clone();
+        changed["recording_selection"][field] = json!("");
+        assert!(
+            serde_json::from_value::<Plan>(changed)
+                .unwrap()
+                .validate_layout()
+                .is_err(),
+            "{field}"
+        );
+    }
+    for field in ["recording_selection", "recording_reservation"] {
+        let mut changed = original.clone();
+        changed.as_object_mut().unwrap().remove(field);
+        assert!(
+            serde_json::from_value::<Plan>(changed)
+                .unwrap()
+                .validate_layout()
+                .is_err(),
+            "{field}"
+        );
+    }
+    let mut historical = original;
+    for field in ["recording_selection", "recording_reservation"] {
+        historical.as_object_mut().unwrap().remove(field);
+    }
+    let historical: Plan = serde_json::from_value(historical).unwrap();
+    historical.validate_layout().unwrap();
+    assert!(historical.recording_capacity().unwrap().is_none());
+}
+
 fn plan(mode: ExecutionMode, concurrency: usize, repeat: u64, measured: bool) -> Plan {
     let configuration: BenchmarkConfig = toml::from_str(&format!(
         "agent='pi'\nprovider='openrouter'\nmodel='fixture'\nworkload='bug-fix'\nconcurrency={concurrency}"
     )).unwrap();
     let mut plan = Plan {
+        recording_selection: None,
+        recording_reservation: None,
         replay_source: None,
         measurement_storage: None,
         replay_selection: None,

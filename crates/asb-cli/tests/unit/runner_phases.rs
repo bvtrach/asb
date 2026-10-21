@@ -4,6 +4,9 @@ use crate::test_support as support;
 use std::cell::RefCell;
 use std::rc::Rc;
 
+#[path = "runner_recording_capacity.rs"]
+mod recording_capacity;
+
 struct Fixture(PathBuf);
 impl Fixture {
     fn new() -> Self {
@@ -923,6 +926,7 @@ fn recording_association_binds_actual_attempt_and_preserves_uncertain_raw_captur
         "campaign-1".into(),
         1,
         1,
+        None,
     );
     let result = result();
     let identity = recording_identity(&result);
@@ -1010,6 +1014,7 @@ fn recording_setup_failure_retains_partial_bytes_with_unknown_outcomes() {
         "campaign-1".into(),
         1,
         1,
+        None,
     );
     recorder.prepare(&recording_identity(&result()), 1).unwrap();
     let producer = super::super::recording::base(&campaign, 1);

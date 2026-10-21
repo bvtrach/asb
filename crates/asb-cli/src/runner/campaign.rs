@@ -86,6 +86,10 @@ pub(crate) enum MeasurementStorage {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Plan {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recording_selection: Option<crate::workloads::TaskSelection>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recording_reservation: Option<crate::cassette::RecordingReservation>,
     /// Nominal source preserves sparse legacy routing, not just its first file.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub replay_source: Option<PathBuf>,
@@ -112,6 +116,44 @@ pub(crate) struct Plan {
 }
 
 impl Plan {
+    /// Recompute capacity from requested names and paths, never trust serialized
+    /// capacity as execution evidence. Historical plans lack both fields.
+    pub(crate) fn recording_capacity(
+        &self,
+    ) -> Result<Option<crate::cassette::RecordingReservation>, crate::Error> {
+        let Some(selection) = &self.recording_selection else {
+            return Ok(None);
+        };
+        let config = &self.configuration;
+        if self.mode != planning::ExecutionMode::Record
+            || !selection.valid()
+            || selection.workload != config.workload
+            || selection.task_id != config.trial.as_deref().unwrap_or(&config.workload)
+        {
+            return Err(crate::Error::Input(
+                "recording capacity selection differs from campaign".into(),
+            ));
+        }
+        crate::cassette::RecordingReservation::for_plan(
+            crate::cassette::CompatibilityShape {
+                agent: &config.agent,
+                provider: &config.provider,
+                model: &config.model,
+                workload: &config.workload,
+                task: &selection.task_id,
+            },
+            &self.campaign,
+            self.recording.as_deref().ok_or_else(|| {
+                crate::Error::Input("recording capacity has no destination".into())
+            })?,
+            self.repeat,
+            self.concurrency as u64,
+            crate::cassette::Limits::default(),
+        )
+        .map(Some)
+        .map_err(|error| crate::Error::Input(error.to_string()))
+    }
+
     pub(crate) fn execution(&self, slot: &Slot) -> ExecutionIdentity {
         ExecutionIdentity {
             replay_track: slot.replay_track,

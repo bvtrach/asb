@@ -142,6 +142,13 @@ pub(crate) struct Recorder {
     concurrency: usize,
     failed: AtomicBool,
     state: Mutex<State>,
+    planned: Option<Planned>,
+}
+
+struct Planned {
+    configuration: crate::benchmark::BenchmarkConfig,
+    selection: crate::workloads::TaskSelection,
+    reservation: crate::cassette::RecordingReservation,
 }
 
 /// Read-only destination planning. This observes names, never reserves them.
@@ -214,6 +221,7 @@ impl Recorder {
         campaign: String,
         repeat: u64,
         concurrency: usize,
+        plan: Option<&super::campaign::Plan>,
     ) -> Self {
         Self {
             destination,
@@ -229,6 +237,16 @@ impl Recorder {
                 association_bytes: 0,
                 raw_identities: Default::default(),
             }),
+            planned: plan.and_then(|plan| {
+                plan.recording_selection
+                    .as_ref()
+                    .zip(plan.recording_reservation.as_ref())
+                    .map(|(selection, reservation)| Planned {
+                        configuration: plan.configuration.clone(),
+                        selection: selection.clone(),
+                        reservation: reservation.clone(),
+                    })
+            }),
         }
     }
 
@@ -237,6 +255,41 @@ impl Recorder {
     pub fn prepare(&self, compatibility: &Compatibility, batch: u64) -> Result<(), Error> {
         association_budget(self.repeat, self.concurrency)?;
         self.operation(|state| {
+            if let Some(planned) = &self.planned {
+                compatibility.validate().map_err(recording_error)?;
+                let selected = &planned.configuration;
+                if compatibility.agent != selected.agent
+                    || compatibility.provider != selected.provider
+                    || compatibility.model != selected.model
+                    || compatibility.workload != planned.selection.workload
+                    || compatibility.task != planned.selection.task_id
+                {
+                    return Err(Error::Input(
+                        "prepared recording identity differs from reserved selection".into(),
+                    ));
+                }
+                let actual = crate::cassette::RecordingReservation::for_plan(
+                    crate::cassette::CompatibilityShape {
+                        agent: &compatibility.agent,
+                        provider: &compatibility.provider,
+                        model: &compatibility.model,
+                        workload: &compatibility.workload,
+                        task: &compatibility.task,
+                    },
+                    &self.campaign,
+                    &self.destination,
+                    self.repeat,
+                    self.concurrency as u64,
+                    Limits::default(),
+                )
+                .map_err(recording_error)?;
+                if actual != planned.reservation {
+                    return Err(Error::Input(
+                        "prepared recording metadata exceeds or differs from reserved capacity"
+                            .into(),
+                    ));
+                }
+            }
             if let Some(identity) = &state.compatibility {
                 identity
                     .require_match(compatibility)

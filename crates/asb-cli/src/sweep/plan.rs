@@ -34,6 +34,8 @@ pub(crate) use crate::planning::ExecutionMode as SavedExecutionMode;
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ExecutionIntent {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recording_reservation: Option<crate::cassette::RecordingReservation>,
     pub repeat: u64,
     /// Shared seed applies to bundled configurations only; legacy stays unknown.
     pub seed: Option<u64>,
@@ -417,6 +419,14 @@ impl SweepPlan {
                 .filter(|count| *count <= MAX_PLAN_BYTES as u64)
                 .ok_or_else(invalid)?;
         }
+        if let Some(capacity) = &intent.recording_reservation {
+            if self.execution_mode != SavedExecutionMode::Record || capacity.references != slots {
+                return Err(invalid());
+            }
+            capacity
+                .validate(crate::cassette::ProofLimits::default())
+                .map_err(|_| invalid())?;
+        }
         Ok(())
     }
 }
@@ -670,6 +680,7 @@ mod tests {
             });
         }
         plan.bind_execution(ExecutionIntent {
+            recording_reservation: None,
             repeat: 3,
             seed: None,
             user_seed: false,

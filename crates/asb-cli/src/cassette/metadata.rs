@@ -13,6 +13,20 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
+// Fixed ZIP32 schema widths, shared by validation and recording reservation.
+const DIRECTORY_HEADER_BYTES: usize = 46;
+const END_RECORD_BYTES: usize = 22;
+
+pub(super) fn recording_directory_size(count: u64) -> Result<u64, Error> {
+    let manifest = DIRECTORY_HEADER_BYTES as u64 + "manifest.json".len() as u64;
+    let track = DIRECTORY_HEADER_BYTES as u64 + format!("tracks/{count}.jsonl").len() as u64;
+    track
+        .checked_mul(count)
+        .and_then(|bytes| bytes.checked_add(manifest))
+        .and_then(|bytes| bytes.checked_add(END_RECORD_BYTES as u64))
+        .ok_or_else(|| Error("recording ZIP directory capacity overflow".into()))
+}
+
 pub(super) struct MetadataReader {
     file: File,
     phase: Arc<AtomicBool>,
@@ -32,7 +46,7 @@ impl MetadataReader {
         limits: Limits,
     ) -> Result<(Self, Arc<AtomicBool>, usize, u64), Error> {
         let length = file.metadata().map_err(error)?.len();
-        if length < 22 || length > limits.max_archive_bytes {
+        if length < END_RECORD_BYTES as u64 || length > limits.max_archive_bytes {
             return Err(Error(
                 "cassette archive length is invalid or exceeds limit".into(),
             ));
@@ -42,11 +56,11 @@ impl MetadataReader {
             .map_err(error)?;
         let mut tail = vec![0; tail_len as usize];
         file.read_exact(&mut tail).map_err(error)?;
-        let offset = (0..=tail.len() - 22)
+        let offset = (0..=tail.len() - END_RECORD_BYTES)
             .rev()
             .find(|index| {
                 &tail[*index..*index + 4] == b"PK\x05\x06"
-                    && *index + 22 + word(&tail[*index..], 20) as usize == tail.len()
+                    && *index + END_RECORD_BYTES + word(&tail[*index..], 20) as usize == tail.len()
             })
             .ok_or_else(|| Error("cassette ZIP directory is missing or truncated".into()))?;
         let end = &tail[offset..];
@@ -109,7 +123,7 @@ fn validate_directory(bytes: &[u8], count: usize, start: u64) -> Result<(), Erro
     let mut cursor = 0usize;
     for _ in 0..count {
         let header = bytes
-            .get(cursor..cursor.checked_add(46).ok_or_else(bad)?)
+            .get(cursor..cursor.checked_add(DIRECTORY_HEADER_BYTES).ok_or_else(bad)?)
             .ok_or_else(bad)?;
         if &header[..4] != b"PK\x01\x02"
             || word(header, 34) != 0
@@ -124,7 +138,7 @@ fn validate_directory(bytes: &[u8], count: usize, start: u64) -> Result<(), Erro
         let extra_len = word(header, 30) as usize;
         let comment_len = word(header, 32) as usize;
         let extra_start = cursor
-            .checked_add(46)
+            .checked_add(DIRECTORY_HEADER_BYTES)
             .and_then(|value| value.checked_add(name_len))
             .ok_or_else(bad)?;
         let extra_end = extra_start.checked_add(extra_len).ok_or_else(bad)?;
