@@ -97,6 +97,43 @@ ASB is deliberately split into a small CLI and a file-backed workload directory:
   the collector trait. Perfetto does so to capture the complete typed lifecycle,
   and extracts timestamped scheduler-event and scheduler-duration
   series; those trace timestamps are used as line-chart x coordinates;
+  concurrent Perfetto sessions share an explicitly started manual service per
+  ASB process. Each service exclusively leases one of two project-specific,
+  predelegated named tracefs instances and uses its matching marker file.
+  Bare Tracebox autostart and its global ftrace reset are never used, including
+  preflight. A dedicated owner thread outlives replica threads, reference counts
+  preserve sibling captures, and final release stops/reaps the manual daemons.
+  Linux parent-death signals are bound to that owner thread, not a transient
+  replica. Both daemons inherit the instance lease, preventing reuse during
+  asynchronous crash cleanup after ASB is killed. Startup verifies inherited
+  lease identity. Unique service logs retain at most 256 KiB while draining excess.
+  A persistent project-root admission lock excludes reset while service leases
+  are established; it survives deletion of `.asb`. Independent processes wait
+  at most fifteen seconds for startup admission, not for another capture to finish.
+  Reset rejects active instance leases, including inherited crash-cleanup leases.
+  The probes daemon enters an unprivileged private user/mount namespace via
+  util-linux `unshare`. An internal native helper rechecks owner/death-signal
+  and inherited-lease state, verifies the namespace transition, and binds only
+  the owned instance's `trace` over the bootstrap `trace` pathname read-only.
+  It execs Tracebox in-place; the host-wide trace snapshot stays inaccessible.
+  This accommodates the pinned binary's primary-root open/close bootstrap check
+  without granting host-wide trace read access or host-root capabilities.
+  Startup also waits for `linux.ftrace` and `linux.process_stats` registration
+  through bounded queries to the private service before admitting captures.
+  Captures stream compressed data to the artifact every second instead of
+  retaining only the tail of a 64 MiB ring. The delegated instance requests
+  at least 4 MiB per CPU, 100 ms draining and a half-full wakeup threshold;
+  primary tracefs controls remain untouched. Each file is capped at 1 GiB and
+  one hour. Post-processing verifies the startup marker, ordered terminal
+  boundary and relevant service/kernel loss counters. A limit, missing boundary
+  or reported loss marks the collector failed and suppresses scheduler metrics,
+  series and timelines; the task's independent official grade is preserved.
+  Init's explicit host-consent flow can create/repair only the selected owned
+  instances and grant execute-only parent traversal when necessary; it never
+  delegates parent write/list access. Ordinary capture uses no sudo. Upstream's
+  primary watermark probe cannot write the non-delegated primary control file
+  under normal permissions and falls back to periodic draining. No promise of
+  zero primary read/probe accesses is made;
   the `system` record also captures bounded host-comparison metadata: CPU model,
   vendor and Arm implementer/part, package/core/thread topology, frequency
   governors and limits, NUMA node count, VM/container classification, compiler,
@@ -197,7 +234,10 @@ these scans. The native `run --repeat` prototype publishes an intended-slot plan
 allocates fresh campaigns and batches, freezes private legacy replay inputs and
 links every completed outcome. Batches continue only after confirmed preparation,
 complete output publication and cleanup. Measurement overrides relocate only
-measurements, not project-local workspaces/logs. Official sessions now expose an
+measurements, not project-local workspaces/logs. Collector preflight and sessions
+receive the benchmark's project root explicitly: an external measurement path,
+even beneath a different project, never selects its tracing capabilities or
+service registry. Official sessions now expose an
 on-demand versioned material identity through the workload controller, separate
 from evaluator baseline evidence. The shared capture verifies declared resource
 ownership and binds actual prepared file content plus image/runtime definition.
@@ -546,6 +586,11 @@ stream: only task-loopback listeners are opened, and host destinations remain
 on the host. Endpoint and HTTP/HTTPS/SOCKS proxy ports are rewritten before
 installation; TLS hostnames and raw protocol bytes are preserved. The relay
 spans installation/execution and closes on cancellation or any failure.
+Guest project configuration explicitly projects the guest tool, workload and
+workspace paths plus proxy settings. Host-only cgroup parents and delegated
+Perfetto instances never cross this boundary; guest parsing uses their empty
+defaults. The relay rewrites proxy endpoints on that projected configuration,
+not on a serialized copy of host capabilities.
 Measured isolated sessions verify the daemon PID against this host's kernel
 boot ID, namespace PID mapping, stopped state, process start time and owned
 container cgroup before dispatching through the collector interface. They
@@ -833,11 +878,12 @@ custom profiles because their event layouts are neither portable nor stable.
 The `perfetto` recipe downloads SHA-256-pinned official Tracebox and trace
 processor binaries into the project tool directory. It supports Linux x86_64
 and aarch64. Ftrace itself is a tracefs interface provided by the running host
-kernel, rather than an executable to copy into the project. Before a selected
-collector can start, ASB probes that exact interface; it retries the collector
-through `sudo -n` only when the direct probe fails, and rejects the run before
-the agent starts when the needed passwordless authorization is absent. Normal
-commands and CI do not require kernel tracing access.
+kernel, rather than an executable to copy into the project. Perfetto preflight
+records its delegated named instance through the owned manual service. Missing
+delegation points to `asb init --configure-host`; capture never escalates through
+sudo or resets the primary tracefs instance. Other collectors may use their
+documented bounded `sudo -n` capability probes. Normal commands and CI do not
+require kernel tracing access.
 Preparation also probes perf counter and record access, the project-local
 Perfetto trace processor, process-scoped pidstat
 CPU/I/O sampling, explicit flamegraph executables, and custom bpftrace program
@@ -848,19 +894,17 @@ guarantee future access after permissions change, access to the yet-unspawned
 agent PID, or successful attachment of arbitrary custom bpftrace programs.
 Granting unrestricted passwordless sudo for a tracing executable can enable
 arbitrary privileged operations; ASB does not install sudoers rules.
-ASB opens the marker as the benchmark user during preflight: sudo access for
-Tracebox does not give ASB permission to write lifecycle markers. After
+ASB opens its delegated instance's marker as the benchmark user. After
 Tracebox reports readiness, ASB checks the matching `tracing_on` if readable
 and writes a non-secret, run-specific startup marker before starting the agent.
 It does not enable or disable host-wide tracing. An inactive trace or failed
 marker write stops the run with a tracing-specific diagnostic. After recording,
 the trace processor must find the startup marker in the trace; missing markers
 are reported as an incomplete trace rather than silently accepted. A permission
-failure provides a systemd
-tmpfiles command that assigns the marker to the current user with mode 0600;
-this replaces the marker's previous ownership and permissions. It does not
-grant parent-directory traversal or override MAC policy, and a later tracefs
-remount may reset the permissions. The startup marker can appear in other active traces.
+failure points to the explicit scoped host-reconfiguration flow. A later tracefs
+remount or reboot requires reconfiguration. Concurrent captures sharing this
+process's instance may observe each other's markers; analysis uses each
+session's unique trace identity and the selected process lifetime.
 The `pi` agent uses the pinned `@mariozechner/pi-coding-agent` npm package and
 its non-interactive print mode. The generic endpoint negotiator selects a
 compatible API interface without coupling Pi to a particular provider.

@@ -50,6 +50,11 @@ clients on loopback, but CI never starts a real agent, bridge, or live provider.
 selections, scoped models/trials, dependency expansion, non-overwriting sweep
 publication, standalone measured/unmeasured reports and an injected browser
 opener. Browser tests do not launch a real GUI or contact a provider.
+`cargo test --locked --offline --test report_filters` executes the embedded
+report JavaScript under Node with an injected DOM fixture: every filter
+dimension, combined intersections, replica identities, select/clear all,
+empty charts, hover cleanup and selection restoration. SVG-generation tests
+also check that bars, series/legends and composition rows carry benchmark groups.
 Reserved-`all` tests cover complete registry expansion, enabled/original trial
 populations, catalog-name collisions and provider-scoped model discovery using
 only a bounded loopback HTTP fixture with no real provider credentials.
@@ -125,6 +130,19 @@ through the real CLI with a fake client and loopback replay. It verifies exact
 counts, overlap/sequential batches, fresh material, private replay input copies,
 failure disposition, output closure and measurement override paths without
 credentials, real agents, containers or privileged tracing.
+The repeat suite also routes Perfetto preflight through the actual CLI with
+external measurement destinations, including one inside a differently configured
+project. It uses fake tool probes and stops before tracing/agent launch, verifying
+that capability authority comes only from the benchmark project, not output paths.
+The opt-in `benchmark_live_repeated.py` instead needs
+`ASB_TEST_PERFETTO_PROJECT` pointing to an already delegated benchmark project
+and `ASB_TEST_BENCHMARK_ASB` pointing to the current executable. It runs two
+sequential batches of two synthetic replay clients with real Perfetto captures,
+including one ordinary client failure and a nested foreign measurement project.
+It verifies overlap, later-batch admission, four complete scoped traces and
+released project leases. It never configures host tracing, installs clients,
+contacts an LLM or uses Docker. Artifacts remain under the selected project;
+do not rebuild/replace the selected executable during qualification.
 The cli2key concurrency regression uses two mock bridge listeners and mock
 clients, with fixture-only credentials. Both authenticated local requests must
 overlap and reach different owned servers; both servers must be reaped afterward.
@@ -195,6 +213,34 @@ working tracefs permissions: set `ASB_TEST_PERFETTO_TOOLS` to the project's
 tools directory and run the ignored `live_perfetto` tests serially. They use an
 offline replay fixture, not a live provider; ordinary CI does not require
 privileged tracing.
+Concurrent Perfetto captures use one manual `traced`/`traced_probes` service per
+ASB process and exclusively lease a delegated named tracefs instance. All client
+commands use the explicit `perfetto` applet; neither preflight nor capture uses
+Tracebox autostart or `--reset-ftrace`. Configure optional delegation with
+`asb init --configure-host` (existing project data is preserved). Init prints
+every privileged command and requires y/N, or explicit `--yes` approval.
+Two project-specific instances allow two independent ASB processes; replicas
+inside one process share a service without serializing benchmark execution.
+Install util-linux `unshare` and enable unprivileged user/mount namespaces for
+the instance-only bootstrap. No permission to read the primary trace snapshot
+is required. For ignored library tracing tests, first `cargo build --locked`
+and set `ASB_TEST_PERFETTO_HELPER` to that built ASB executable: libtest itself
+cannot execute ASB's hidden recursive helper. Production uses its own executable.
+Private-service registration queries are bounded and use no provider/network.
+Reconfigure after reboot. No tracing privileges or host mutation are needed by
+ordinary CI: service fixtures use local Unix sockets and mock daemons, check
+creator-thread exit, owner-process death, failed-client isolation, lease lifetime,
+and bounded log draining. Actual overlapping captures remain an opt-in local
+qualification; mock ownership tests do not prove real scheduler coverage.
+The ignored `live_perfetto_streaming_preserves_markers_beyond_the_old_ring_capacity`
+test writes fixed, non-secret marker pressure beyond the old 64 MiB service
+buffer, then requires complete, loss-free capture and scoped agent measurements.
+The ordinary offline coverage fixtures reject missing/duplicate boundaries,
+data loss and malformed processor output. The ignored
+`real_processor_validates_success_failure_and_duplicate_terminal_order` test
+uses synthetic JSON traces and the installed trace processor without kernel
+tracing; it checks normal completion, failed-then-finishing and failed-only
+termination, rejecting reversed or duplicate terminal markers.
 The separate ignored `real_trace_processor_verifies_synthetic_marker_capture`
 test uses the same tool path but only reads a synthetic trace; it does not
 start tracing or require tracing privileges.

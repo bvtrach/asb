@@ -115,6 +115,49 @@ fn records(bytes: &[u8]) -> Vec<Value> {
 }
 
 #[test]
+fn measurement_overrides_never_choose_perfetto_authority_from_output_location() {
+    use std::os::unix::fs::PermissionsExt;
+    let project = Project::new();
+    let foreign = Project::new();
+    let outside = Project::new();
+    // A writable non-project destination, and a destination under a differently
+    // configured project, must both retain the benchmark's own authority.
+    fs::remove_file(outside.0.join(".asb/project.toml")).unwrap();
+    fs::write(
+        foreign.0.join(".asb/project.toml"),
+        "perfetto_instances=['foreign-instance']\n",
+    )
+    .unwrap();
+    project.config(2);
+    let path = project.0.join("benchmark.toml");
+    let config = fs::read_to_string(&path).unwrap();
+    fs::write(&path, format!("{config}\n[measurements]\nenabled=true\ndirectory='measurements'\ncollectors=['perfetto']\n")).unwrap();
+    let tools = project.0.join("tools/perfetto/bin");
+    fs::create_dir_all(&tools).unwrap();
+    for name in ["tracebox", "trace_processor_shell"] {
+        let path = tools.join(name);
+        fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    for destination in [
+        outside.0.join("measurements"),
+        foreign.0.join("measurements"),
+    ] {
+        let output = project.run_extra("2", &["--measurements", destination.to_str().unwrap()]);
+        assert!(!output.status.success());
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            error.contains("Perfetto needs delegated, isolated tracefs instances"),
+            "{error}"
+        );
+        assert!(!error.contains("configuration does not belong"), "{error}");
+        assert!(!project.0.join("attempts.jsonl").exists());
+        assert!(!foreign.0.join(".asb/perfetto").exists());
+        assert!(!outside.0.join(".asb/perfetto").exists());
+    }
+}
+
+#[test]
 fn repeats_fresh_batches_preserve_users_collect_all_outcomes_and_continue_ordinary_failures() {
     let project = Project::new();
     project.config(2);

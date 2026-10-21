@@ -464,6 +464,7 @@ pub struct Session {
     adapters: Vec<&'static dyn collectors::CollectorAdapter>,
     namespace_only: bool,
     pub(crate) dir: PathBuf,
+    pub(crate) project_root: Option<PathBuf>,
     pub(crate) tool_dir: Option<PathBuf>,
     pub(crate) cgroup_parent: Option<PathBuf>,
     started_unix_ms: u128,
@@ -526,11 +527,23 @@ impl Session {
         selected: &[String],
         tool_dir: Option<&Path>,
     ) -> Result<Self, String> {
-        Self::start_with_collectors_and_parent(dir, selected, tool_dir, None)
+        let project_root = crate::project::load(dir).ok().map(|(root, _)| root);
+        Self::start_with_adapters(
+            dir,
+            selected,
+            tool_dir,
+            None,
+            collectors::all().to_vec(),
+            false,
+            project_root.as_deref(),
+        )
     }
 
-    /// Start collectors with an optional project-initialized delegated cgroup.
+    /// Start collectors under explicit benchmark-project authority. Output paths
+    /// may be external or inside another project; they never select capabilities.
+    /// The delegated cgroup remains optional.
     pub fn start_with_collectors_and_parent(
+        project_root: &Path,
         dir: &Path,
         selected: &[String],
         tool_dir: Option<&Path>,
@@ -543,6 +556,7 @@ impl Session {
             cgroup_parent,
             collectors::all().to_vec(),
             false,
+            Some(project_root),
         )
     }
 
@@ -566,7 +580,7 @@ impl Session {
             }
             adapters.push(adapter);
         }
-        Self::start_with_adapters(dir, selected, None, None, adapters, true)
+        Self::start_with_adapters(dir, selected, None, None, adapters, true, None)
     }
 
     fn start_with_adapters(
@@ -576,6 +590,7 @@ impl Session {
         cgroup_parent: Option<&Path>,
         adapters: Vec<&'static dyn collectors::CollectorAdapter>,
         namespace_only: bool,
+        project_root: Option<&Path>,
     ) -> Result<Self, String> {
         let selected = collectors::expand_dependencies(selected);
         let selected = selected.as_slice();
@@ -589,12 +604,14 @@ impl Session {
         check_measurement_directory(dir)?;
         // Privilege and tracefs checks must complete before any agent process
         // is prepared. This prevents a partially measured benchmark run.
-        let sudo_collectors = preflight_collectors(dir, selected, tool_dir, &adapters)?;
+        let sudo_collectors =
+            preflight_collectors(project_root, dir, selected, tool_dir, &adapters)?;
         let started_unix_ms = unix_ms();
         let mut session = Self {
             adapters,
             namespace_only,
             dir: dir.to_path_buf(),
+            project_root: project_root.map(Path::to_path_buf),
             tool_dir: tool_dir.map(Path::to_path_buf),
             cgroup_parent: cgroup_parent.map(Path::to_path_buf),
             started_unix_ms,
@@ -1337,6 +1354,7 @@ pub(crate) fn env_true(name: &str) -> bool {
 /// non-interactive sudo. Perf is intentionally not granted a sudoers rule:
 /// its kernel policy has a narrower, user-applied repair path below.
 fn preflight_collectors(
+    project_root: Option<&Path>,
     measurement_dir: &Path,
     selected: &[String],
     tool_dir: Option<&Path>,
@@ -1344,6 +1362,7 @@ fn preflight_collectors(
 ) -> Result<BTreeSet<String>, String> {
     let mut sudo_collectors = BTreeSet::new();
     let mut context = collectors::PreflightContext {
+        project_root,
         measurement_dir,
         selected,
         tool_dir,

@@ -2665,6 +2665,48 @@ fn cpu_and_io_collectors_use_project_local_pidstat_in_preflight_and_run() {
     );
 }
 
+#[test]
+fn host_reconfiguration_preserves_project_data_and_rejects_reset_combination() {
+    let project = Project::new();
+    project.init();
+    project.write("benchmark.toml", "retained benchmark configuration\n");
+    project.write(".asb-tools/user-tool", "retained installed tool\n");
+    project.write("results/user-result.json", "{\"retained\":true}\n");
+    let before: toml::Value =
+        toml::from_str(&std::fs::read_to_string(project.0.join(".asb/project.toml")).unwrap())
+            .unwrap();
+    // The ordinary command helper supplies EOF, so all privileged changes
+    // are declined. This is a configuration-preservation test, not host setup.
+    let result = project.command(&["init", "--configure-host"]);
+    expect_success(&result);
+    assert!(
+        stdout(&result)
+            .contains("existing tools, workloads, configurations and results were preserved")
+    );
+    let after: toml::Value =
+        toml::from_str(&std::fs::read_to_string(project.0.join(".asb/project.toml")).unwrap())
+            .unwrap();
+    for field in ["tools_dir", "workloads_dir", "workspace_dir", "proxy"] {
+        assert_eq!(before.get(field), after.get(field));
+    }
+    assert_eq!(
+        std::fs::read_to_string(project.0.join("benchmark.toml")).unwrap(),
+        "retained benchmark configuration\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(project.0.join(".asb-tools/user-tool")).unwrap(),
+        "retained installed tool\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(project.0.join("results/user-result.json")).unwrap(),
+        "{\"retained\":true}\n"
+    );
+    expect_failure(
+        &project.command(&["init", "--configure-host", "--reset"]),
+        "cannot be used with",
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn concurrent_perf_record_preflight_reports_permission_once() {

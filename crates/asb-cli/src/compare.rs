@@ -911,6 +911,7 @@ fn write_execution_timeline_svg(path: &Path, benchmarks: &[BenchmarkData]) -> Re
         svg.push_str(&format!("<rect x=\"{x}\" y=\"65\" width=\"10\" height=\"10\" fill=\"{}\"/><text x=\"{}\" y=\"75\" font-family=\"sans-serif\" font-size=\"11\">{}</text>", colors[index], x + 14, escape(label)));
     }
     for (row, (name, values)) in rows.iter().enumerate() {
+        svg.push_str(&format!("<g data-benchmark=\"{}\">", escape(name)));
         let y = 94 + row * 44;
         let total: f64 = values.iter().sum();
         svg.push_str(&format!("<text x=\"24\" y=\"{}\" font-family=\"sans-serif\" font-size=\"12\">{}</text><rect x=\"250\" y=\"{}\" width=\"690\" height=\"22\" rx=\"3\" fill=\"#edf1f4\"/>", y + 15, escape(name), y));
@@ -922,6 +923,7 @@ fn write_execution_timeline_svg(path: &Path, benchmarks: &[BenchmarkData]) -> Re
                 x += width;
             }
         }
+        svg.push_str("</g>");
     }
     svg.push_str("</svg>\n");
     fs::write(path, svg)
@@ -1161,7 +1163,7 @@ fn chart_figure(comparison_dir: &Path, graph: &str) -> Result<String, Error> {
     let svg = fs::read_to_string(comparison_dir.join(graph))
         .map_err(|error| Error::Run(format!("cannot read generated chart {}: {error}", graph)))?;
     Ok(format!(
-        "<figure class=\"interactive-chart\" data-graph=\"{}\"><div class=\"chart-backdrop\" aria-hidden=\"true\"></div><div class=\"chart-toolbar\"><strong>{}</strong><span><button type=\"button\" class=\"chart-reset\">Reset view</button><button type=\"button\" class=\"chart-expand\" aria-label=\"Enlarge chart\">Enlarge</button><button type=\"button\" class=\"chart-close\" aria-label=\"Close enlarged chart\" hidden>Close</button></span></div><div class=\"chart-stage\"><div class=\"chart-tooltip\" role=\"status\" aria-live=\"polite\"></div>{svg}</div><figcaption><a href=\"{}\" download>Download SVG</a></figcaption></figure>",
+        "<figure class=\"interactive-chart\" data-graph=\"{}\"><div class=\"chart-backdrop\" aria-hidden=\"true\"></div><div class=\"chart-toolbar\"><strong>{}</strong><span><button type=\"button\" class=\"chart-reset\">Reset view</button><button type=\"button\" class=\"chart-expand\" aria-label=\"Enlarge chart\">Enlarge</button><button type=\"button\" class=\"chart-close\" aria-label=\"Close enlarged chart\" hidden>Close</button></span></div><div class=\"chart-stage\"><div class=\"chart-tooltip\" role=\"status\" aria-live=\"polite\"></div>{svg}<p class=\"chart-empty\" role=\"status\" hidden>No selected benchmarks have data for this graph.</p></div><figcaption><a href=\"{}\" download>Download SVG (all results)</a></figcaption></figure>",
         escape(graph),
         escape(graph.strip_suffix(".svg").unwrap_or(graph)),
         escape(graph),
@@ -1295,10 +1297,11 @@ document.querySelectorAll('.interactive-chart').forEach(chart=>{
 });
 </script>"#;
 
-const HTML_SCRIPT: &str = r#"<script>
-const groups=[...document.querySelectorAll('input[data-group]')];const rows=[...document.querySelectorAll('#results tr')];const count=document.querySelector('#filter-count');
-function selected(group){return new Set(groups.filter(i=>i.dataset.group===group&&i.checked).map(i=>i.value))}function update(){const sets=Object.fromEntries(['benchmark','agent','provider','model','workload'].map(g=>[g,selected(g)]));let visible=0;rows.forEach(row=>{const show=Object.entries(sets).every(([g,set])=>set.has(row.dataset['dimension'+g[0].toUpperCase()+g.slice(1)]));row.hidden=!show;if(show)visible++});count.textContent=`Showing ${visible} of ${rows.length} benchmarks. Charts above summarize the complete sweep.`}groups.forEach(i=>i.addEventListener('change',update));document.querySelectorAll('button[data-action]').forEach(button=>button.addEventListener('click',()=>{groups.forEach(i=>i.checked=button.dataset.action==='all');update()}));update();
-</script></body></html>"#;
+const HTML_SCRIPT: &str = concat!(
+    "<script>\n",
+    include_str!("compare/report_filters.js"),
+    "\n</script></body></html>"
+);
 
 fn checked_reference(parent: &Path, reference: &str, sweep: &str) -> Result<PathBuf, Error> {
     let path = Path::new(reference);
@@ -1410,6 +1413,7 @@ fn write_bar_svg(
     let mut svg = svg_header(width, height, title);
     append_y_axis(&mut svg, left, PLOT_TOP, bottom, PLOT_RIGHT, max, title);
     for (index, (label, value)) in values.iter().enumerate() {
+        svg.push_str(&format!("<g data-benchmark=\"{}\">", escape(label)));
         let display = labels.get(label).unwrap_or(label);
         let x = left + index as f64 * bar_width + 4.0;
         let bar_height = value.max(0.0) / max * (bottom - PLOT_TOP);
@@ -1436,6 +1440,7 @@ fn write_bar_svg(
             x + width / 2.0
         ));
         svg.push_str(&format!("<text x=\"{:.1}\" y=\"410\" transform=\"rotate(35 {:.1} 410)\" font-size=\"11\">{}</text>", x, x, escape(display)));
+        svg.push_str("</g>");
     }
     svg.push_str("</svg>\n");
     fs::write(path, svg)
@@ -1508,6 +1513,7 @@ fn write_line_svg(path: &Path, title: &str, values: &[(String, TimeSeries)]) -> 
         RIGHT,
     );
     for (series_index, (label, points)) in values.iter().enumerate() {
+        svg.push_str(&format!("<g data-benchmark=\"{}\">", escape(label)));
         let color = ["#4472c4", "#ed7d31", "#70ad47", "#a5a5a5", "#ffc000"][series_index % 5];
         let coordinates = points
             .values
@@ -1587,7 +1593,7 @@ fn write_line_svg(path: &Path, title: &str, values: &[(String, TimeSeries)]) -> 
                 escape(line)
             ));
         }
-        svg.push_str("</text>");
+        svg.push_str("</text></g>");
     }
     svg.push_str("</svg>\n");
     fs::write(path, svg)
@@ -1973,6 +1979,7 @@ mod tests {
         assert!(timeline.is_file());
         let timeline_svg = std::fs::read_to_string(timeline).unwrap();
         assert!(timeline_svg.contains("Agent execution time composition"));
+        assert!(timeline_svg.contains("<g data-benchmark=\"000-one\">"));
         assert!(timeline_svg.contains("I/O wait"));
         assert!(
             root.join("results/sweep-comparison/metric-host.logical_cpus.svg")
@@ -1982,6 +1989,7 @@ mod tests {
             std::fs::read_to_string(root.join("results/sweep-comparison/metric-elapsed_ms.svg"))
                 .unwrap();
         assert!(elapsed_svg.contains("text-anchor=\"end\""));
+        assert!(elapsed_svg.contains("<g data-benchmark=\"000-one\">"));
         assert!(elapsed_svg.contains("unit: ms"));
         assert!(elapsed_svg.contains(">0</text>"));
         assert!(elapsed_svg.contains(">12</text>"));
@@ -2016,6 +2024,14 @@ mod tests {
         assert_eq!(comparison["benchmarks"][0]["status"], "completed");
         assert!(report.contains("Filter results"));
         assert!(report.contains("data-group=\"agent\""));
+        assert!(report.contains("No selected benchmarks have data for this graph."));
+        assert!(report.contains("installReportFilters(document)"));
+        let line_svg = std::fs::read_to_string(
+            root.join("results/sweep-comparison/series-perfetto.scheduler_events_per_s.svg"),
+        )
+        .unwrap();
+        assert!(line_svg.contains("<g data-benchmark=\"000-one\">"));
+        assert!(line_svg.contains("</text></g>"));
         assert!(report.contains(">Details</th>"));
         assert!(report.contains("All metrics"));
         assert!(report.contains("Host metadata"));

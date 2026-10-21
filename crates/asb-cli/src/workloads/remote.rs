@@ -9,6 +9,24 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
+/// Project paths/proxies cross the workload boundary, host capabilities do not.
+fn guest_project_configuration(project: &crate::project::ProjectConfig) -> Result<String, String> {
+    #[derive(serde::Serialize)]
+    struct GuestProject<'a> {
+        tools_dir: &'static str,
+        workloads_dir: &'static str,
+        workspace_dir: &'static str,
+        proxy: &'a crate::project::NetworkProxy,
+    }
+    toml::to_string(&GuestProject {
+        tools_dir: ".asb-tools",
+        workloads_dir: "workloads",
+        workspace_dir: "workspace",
+        proxy: &project.proxy,
+    })
+    .map_err(|_| "cannot encode guest project configuration".into())
+}
+
 pub(crate) fn prefetch(context: &super::PreflightContext<'_>) -> Result<(), crate::Error> {
     let tools = crate::project::resolve(context.project_root, &context.project_config.tools_dir);
     crate::install::guest_bootstrap(context.agent, context.project_root, &tools)?;
@@ -606,10 +624,6 @@ impl Session {
         let mut config = context.config.clone();
         config.workspace = self.guest_workspace.clone();
         config.concurrency = 1;
-        let mut project = context.project_config.clone();
-        project.tools_dir = ".asb-tools".into();
-        project.workloads_dir = "workloads".into();
-        project.workspace_dir = "workspace".into();
         let mut environment = serde_json::Map::new();
         let namespace_collectors = context
             .measurements
@@ -636,7 +650,7 @@ impl Session {
         }
         self.controller.send(&json!({"op":"agent", "binary":binary, "project_root":context.project_root,
             "tools_root":tools_root, "bootstrap":bootstrap, "measure_target":context.measurements.is_some(),
-            "project_configuration":toml::to_string(&project).map_err(|_| "cannot encode guest project configuration")?,
+            "project_configuration":guest_project_configuration(context.project_config)?,
             "environment":environment, "network":std::env::var("ASB_BENCHMARK_NETWORK").ok(),
             "request":{"process_lifetime":self.process_lifetime,"config":config,"connection":connection,"prompt":self.invocation.prompt,
                 "project_root":"/opt/asb-project","runtime_dir":"/opt/asb-private","run_dir":"/opt/asb-private/attempt","replay":context.replay,
@@ -930,6 +944,79 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn guest_project_projection_excludes_host_capabilities_and_survives_proxy_rewrite() {
+        use std::io::Write;
+        use std::process::Stdio;
+        for instances in [
+            Vec::new(),
+            vec!["asb-host-only-0".into(), "asb-host-only-1".into()],
+        ] {
+            let host = crate::project::ProjectConfig {
+                tools_dir: "host-tools".into(),
+                workloads_dir: "host-workloads".into(),
+                workspace_dir: "host-workspace".into(),
+                cgroup_parent: Some("/host-only/cgroup".into()),
+                perfetto_instances: instances.clone(),
+                proxy: crate::project::NetworkProxy {
+                    http: Some("http://localhost:1234/proxy".into()),
+                    ..Default::default()
+                },
+            };
+            let encoded = guest_project_configuration(&host).unwrap();
+            let table: toml::Value = toml::from_str(&encoded).unwrap();
+            assert_eq!(table.as_table().unwrap().len(), 4);
+            assert!(table.get("perfetto_instances").is_none());
+            assert!(table.get("cgroup_parent").is_none());
+            let source = r#"
+import sys,tomllib
+from types import SimpleNamespace
+sys.path.insert(0,sys.argv[1])
+from asb_relay import forward_request
+configuration=sys.stdin.read()
+targets=[]
+def start(values):
+    targets.extend(values)
+    return SimpleNamespace(ports=[2345])
+result=forward_request({'project_configuration':configuration,'environment':{},'request':{'connection':{'base_url':'http://localhost:1234/v1'}}},start)
+assert targets == [('localhost',1234)]
+assert result['request']['connection']['base_url'] == 'http://localhost:2345/v1'
+assert tomllib.loads(result['project_configuration'])['proxy']['http'] == 'http://localhost:2345/proxy'
+sys.stdout.write(result['project_configuration'])
+"#;
+            let assets = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/benchmarks");
+            let mut child = Command::new("python3")
+                .args(["-I", "-S", "-B", "-c", source])
+                .arg(assets)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap();
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(encoded.as_bytes())
+                .unwrap();
+            let output = child.wait_with_output().unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let guest: crate::project::ProjectConfig =
+                toml::from_str(std::str::from_utf8(&output.stdout).unwrap()).unwrap();
+            assert_eq!(guest.tools_dir, ".asb-tools");
+            assert_eq!(guest.workloads_dir, "workloads");
+            assert_eq!(guest.workspace_dir, "workspace");
+            assert_eq!(guest.cgroup_parent, None);
+            assert!(guest.perfetto_instances.is_empty());
+            assert_eq!(host.perfetto_instances, instances);
+            assert_eq!(host.cgroup_parent.as_deref(), Some("/host-only/cgroup"));
+        }
+    }
 
     #[test]
     fn inspected_grade_requires_bound_identity_and_explicitly_unknown_execution() {

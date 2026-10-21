@@ -40,7 +40,11 @@ pub(crate) fn run(args: &[OsString], stdout: &mut dyn Write, stderr: &mut dyn Wr
             .write_all(Cli::command().render_help().to_string().as_bytes())
             .map_err(io_error),
         Some(CommandLine::Init(options)) => {
-            project::init(options.root, options.reset, options.yes, stdout)
+            if options.configure_host {
+                project::configure_host(options.root, options.yes, stdout)
+            } else {
+                project::init(options.root, options.reset, options.yes, stdout)
+            }
         }
         Some(CommandLine::Setup(options)) => match options.mode {
             Some(SetupMode::Tui) => tui::setup(stdout),
@@ -212,6 +216,9 @@ struct InitArgs {
     root: Option<PathBuf>,
     #[arg(long)]
     reset: bool,
+    /// Update optional host capabilities without resetting project data.
+    #[arg(long, conflicts_with = "reset")]
+    configure_host: bool,
     /// Approve every privileged host-setup questionnaire without prompting.
     #[arg(long, short = 'y')]
     yes: bool,

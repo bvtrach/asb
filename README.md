@@ -336,6 +336,10 @@ model, workload, all numeric measurements, and links to raw run/collector/log
 artifacts. Checkbox filters can enable or disable individual benchmarks,
 agents, providers, models, and workloads without contacting a provider or
 rerunning the sweep.
+The same filters hide/show graph bars, complete time-series and their legends,
+and execution-composition rows, including labels and values. Graphs with no
+selected data show an empty-state message. Axes retain their original scale
+for stable comparisons; downloadable SVGs retain the complete unfiltered data.
 
 For a single benchmark, pass the same TOML used by `asb run`. ASB reads the
 latest record from each replica's configured log and the actual measurement
@@ -468,6 +472,17 @@ catalog without an API key and lists its models marked with the `-free` suffix;
 an `OPENCODE_API_KEY` is required only when running a benchmark through Zen.
 
 Every command and subcommand has concise help; use `asb COMMAND --help`.
+
+For optional Perfetto tracing, run `asb init --configure-host` in an existing
+benchmark project. It preserves installed tools, workloads, configurations and
+results, prints the exact privileged commands and asks for y/N approval.
+`--yes` approves those commands without prompting. Setup delegates two named
+tracefs instances (recreate them after reboot), allowing concurrent replicas
+and two independent ASB processes without resetting global tracing. Perfetto
+also needs util-linux `unshare` and enabled unprivileged user/mount namespaces;
+its bootstrap privately maps only the owned instance's trace file, rather than
+granting access to the host-wide trace snapshot. Decline
+setup when tracing is not needed; other collectors remain usable.
 `asb tool list` shows all built-in agent and support-tool installers and `asb workload list`
 shows the `.txt` prompts available in the current project plus installable
 external workload aliases. Install one by its short name, for example
