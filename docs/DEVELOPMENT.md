@@ -69,6 +69,11 @@ aliases, repeated configuration stems and deterministic regeneration. Numeric
 paths escape object-key separators; use `comparison.json`'s graph list rather
 than constructing filenames for unusual metric names. Conflicting collector
 identities fail explicitly instead of silently replacing a prior observation.
+Shell completions are generated from the actual Clap command schema using a
+pinned compatible `clap_complete`. Tests enumerate every public command/flag
+for both shells, execute Bash completions in every command context, and check
+writer errors and the internal helper's separate/equals argument forms.
+Registry suggestions affect only the completion clone, not custom tool parsing.
 `cargo test --locked cassette::` exercises the provider-free multi-track backend:
 manifest and compatibility bounds, stable seeded choices, selector edge cases,
 bounded metadata inspection, selective corruption checks and durable publication.

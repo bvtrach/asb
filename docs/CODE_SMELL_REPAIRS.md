@@ -115,6 +115,15 @@ not only helper tests, and repair the explicit save/finish state in this class.
 
 ## 7. Limits, diagnostics and CLI consistency
 
+Completion candidate: removed hand-maintained command/flag lists and generate
+Bash/Zsh directly from Clap's actual public command tree, with existing tool
+registry suggestions retained. A private first-argument helper keeps both
+`--__generate-completion bash` and `--__generate-completion=bash`; invalid
+arity/shells and output failures are tested. Every public command context is
+exercised under Bash, and independent review exercised real interactive Zsh
+completion as well as both shell syntax checks. New schema entries need no
+second completion definition. PR/main CI/release: pending.
+
 Unify intended limits (including TUI concurrency versus benchmark maximum),
 replace positional pane access and scattered protocol deadlines with named
 contracts, and audit shell-completion drift. Preserve signal-exit information
