@@ -76,6 +76,16 @@ bounded teardown and actionable errors. Best-effort cleanup in destructors
 is not automatically equivalent to an incorrectly ignored required write.
 Pending.
 
+Model-catalog transport candidate: replace blocking curl stdin/stdout operations,
+stderr-reader joins and caller-side waits with fair nonblocking Unix polling
+under one operation/cleanup deadline. Preserve proxy settings, response limits
+and sanitized protocol diagnostics. Direct-child ownership uses the shared
+pre-established reaper on uncertain cleanup; no successful catalog can bypass
+exit/EOF checks. Actual offline process fixtures cover pressure, inherited pipes,
+timeouts, custody and reaping. Non-Unix discovery fails before spawn; cancellable
+non-Unix transport remains a separate portability contract. Independent review,
+full release-head qualification and delivery remain pending.
+
 ## 4. Typed domain and wire contracts
 
 Review run status/evaluation/failure categories, execution mode, result source,

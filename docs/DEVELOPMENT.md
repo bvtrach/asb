@@ -121,6 +121,30 @@ explicitly unclassified lower bound, not a guessed count.
 Run `asb run` with credentials only as an explicit local
 smoke/benchmark operation.
 
+Model catalog transport uses nonblocking Unix pipes, polling request input,
+response output and diagnostic output concurrently. A single 35-second
+operation budget includes a 30-second I/O phase and up to five seconds reserved
+for direct-child cleanup; individual reads, writes and exit observation never
+restart that clock. Bodies remain capped at 16 MiB and diagnostics retain only
+the final 8 KiB for sanitized HTTP/proxy/content-type metadata. Credentials stay
+in the in-memory request sent through stdin, never argv or a transport file.
+Errors, deadline expiry and unwinding close owned pipe handles and stop/reap
+only the direct curl child. If bounded exit observation cannot confirm cleanup,
+an already-established private `OwnedReaper` retains custody and the request
+fails explicitly. This bounds caller-side observation, not an uninterruptible
+kernel operation or scheduling delay. It does not supervise arbitrary curl
+descendants; inherited open pipes cannot extend the I/O deadline.
+The bounded transport currently requires Unix. Non-Unix model discovery fails
+before spawning a request; a cancellable non-Unix pipe implementation remains
+an outstanding portability contract, not an unbounded fallback.
+`cargo test --offline --locked --lib models::` includes private subprocess
+fixtures for duplex pipe pressure, blocked stdin, oversized output, inherited
+stdout/stderr, deadlines, setup errors, uncertain cleanup and unwinding. Linux
+pidfd observations verify original direct-child exit/reaping and unrelated
+sentinel survival. Existing fake-curl fixtures retain HTTP/proxy/JSON/error and
+credential-redaction checks. No real curl request, installed agent or provider
+is used by these tests.
+
 CI's `coverage-90-percent` check requires at least 90% executable-line coverage.
 Run the same offline check locally with:
 
