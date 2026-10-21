@@ -37,9 +37,37 @@ ASB and its bridge/proxy children retain their inherited copies until their
 normal owned lifetimes end. The bridge adopts its copy; ASB and any compatibility
 proxy copy close on process exit. The test must verify both bridge reaping and
 connection refusal on the former listening endpoint after ASB returns, not
-only absence of one PID. Failure/unwind must still retain normal child custody.
+only absence of one PID. Endpoint refusal corroborates the owned-child checks;
+it is not ownership proof for arbitrary listeners.
 
 This is a fixture-only repair. It does not change production bridge port
 semantics or claim to repair the separate production free-port allocation
 protocol. The success fixture also retains bounded diagnostics on failure.
 Focused source verification and independent review precede broad qualification.
+
+## Signed source checkpoint
+
+The implementation follows this reservation design for both original
+explicit-port fixtures. Parent descriptor flags are checked unchanged, with the
+assertion deferred until after ASB finishes. The parent listener closes before
+output collection. A permanent regression retains both the occupied-port
+negative (real EADDRINUSE) and exact-FD-adoption positive, including bridge
+reaping and final endpoint refusal. A second regression writes 16 KiB of actual
+fixture stderr and proves only 8192 bytes are retained without swallowing its
+failure. The successful catalog fixture also writes and checks a real diagnostic.
+
+The helper intentionally retains existing std `wait_with_output` semantics:
+an output-collection error can still lose direct-child cleanup confirmation.
+There is no new assertion or fallible callback between spawn, dropping the
+parent listener and that collection primitive. This narrow repair does not
+claim to solve generic test-harness unwind/stream custody or import a private
+production reaper to address it opportunistically.
+
+Six focused cli2key tests passed with zero failures/ignored tests in
+`target/cli2key-fixture-focused.log`. The immutable red source is `a01dde7a`;
+`target/cli2key-fixture-red.log` retains its deliberate failure and EADDRINUSE
+evidence. Actual main-30 ASB was built first; its SHA-256 remained unchanged:
+`169aa0af5b52021b82f12fd0eaa0145fe615c5df42b3108e1219168ff22b79f7`.
+All production source, Cargo files and version 0.2.30 are unchanged. Entire
+offline target and strict lint verification follow independent source review;
+hosted CI, main repair and release remain pending.
