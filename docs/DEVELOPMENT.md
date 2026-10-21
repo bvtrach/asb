@@ -71,7 +71,9 @@ Continuation metadata is optional for a fresh grade, not optional for reuse.
 If an outcome, replica/group receipt or initial/final input seal cannot be
 published, human output identifies the missing evidence without changing the
 grade or retrying a client. JSONL instead emits a separate schema-1 object with
-`event: "continuation_warning"`, a stable `code`, display path, safe reason and
+`event: "continuation_warning"`, a stable `code`, display path, explicit
+`path_role` (`destination`, or `source_outcome` when an observer cannot report
+its receipt destination), safe reason and
 explicit remediation. Consumers must distinguish these events from schema-2
 benchmark summaries (`task`, `process_success`, `workload_success`); unchanged
 successful publication adds no event. Arbitrary helper/observer text is not

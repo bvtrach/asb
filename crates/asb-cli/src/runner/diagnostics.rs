@@ -85,6 +85,7 @@ pub(crate) struct Warning {
     code: &'static str,
     evidence: &'static str,
     path: String,
+    path_role: &'static str,
     reason: &'static str,
     remediation: &'static str,
     #[serde(skip)]
@@ -101,6 +102,7 @@ impl Warning {
             code: stage.code(),
             evidence: stage.evidence(),
             path: path.to_string_lossy().into_owned(),
+            path_role: "destination",
             reason: safe_reason(error),
             remediation: "Preserve the existing results and repair the reported storage or evidence problem. Missing start records or seals may not be reconstructable. Do not rerun completed tasks to recreate evidence; inspect `asb sweep --help` for explicit continuation and reconciliation options.",
             identity: format!(
@@ -110,6 +112,10 @@ impl Warning {
                 cause.finish()
             ),
         }
+    }
+    pub(crate) fn source_outcome(mut self) -> Self {
+        self.path_role = "source_outcome";
+        self
     }
     pub(crate) fn emit(
         &self,
@@ -129,7 +135,15 @@ impl Warning {
             })?;
             writeln!(output).map_err(io_error)?;
         } else {
-            writeln!(output,"Warning: {} unavailable at {}: {}. Existing grades are unchanged.\nNext: preserve results and repair this evidence; see `asb sweep --help` for reconciliation limits. Do not rerun completed tasks.",self.evidence,self.path.escape_debug(),self.reason).map_err(io_error)?;
+            let location = if self.path_role == "source_outcome" {
+                format!(
+                    "; source outcome at {} (receipt destination unknown)",
+                    self.path.escape_debug()
+                )
+            } else {
+                format!(" at {}", self.path.escape_debug())
+            };
+            writeln!(output,"Warning: {} unavailable{}: {}. Existing grades are unchanged.\nNext: preserve results and repair this evidence; see `asb sweep --help` for reconciliation limits. Do not rerun completed tasks.",self.evidence,location,self.reason).map_err(io_error)?;
         }
         // A failed writer must not suppress a later successfully delivered
         // diagnostic from another replica sharing this scope.

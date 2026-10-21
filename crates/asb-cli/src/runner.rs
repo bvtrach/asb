@@ -1060,12 +1060,18 @@ fn run_mode(
             if let Some(observer) = options.on_completion
                 && let Err(error) = observer.completed(options.replica, &record)
             {
-                continuation_warnings.push(diagnostics::Warning::new(
+                let destination = observer.evidence_destination(options.replica);
+                let warning = diagnostics::Warning::new(
                     diagnostics::Stage::Replica,
                     config_path,
-                    &record,
+                    destination.as_deref().unwrap_or(&record),
                     &error,
-                ));
+                );
+                continuation_warnings.push(if destination.is_some() {
+                    warning
+                } else {
+                    warning.source_outcome()
+                });
             }
         }
         Err(error) => continuation_warnings.push(diagnostics::Warning::new(

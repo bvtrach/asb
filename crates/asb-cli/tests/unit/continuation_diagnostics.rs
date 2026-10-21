@@ -72,6 +72,7 @@ fn typed_json_events_preserve_paths_and_hide_arbitrary_error_contents() {
     assert_eq!(value["schema_version"], 1);
     assert_eq!(value["code"], "task_outcome_unavailable");
     assert_eq!(value["path"], "directory/é\nfile");
+    assert_eq!(value["path_role"], "destination");
     assert!(value.get("task").is_none());
     assert!(value.get("workload_success").is_none());
     assert!(
@@ -88,6 +89,33 @@ fn typed_json_events_preserve_paths_and_hide_arbitrary_error_contents() {
     assert!(!human.contains("é\nfile"));
     assert!(human.contains("é\\nfile"));
     assert!(!human.contains("never-print-me"));
+}
+
+#[test]
+fn unknown_observer_names_its_source_outcome_not_a_failed_destination() {
+    let warning = Warning::new(
+        Stage::Replica,
+        Path::new("scope"),
+        Path::new("existing-outcome.json"),
+        &Error::Io("fixture".into()),
+    )
+    .source_outcome();
+    let mut output = Vec::new();
+    warning
+        .emit(true, &mut output, &Mutex::new(BTreeSet::new()))
+        .unwrap();
+    let value: Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(value["path_role"], "source_outcome");
+    assert_eq!(value["path"], "existing-outcome.json");
+    let mut human = Vec::new();
+    warning
+        .emit(false, &mut human, &Mutex::new(BTreeSet::new()))
+        .unwrap();
+    let human = String::from_utf8(human).unwrap();
+    assert!(
+        human.contains("source outcome at existing-outcome.json (receipt destination unknown)")
+    );
+    assert!(!human.contains("unavailable at existing-outcome"));
 }
 
 #[test]

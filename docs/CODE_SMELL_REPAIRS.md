@@ -60,7 +60,10 @@ initial/final input-seal failures now produce deduplicated human warnings or
 typed JSONL events. Original grades, process results, sealed logs and primary
 errors remain intact; missing evidence never authorizes an automatic retry.
 Actual filesystem-publication and broken-writer fixtures cover true/false
-grades, concurrent replicas and conservative resume. Independent review,
+grades, concurrent replicas and conservative resume. Review regressions also
+distinguish receipt destinations from source outcomes and preserve every
+admitted configuration's failure after parallel-sweep output breaks, without
+further writes or retries. Independent review,
 full gates and delivery remain pending. Other subprocess/publication cleanup
 items in this class are not claimed complete.
 

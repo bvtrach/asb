@@ -60,6 +60,14 @@ with (root/'launches').open('a') as output: output.write(str(Path.cwd())+'\n')
 if {grade}:
     Path('src/parser.py').write_text("def parse_path(value: str) -> list[str]:\n    return [segment for segment in value.split('/') if segment]\n")
 fault={fault:?}
+if fault=='parallel-failure':
+    import time
+    (root/('barrier-'+Path.cwd().parent.name)).write_text('admitted')
+    deadline=time.monotonic()+5
+    while len(list(root.glob('barrier-*')))<2:
+        if time.monotonic()>deadline: sys.exit(91)
+        time.sleep(0.005)
+    sys.exit(7 if Path.cwd().parent.name.endswith('benchmark-a') else 9)
 checkpoint=root/'sweep-results/.checkpoint'
 if fault=='replica': (checkpoint/'replicas').write_text('fixture blocks receipt publication')
 if fault=='group': (checkpoint/'completed').write_text('fixture blocks group publication')
@@ -222,6 +230,22 @@ fn actual_replica_group_and_final_input_publication_faults_warn_without_retry_or
                 _ => "initial_input_seal_unavailable",
             };
             assert!(lines.iter().any(|line|line["event"]=="continuation_warning"&&line["code"]==expected),"{fault}: {lines:?}");
+            if fault == "replica" {
+                let warning = lines.iter().find(|line| line["code"] == expected).unwrap();
+                assert_eq!(warning["path_role"], "destination");
+                assert!(
+                    warning["path"]
+                        .as_str()
+                        .unwrap()
+                        .contains(".checkpoint/replicas/")
+                );
+                assert!(
+                    !warning["path"]
+                        .as_str()
+                        .unwrap()
+                        .contains(".asb-completions")
+                );
+            }
             assert_eq!(project.launches(), 1);
             let resumed = project.run(&["sweep", "sweep.toml", "--resume", "--json"]);
             if fault == "replica" || fault == "input-final" || fault == "input-initial" {
@@ -352,4 +376,108 @@ fn isolated_real_warning_writer_failure_preserves_grade_and_the_primary_error() 
     let summary: Value = serde_json::from_slice(&output.bytes).unwrap();
     fs::write("writer-summary.json", serde_json::to_vec(&summary).unwrap()).unwrap();
     fs::write("writer-error.txt", errors).unwrap();
+}
+
+#[test]
+fn isolated_parallel_sweep_retains_both_admitted_failures_when_output_breaks() {
+    use std::ffi::OsString;
+    use std::io::Write;
+    const MARKER: &str = "ASB_PARALLEL_SWEEP_BROKEN_WRITER";
+    if std::env::var_os(MARKER).is_none() {
+        let project = Project::new(true, true, 1, "parallel-failure");
+        let config = fs::read_to_string(project.0.join("benchmark.toml")).unwrap();
+        for suffix in ["a", "b"] {
+            fs::write(
+                project.0.join(format!("benchmark-{suffix}.toml")),
+                config
+                    .replace(
+                        "workspace='workspace'",
+                        &format!("workspace='workspace-{suffix}'"),
+                    )
+                    .replace(
+                        "log_file='logs/run.jsonl'",
+                        &format!("log_file='logs/run-{suffix}.jsonl'"),
+                    ),
+            )
+            .unwrap();
+        }
+        fs::write(
+            project.0.join("sweep.toml"),
+            "configs=['benchmark-a.toml','benchmark-b.toml']\n",
+        )
+        .unwrap();
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "isolated_parallel_sweep_retains_both_admitted_failures_when_output_breaks",
+                "--nocapture",
+            ])
+            .current_dir(&project.0)
+            .isolated_env()
+            .env(MARKER, "1")
+            .env("HOME", &project.0)
+            .env("PATH", project.0.join("commands"))
+            .env("OPENROUTER_API_KEY", "dummy-fixture-only")
+            .env("ASB_RUNTIME_EXECUTABLE", env!("CARGO_BIN_EXE_asb"))
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let errors = fs::read_to_string(project.0.join("parallel-writer-error.txt")).unwrap();
+        assert!(
+            errors.contains("fixture parallel writer closed"),
+            "{errors}"
+        );
+        for (index, suffix) in ["a", "b"].iter().enumerate() {
+            let log = fs::read_to_string(project.0.join(format!(
+                "sweep-results/{index:03}-benchmark-{suffix}/run.log"
+            )))
+            .unwrap();
+            let summary: Value = serde_json::from_str(log.lines().last().unwrap()).unwrap();
+            assert_eq!(summary["workload_success"], true);
+            assert_eq!(summary["process_success"], false);
+            assert!(
+                errors.contains(summary["failure_reason"].as_str().unwrap()),
+                "primary {suffix} lost: {errors}"
+            );
+            assert!(
+                errors.contains(&format!("benchmark-{suffix}.toml")),
+                "{errors}"
+            );
+        }
+        assert_eq!(
+            project.launches(),
+            2,
+            "no retry or unfinished admitted execution"
+        );
+        return;
+    }
+    struct Broken {
+        writes: usize,
+    }
+    impl Write for Broken {
+        fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+            self.writes += 1;
+            Err(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "fixture parallel writer closed",
+            ))
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut output = Broken { writes: 0 };
+    let mut errors = Vec::new();
+    let args = ["sweep", "sweep.toml", "--jobs", "2", "--json"].map(OsString::from);
+    assert_ne!(asb_cli::run(&args, &mut output, &mut errors), 0);
+    assert_eq!(
+        output.writes, 1,
+        "do not attempt further terminal output after failure"
+    );
+    fs::write("parallel-writer-error.txt", errors).unwrap();
 }

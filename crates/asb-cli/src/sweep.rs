@@ -310,6 +310,7 @@ pub(crate) fn run_with_options(
         }
         failure
     } else {
+        let mut presentation_failed = false;
         scheduler::run(
             scheduling,
             &weights,
@@ -317,25 +318,34 @@ pub(crate) fn run_with_options(
             |event| {
                 match event {
                     scheduler::Event::Started(index) => {
-                        if !json {
-                            write_progress(
+                        if !json
+                            && let Err(error) = write_progress(
                                 output,
                                 started,
                                 sweep.configs.len(),
                                 &execution.config_path(index),
                                 &plan.entries[index].configuration,
-                            )?;
+                            )
+                        {
+                            presentation_failed = true;
+                            return Err(error);
                         }
                         started += 1;
                     }
                     scheduler::Event::Finished(index, result) => {
-                        spool::drain(&execution.output_path(index), weights[index], output)?;
                         if let Err(error) = result {
                             add_failure(
                                 &mut failures,
                                 execution.config_path(index).display().to_string(),
                                 error.to_string(),
                             );
+                        }
+                        if !presentation_failed
+                            && let Err(error) =
+                                spool::drain(&execution.output_path(index), weights[index], output)
+                        {
+                            presentation_failed = true;
+                            return Err(error);
                         }
                     }
                 }
@@ -344,13 +354,14 @@ pub(crate) fn run_with_options(
         )
         .err()
     };
-    if schedule_error.is_some() {
+    if let Some(scheduling_error) = &schedule_error {
         // The scheduler has joined every admitted worker. Do not retain
         // duplicate terminal spools when the terminal itself failed.
         for index in 0..plan.entries.len() {
             if let Err(error) = spool::discard(&execution.output_path(index)) {
                 schedule_error = Some(Error::Io(format!(
-                    "sweep output failed and temporary output cleanup failed: {error}"
+                    "{}; temporary output cleanup also failed: {error}",
+                    scheduling_error
                 )));
                 break;
             }
