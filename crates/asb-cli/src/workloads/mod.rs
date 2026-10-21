@@ -6,6 +6,25 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 mod adapters;
+pub(crate) mod contracts;
+
+pub(crate) fn descriptor(name: &str) -> Option<contracts::ModuleDescriptor> {
+    adapters::find(name).map(|adapter| adapter.descriptor(name))
+}
+
+pub(crate) fn describe_module(
+    name: &str,
+    output: &mut dyn std::io::Write,
+) -> Result<(), crate::Error> {
+    let descriptor = descriptor(name)
+        .filter(contracts::ModuleDescriptor::valid)
+        .ok_or_else(|| {
+            crate::Error::Input(format!("no benchmark module is registered for `{name}`"))
+        })?;
+    serde_json::to_writer_pretty(&mut *output, &descriptor)
+        .map_err(|error| crate::Error::Io(error.to_string()))?;
+    writeln!(output).map_err(crate::io_error)
+}
 
 pub(crate) struct PreflightContext<'a> {
     pub project_root: &'a Path,
@@ -96,6 +115,9 @@ pub(crate) fn installed_available(name: &str, directory: &Path) -> Option<bool> 
 pub(crate) fn prepare_task(
     context: &PreparationContext<'_>,
 ) -> Result<Box<dyn WorkloadSession>, String> {
+    if descriptor(context.workload).is_some_and(|descriptor| !descriptor.valid()) {
+        return Err("workload module has an invalid descriptor".into());
+    }
     adapters::find(context.workload)
         .ok_or_else(|| {
             format!(
