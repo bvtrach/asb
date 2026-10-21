@@ -769,6 +769,9 @@ fn run_mode(
             measurement_session.as_mut(),
             LifecyclePhase::AgentPreparation,
             || {
+                if options.batch.is_some() {
+                    agents::driver::prepare_fresh_state(&mut command, &run_dir.join("state"))?;
+                }
                 if let Some(connection) = connection.as_ref() {
                     agents::prepare(
                         &config.agent,

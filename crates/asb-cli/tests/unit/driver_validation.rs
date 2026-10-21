@@ -58,6 +58,106 @@ impl Drop for Fixture {
 }
 
 #[test]
+fn fresh_native_state_is_private_create_new_and_preserves_runtime_credentials() {
+    let fixture = Fixture::new();
+    let root = fixture.0.join("runtime/run/state");
+    let mut command = Command::new("not-started");
+    command
+        .env("CODEX_HOME", fixture.0.join("parent"))
+        .env("OPENAI_API_KEY", "fixture-provider-key")
+        .env("HTTPS_PROXY", "http://127.0.0.1:9")
+        .env("LLVM_PROFILE_FILE", "fixture-profile-%p.profraw");
+    prepare_fresh_state(&mut command, &root).unwrap();
+    let values: std::collections::BTreeMap<_, _> = command
+        .get_envs()
+        .map(|(key, value)| {
+            (
+                key.to_string_lossy().into_owned(),
+                value.map(|value| value.to_string_lossy().into_owned()),
+            )
+        })
+        .collect();
+    assert_eq!(values["CODEX_HOME"], None);
+    assert_eq!(
+        values["OPENAI_API_KEY"].as_deref(),
+        Some("fixture-provider-key")
+    );
+    assert_eq!(values["HTTPS_PROXY"].as_deref(), Some("http://127.0.0.1:9"));
+    assert_eq!(
+        values["LLVM_PROFILE_FILE"].as_deref(),
+        Some("fixture-profile-%p.profraw")
+    );
+    for name in [
+        "HOME",
+        "XDG_CONFIG_HOME",
+        "XDG_DATA_HOME",
+        "XDG_CACHE_HOME",
+        "XDG_STATE_HOME",
+        "XDG_RUNTIME_DIR",
+        "TMPDIR",
+    ] {
+        let directory = PathBuf::from(values[name].as_ref().unwrap());
+        assert!(directory.starts_with(&root) && directory.is_dir());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(directory).unwrap().permissions().mode() & 0o777,
+                0o700
+            );
+        }
+    }
+    fs::write(
+        root.join("preserve"),
+        "existing state must never be cleaned",
+    )
+    .unwrap();
+    assert!(prepare_fresh_state(&mut command, &root).is_err());
+    assert_eq!(
+        fs::read_to_string(root.join("preserve")).unwrap(),
+        "existing state must never be cleaned"
+    );
+    let file = fixture.0.join("not-a-directory");
+    fs::write(&file, "preserve").unwrap();
+    assert!(prepare_fresh_state(&mut command, &file.join("child/state")).is_err());
+    assert_eq!(fs::read_to_string(file).unwrap(), "preserve");
+}
+
+#[test]
+fn selected_adapter_replaces_removed_parent_alias_with_its_fresh_configuration() {
+    let fixture = Fixture::new();
+    let request = fixture.request();
+    let mut command = Command::new("not-started");
+    command.env("CODEX_HOME", fixture.0.join("parent"));
+    prepare_fresh_state(&mut command, &request.run_dir.join("state")).unwrap();
+    crate::agents::find("codex")
+        .unwrap()
+        .prepare(&mut crate::agents::PreparationContext {
+            command: &mut command,
+            model: "fixture",
+            connection: &request.connection,
+            runtime_dir: &request.runtime_dir,
+            run_dir: &request.run_dir,
+        })
+        .unwrap();
+    let values: std::collections::BTreeMap<_, _> = command
+        .get_envs()
+        .map(|(key, value)| (key.to_string_lossy().into_owned(), value.map(PathBuf::from)))
+        .collect();
+    assert_eq!(
+        values["CODEX_HOME"],
+        Some(request.runtime_dir.join("codex/config"))
+    );
+    assert_eq!(values["HOME"], Some(request.run_dir.join("state/home")));
+    assert!(
+        request
+            .runtime_dir
+            .join("codex/config/config.toml")
+            .is_file()
+    );
+}
+
+#[test]
 fn guest_prepare_rejects_unbounded_mislocated_unregistered_and_uninstalled_requests() {
     let fixture = Fixture::new();
     for timeout in [f64::NAN, f64::INFINITY, -1.0, 0.0, 0.0001, 86400.1] {

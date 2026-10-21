@@ -48,7 +48,7 @@ batch = int(workspace.parent.name.split('-')[-1])
 replica = int(workspace.name.split('-')[-1]) if '-concurrency-' in workspace.name else 1
 before = (workspace/'src/parser.py').read_text()
 runtime = pathlib.Path(str(workspace)+'.asb-agent-runtime')
-runtime.mkdir()
+runtime.mkdir(exist_ok=True)
 (runtime/'session').write_text(str(os.getpid()))
 start = time.monotonic_ns()
 (root/f'barrier-{batch}-{replica}').write_text('ready')
@@ -117,6 +117,107 @@ fn records(bytes: &[u8]) -> Vec<Value> {
 }
 
 #[test]
+fn repeated_native_clients_have_fresh_home_xdg_and_temporary_state() {
+    let project = Project::new();
+    project.config(2);
+    let state_names = [
+        "HOME",
+        "XDG_CONFIG_HOME",
+        "XDG_DATA_HOME",
+        "XDG_CACHE_HOME",
+        "XDG_STATE_HOME",
+        "XDG_RUNTIME_DIR",
+        "TMPDIR",
+    ];
+    let script = project.0.join("fixture-agent");
+    let original = fs::read_to_string(&script).unwrap();
+    let check = r#"
+names = ['HOME','XDG_CONFIG_HOME','XDG_DATA_HOME','XDG_CACHE_HOME','XDG_STATE_HOME','XDG_RUNTIME_DIR','TMPDIR']
+(root/f'state-observed-{batch}-{replica}.json').write_text(json.dumps({name:os.environ.get(name) for name in names}))
+state = {}
+for name in names:
+    directory = pathlib.Path(os.environ[name])
+    assert directory.is_absolute() and directory != root/'parent-state'/name, 'inherited mutable state: '+name
+    assert directory != root and workspace not in directory.parents, 'state must be outside workload'
+    assert directory.is_dir() and directory.stat().st_mode & 0o777 == 0o700, 'private state directory required'
+    assert not list(directory.iterdir()), 'state was not fresh: '+name
+    (directory/'owned-session').write_text(str(os.getpid()))
+    state[name] = str(directory)
+assert os.environ['ASB_MODEL'] == 'fixture', 'model configuration lost'
+assert all(name not in os.environ for name in ['CODEX_HOME','PI_CODING_AGENT_DIR','HERMES_HOME','CODEX_SESSION_ID']), 'parent agent state leaked'
+(root/f'state-{batch}-{replica}.json').write_text(json.dumps(state))
+"#;
+    let modified = original
+        .replace(
+            "before = (workspace/",
+            &format!("{check}\nbefore = (workspace/"),
+        )
+        .replace("runtime.mkdir()", "runtime.mkdir(exist_ok=True)");
+    assert_ne!(modified, original);
+    fs::write(&script, modified).unwrap();
+    let mut command = Command::new(env!("CARGO_BIN_EXE_asb"));
+    command
+        .current_dir(&project.0)
+        .isolated_env()
+        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+        .env("CODEX_HOME", project.0.join("parent-state/CODEX_HOME"))
+        .env(
+            "PI_CODING_AGENT_DIR",
+            project.0.join("parent-state/PI_CODING_AGENT_DIR"),
+        )
+        .env("HERMES_HOME", project.0.join("parent-state/HERMES_HOME"))
+        .env("CODEX_SESSION_ID", "parent-session-fixture")
+        .args([
+            "run",
+            "benchmark.toml",
+            "--replay",
+            "--cassette",
+            "input.jsonl",
+            "--repeat",
+            "2",
+            "--json",
+        ]);
+    for name in state_names {
+        let directory = project.0.join("parent-state").join(name);
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(directory.join("parent-marker"), "preserve inherited state").unwrap();
+        command.env(name, directory);
+    }
+    let output = command.output().unwrap();
+    let observed = fs::read_to_string(project.0.join("state-observed-1-1.json")).unwrap();
+    assert!(
+        output.status.success(),
+        "observed state={observed}\nstdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let mut roots = std::collections::BTreeSet::new();
+    for batch in 1..=2 {
+        for replica in 1..=2 {
+            let state: Value = serde_json::from_slice(
+                &fs::read(project.0.join(format!("state-{batch}-{replica}.json"))).unwrap(),
+            )
+            .unwrap();
+            for name in state_names {
+                assert!(
+                    roots.insert(state[name].as_str().unwrap().to_owned()),
+                    "shared state path"
+                );
+            }
+        }
+    }
+    assert_eq!(roots.len(), 28);
+    for name in state_names {
+        let directory = project.0.join("parent-state").join(name);
+        assert_eq!(
+            fs::read_to_string(directory.join("parent-marker")).unwrap(),
+            "preserve inherited state"
+        );
+        assert_eq!(fs::read_dir(directory).unwrap().count(), 1);
+    }
+}
+
+#[test]
 fn measurement_overrides_never_choose_perfetto_authority_from_output_location() {
     use std::os::unix::fs::PermissionsExt;
     let project = Project::new();
@@ -157,6 +258,55 @@ fn measurement_overrides_never_choose_perfetto_authority_from_output_location() 
         assert!(!foreign.0.join(".asb/perfetto").exists());
         assert!(!outside.0.join(".asb/perfetto").exists());
     }
+}
+
+#[test]
+fn legacy_native_run_keeps_explicit_parent_home_and_xdg_state() {
+    let project = Project::new();
+    project.config(1);
+    fs::write(project.0.join("fixture-agent"),r#"#!/usr/bin/env python3
+import json,os,pathlib,urllib.request
+root=pathlib.Path(__file__).parent
+(root/'legacy-state.json').write_text(json.dumps({name:os.environ.get(name) for name in ['HOME','XDG_STATE_HOME']}))
+body={'model':'fixture','tools':[{'type':'function','function':{'name':'fixture','parameters':{'type':'object'}}}],'messages':[]}
+url=os.environ['ASB_PROVIDER_BASE_URL'].rstrip('/')
+if url.endswith('/v1'): url=url[:-3]
+with urllib.request.urlopen(urllib.request.Request(url+'/v1/chat/completions',data=json.dumps(body).encode(),headers={'Content-Type':'application/json'}),timeout=5) as response:
+    assert response.status==200
+pathlib.Path('src/parser.py').write_text("def parse_path(value: str) -> list[str]:\n    return [segment for segment in value.split('/') if segment]\n")
+"#).unwrap();
+    let state = project.0.join("parent-xdg");
+    fs::create_dir(&state).unwrap();
+    fs::write(state.join("preserve"), "parent state").unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_asb"))
+        .current_dir(&project.0)
+        .isolated_env()
+        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+        .env("HOME", &project.0)
+        .env("XDG_STATE_HOME", &state)
+        .args([
+            "run",
+            "benchmark.toml",
+            "--replay",
+            "--cassette",
+            "input.jsonl",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let observed: Value =
+        serde_json::from_slice(&fs::read(project.0.join("legacy-state.json")).unwrap()).unwrap();
+    assert_eq!(observed["HOME"], project.0.to_str().unwrap());
+    assert_eq!(observed["XDG_STATE_HOME"], state.to_str().unwrap());
+    assert_eq!(
+        fs::read_to_string(state.join("preserve")).unwrap(),
+        "parent state"
+    );
 }
 
 #[test]

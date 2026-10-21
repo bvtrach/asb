@@ -7,6 +7,28 @@ pending integration. The complete contract remains in MULTITRACK.md.
 
 ## Implemented internal preparation foundation
 
+### Repeated native client state
+
+Explicit repeated native execution allocates create-new client state under its
+unique run directory, outside workload files. HOME, XDG configuration/data/cache/
+state/runtime directories and temporary files use distinct initially empty roots;
+Unix directories are private mode 0700. No parent HOME contents or login/session
+files are copied. Existing state is never reused or deleted on allocation failure.
+The generic driver removes mutable-state aliases declared by adapter owners
+before selected-adapter preparation installs its per-execution configuration.
+Provider credentials, proxies, PATH/tool resolution and runtime instrumentation
+remain available. This is modeled client-state isolation, not a sandbox against
+arbitrary custom code that deliberately accesses unrelated external files.
+
+Legacy native runs without explicit repeat retain their configured HOME/XDG
+behaviour. Original SDK execution keeps the task image's HOME files as workload
+material rather than erasing them through this native-only policy. The real CLI
+regression runs two batches of two concurrent custom clients: 28 state roots
+must be distinct and empty before owned writes, enclosing aliases are absent,
+parent sentinels stay unchanged, and model selection and strict replay still
+work. Additional tests cover legacy behaviour, create-new failure preservation,
+provider/proxy/profile retention and selected-adapter configuration after cleanup.
+
 The runner can request a cancellable material-ready gate. Every worker registers
 before fallible setup, retains its workload session on its own thread, and
 submits only an immutable compatibility identity after workload preparation and

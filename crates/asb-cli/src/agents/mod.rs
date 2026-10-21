@@ -47,6 +47,10 @@ pub(crate) trait AgentAdapter: Sync {
     fn replay_credential_vars(&self) -> &'static [&'static str] {
         &[]
     }
+    /// Mutable client-state overrides, distinct from provider credentials.
+    fn state_environment_vars(&self) -> &'static [&'static str] {
+        &[]
+    }
     fn collect(&self, _context: &CollectionContext<'_>) -> AgentArtifacts {
         AgentArtifacts::default()
     }
@@ -209,6 +213,7 @@ pub(super) struct StaticAdapter {
     step_count: Option<StepCountHook>,
     failure: Option<FailureHook>,
     replay_credential_vars: &'static [&'static str],
+    state_environment_vars: &'static [&'static str],
 }
 impl StaticAdapter {
     pub(super) const fn new(
@@ -233,6 +238,7 @@ impl StaticAdapter {
             step_count: None,
             failure: None,
             replay_credential_vars: &[],
+            state_environment_vars: &[],
         }
     }
 
@@ -273,8 +279,19 @@ impl StaticAdapter {
         self.replay_credential_vars = vars;
         self
     }
+
+    pub(super) const fn with_state_environment_vars(
+        mut self,
+        vars: &'static [&'static str],
+    ) -> Self {
+        self.state_environment_vars = vars;
+        self
+    }
 }
 impl AgentAdapter for StaticAdapter {
+    fn state_environment_vars(&self) -> &'static [&'static str] {
+        self.state_environment_vars
+    }
     fn id(&self) -> &'static str {
         self.id
     }

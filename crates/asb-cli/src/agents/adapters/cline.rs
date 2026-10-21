@@ -12,6 +12,12 @@ pub(super) static ADAPTER: StaticAdapter = StaticAdapter::new(
     prepare_adapter,
 )
 .with_replay_credential_vars(&["CLINE_API_KEY"])
+.with_state_environment_vars(&[
+    "CLINE_DIR",
+    "CLINE_DATA_DIR",
+    "CLINE_PROVIDER_SETTINGS_PATH",
+    "CLINE_GLOBAL_SETTINGS_PATH",
+])
 .with_output_usage(output_usage)
 .with_step_count(step_count);
 

@@ -10,7 +10,8 @@ pub(super) static ADAPTER: StaticAdapter = StaticAdapter::new(
     &[crate::endpoint::RESPONSES],
     command,
     prepare_adapter,
-);
+)
+.with_state_environment_vars(&["CODEX_HOME"]);
 fn command(context: &CommandContext<'_>) -> CommandSpec {
     CommandSpec {
         program: "codex".into(),

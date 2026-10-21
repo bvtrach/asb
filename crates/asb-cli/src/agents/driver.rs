@@ -102,6 +102,59 @@ pub(crate) fn isolate_parent_state(command: &mut Command) {
     }
 }
 
+/// Allocate fresh conventional client state for one repeated native execution.
+///
+/// No parent files are copied. Adapter preparation may subsequently install its
+/// own selected-provider configuration inside this execution's private runtime.
+pub(crate) fn prepare_fresh_state(command: &mut Command, root: &Path) -> Result<(), Error> {
+    let mut parent = fs::DirBuilder::new();
+    parent.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        parent.mode(0o700);
+    }
+    parent
+        .create(
+            root.parent()
+                .ok_or_else(|| Error::Input("missing agent state parent".into()))?,
+        )
+        .map_err(crate::io_error)?;
+    let mut directory = fs::DirBuilder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        directory.mode(0o700);
+    }
+    // Existing state is never reused or cleaned on behalf of this attempt.
+    directory.create(root).map_err(crate::io_error)?;
+    for (variable, name) in [
+        ("HOME", "home"),
+        ("XDG_CONFIG_HOME", "config"),
+        ("XDG_DATA_HOME", "data"),
+        ("XDG_CACHE_HOME", "cache"),
+        ("XDG_STATE_HOME", "state"),
+        ("XDG_RUNTIME_DIR", "runtime"),
+        ("TMPDIR", "tmp"),
+    ] {
+        let path = root.join(name);
+        directory.create(&path).map_err(crate::io_error)?;
+        command.env(variable, &path);
+        if variable == "TMPDIR" {
+            command.env("TMP", &path).env("TEMP", &path);
+        }
+    }
+    // Registry owners declare aliases; the generic runner has no agent-name
+    // branches. Remove enclosing-agent overrides too, not only the selected
+    // client's, before the selected adapter prepares fresh configuration.
+    for adapter in super::adapters::REGISTRY {
+        for variable in adapter.state_environment_vars() {
+            command.env_remove(variable);
+        }
+    }
+    Ok(())
+}
+
 fn absolute(path: &Path) -> bool {
     path.is_absolute()
         && !path
