@@ -1952,42 +1952,106 @@ mod tests {
         let tools = std::path::PathBuf::from(
             std::env::var_os("ASB_TEST_PERFETTO_TOOLS").expect("set ASB_TEST_PERFETTO_TOOLS"),
         );
-        let dir = tools.parent().unwrap().join("trace-test-output");
+        let dir = std::env::var_os("ASB_TEST_PERFETTO_OUTPUT")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| tools.parent().unwrap().join("trace-test-output"));
+        capture_perfetto_fixture(&tools, &dir, false, None);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "requires project-local Perfetto, isolated tracefs delegation and user namespaces"]
+    fn live_perfetto_survivor_keeps_markers_and_scope_after_a_sibling_fails() {
+        let tools = std::path::PathBuf::from(std::env::var_os("ASB_TEST_PERFETTO_TOOLS").unwrap());
+        let root = tools
+            .parent()
+            .unwrap()
+            .join(crate::workloads::TaskIdentity::local("perfetto-overlap", None).attempt_id);
+        let barrier =
+            std::sync::Arc::new((std::sync::Mutex::new(0usize), std::sync::Condvar::new()));
+        let threads = [true, false].map(|fail| {
+            let tools = tools.clone();
+            let dir = root.join(if fail { "failed-sibling" } else { "survivor" });
+            let barrier = std::sync::Arc::clone(&barrier);
+            std::thread::spawn(move || capture_perfetto_fixture(&tools, &dir, fail, Some(&barrier)))
+        });
+        let outcomes = threads.map(|thread| thread.join());
+        let [failed, survivor] = outcomes.map(Result::unwrap);
+        assert!(
+            failed.0 < survivor.1 && survivor.0 < failed.1,
+            "captures did not overlap: {failed:?}, {survivor:?}"
+        );
+        assert!(
+            failed.1 < survivor.1,
+            "survivor did not remain active after failure: {failed:?}, {survivor:?}"
+        );
+        assert!(
+            failed.3 < survivor.2,
+            "failed sibling recorder had not stopped before survivor execution ended"
+        );
+        println!("Overlapping Perfetto qualification: {}", root.display());
+    }
+
+    #[cfg(target_os = "linux")]
+    fn capture_perfetto_fixture(
+        tools: &std::path::Path,
+        dir: &std::path::Path,
+        fail: bool,
+        barrier: Option<&(std::sync::Mutex<usize>, std::sync::Condvar)>,
+    ) -> (u64, u64, std::time::Instant, std::time::Instant) {
         let mut session = crate::measurements::Session::start_with_collectors(
-            &dir,
+            dir,
             &["perfetto".into()],
-            Some(&tools),
+            Some(tools),
         )
         .expect("start real Perfetto");
         let id = session.trace_id().to_owned();
-        let mut command = std::process::Command::new("/bin/sleep");
+        if let Some(barrier) = barrier {
+            let mut ready = barrier.0.lock().unwrap();
+            *ready += 1;
+            barrier.1.notify_all();
+            let (ready, _) = barrier
+                .1
+                .wait_timeout_while(ready, std::time::Duration::from_secs(15), |count| {
+                    *count < 2
+                })
+                .unwrap();
+            assert_eq!(
+                *ready, 2,
+                "sibling did not start within the qualification bound"
+            );
+        }
+        let mut command = std::process::Command::new("/bin/sh");
         command
-            .arg("0.2")
+            .args(["-c", if fail { "sleep 0.2; exit 1" } else { "sleep 6" }])
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
+        let execution_started = std::time::Instant::now();
         let output = super::run_measured_agent(
             &mut command,
-            "sleep",
+            "sh",
             None,
             Some(&mut session),
             false,
             &mut Vec::new(),
         )
         .expect("run fixture");
-        assert!(output.status.success());
+        let agent_ended = std::time::Instant::now();
+        let elapsed_ms = execution_started.elapsed().as_millis();
+        assert_eq!(output.status.success(), !fail);
         session
             .finish(crate::measurements::RunMeasurement {
                 replica_index: None,
                 execution_cohort: None,
                 schema_version: 1,
                 run_id: "test".into(),
-                status: "completed",
-                success: true,
-                process_success: true,
-                workload_success: Some(true),
+                status: if fail { "failed" } else { "completed" },
+                success: !fail,
+                process_success: !fail,
+                workload_success: None,
                 failure_kind: None,
                 failure_reason: None,
-                success_rate: Some(1.0),
+                success_rate: None,
                 adapter_smoke_success: None,
                 agent: "fixture",
                 workload: "fixture",
@@ -1998,13 +2062,14 @@ mod tests {
                 workload_failure: None,
                 provider: "fixture",
                 model: "fixture",
-                elapsed_ms: 200,
-                exit_code: Some(0),
+                elapsed_ms,
+                exit_code: output.status.code(),
                 token_usage: crate::measurements::TokenUsage::default(),
                 steps: Some(1),
                 started_unix_ms: 0,
             })
             .expect("finish collector");
+        let recorder_stopped = std::time::Instant::now();
         let trace = dir.join("perfetto-scheduling.perfetto-trace");
         let query = format!("SELECT name FROM slice WHERE name GLOB 'asb.*.{id}' ORDER BY ts");
         let result = std::process::Command::new(tools.join("perfetto/bin/trace_processor_shell"))
@@ -2034,6 +2099,38 @@ mod tests {
                 .unwrap_or_else(|| panic!("missing {needle} in {rows}"));
             cursor += offset + needle.len();
         }
+        let markers: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(dir.join("perfetto-tracepoints.json")).unwrap())
+                .unwrap();
+        assert_eq!(markers["marker_verified"], true);
+        assert!(markers["marker_warning"].is_null(), "{markers}");
+        assert!(markers["scope_warning"].is_null(), "{markers}");
+        let data: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(dir.join("perfetto.json")).unwrap()).unwrap();
+        assert!(
+            data["metrics"]["perfetto.scheduler_events"]
+                .as_f64()
+                .unwrap_or(0.0)
+                > 0.0,
+            "{data}"
+        );
+        let bounds = std::process::Command::new(tools.join("perfetto/bin/trace_processor_shell"))
+            .arg("query").arg(&trace)
+            .arg(format!("SELECT MIN(ts), MAX(ts) FROM slice WHERE name IN ('asb.agent.started.{id}', 'asb.agent.exited.{id}')"))
+            .output().unwrap();
+        assert!(bounds.status.success());
+        let text = String::from_utf8(bounds.stdout).unwrap();
+        let values: Vec<u64> = text
+            .lines()
+            .nth(1)
+            .unwrap()
+            .split(',')
+            .map(|s| s.parse().unwrap())
+            .collect();
+        assert_eq!(values.len(), 2);
+        assert!(values[1] > values[0]);
+        println!("Perfetto qualification: {}", dir.display());
+        (values[0], values[1], agent_ended, recorder_stopped)
     }
 
     #[cfg(target_os = "linux")]

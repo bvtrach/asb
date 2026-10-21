@@ -3,12 +3,29 @@ use super::super::{
     ProcessData,
 };
 use crate::measurements;
+mod bootstrap;
+mod service;
+pub(crate) use bootstrap::entry as bootstrap_entry;
+use service::Service;
+use std::sync::Arc;
 pub(super) struct PerfettoCollector;
 pub(super) static ADAPTER: PerfettoCollector = PerfettoCollector;
 
 impl CollectorAdapter for PerfettoCollector {
     fn id(&self) -> &'static str {
         "perfetto"
+    }
+    fn runtime_inputs(
+        &self,
+        context: &crate::runtime_inputs::Context<'_>,
+    ) -> Result<Vec<crate::runtime_inputs::Dependency>, crate::Error> {
+        let mut inputs = crate::tools::find("perfetto")
+            .expect("registered Perfetto tool")
+            .runtime_inputs(context)?;
+        inputs.push(crate::runtime_inputs::Dependency::command(&Command::new(
+            "unshare",
+        )));
+        Ok(inputs)
     }
     fn environment_flag(&self) -> Option<&'static str> {
         Some("ASB_MEASURE_PERFETTO")
@@ -187,18 +204,7 @@ fn preflight(context: &mut PreflightContext<'_>) -> Result<(), String> {
     if !executable.is_file() {
         return Err("Perfetto is required for the selected collector. Run `asb tool install perfetto` and retry.".into());
     }
-    let marker = checked_trace_marker_path()?;
-    match probe_trace_marker_io(&marker) {
-        Ok(()) => preflight_perfetto(context, &executable),
-        Err(error) if marker_probe_allows_fallback(&marker, &error) => {
-            // Some container kernels expose trace_marker but reject writes
-            // with EBADF. Process-bounded trace collection remains valid;
-            // post-processing will use the process lifetime instead of ASB
-            // lifecycle markers.
-            preflight_perfetto(context, &executable)
-        }
-        Err(error) => Err(marker_access_error(&marker, &error)),
-    }
+    preflight_perfetto(context, &executable)
 }
 
 #[cfg(test)]
@@ -215,20 +221,11 @@ fn preflight_with_marker(context: &mut PreflightContext<'_>, marker: &Path) -> R
 
 fn preflight_perfetto(context: &mut PreflightContext<'_>, executable: &Path) -> Result<(), String> {
     probe_trace_processor(context.tool_dir)?;
-    if !executable.is_file() {
+    let service = Service::acquire(executable, context.measurement_dir)?;
+    if perfetto_probe(&service, context.measurement_dir)? {
         return Ok(());
     }
-    if perfetto_probe(executable, context.measurement_dir, false)? {
-        return Ok(());
-    }
-    if perfetto_probe(executable, context.measurement_dir, true)? {
-        context.sudo_collectors.insert("perfetto".into());
-        Ok(())
-    } else {
-        Err(measurements::passwordless_sudo_error(
-            "perfetto", executable,
-        ))
-    }
+    Err("Perfetto could not record its delegated tracefs instance. Inspect .asb/perfetto service logs and rerun `asb init --configure-host` to repair delegation; no host-wide tracing reset or sudo fallback was attempted.".into())
 }
 
 fn probe_trace_processor(tool_dir: Option<&Path>) -> Result<(), String> {
@@ -287,6 +284,7 @@ use std::time::{Duration, Instant};
 
 #[derive(Default)]
 struct PerfettoState {
+    service: Option<Arc<Service>>,
     enabled: bool,
     trace: Option<PathBuf>,
     pid: Option<u32>,
@@ -308,13 +306,23 @@ impl measurements::Session {
         if !self.state::<PerfettoState>().borrow().enabled {
             return Ok(());
         }
-        let marker = checked_trace_marker_path()?;
-        self.start_perfetto_with_marker(&marker)
+        let executable = measurements::resolve_executable(self.tool_dir.as_deref(), "perfetto");
+        let service = Service::acquire(&executable, &self.dir)?;
+        let marker = service.marker.clone();
+        self.start_perfetto_with_marker(&marker, Some(service))
     }
 
-    fn start_perfetto_with_marker(&mut self, marker: &Path) -> Result<(), String> {
+    fn start_perfetto_with_marker(
+        &mut self,
+        marker: &Path,
+        service: Option<Arc<Service>>,
+    ) -> Result<(), String> {
         let config = self.dir.join("perfetto-scheduling.pbtx");
-        fs::write(&config, perfetto_config(None))
+        let configuration = service.as_ref().map_or_else(
+            || perfetto_config(None),
+            |service| perfetto_instance_config(&service.instance),
+        );
+        fs::write(&config, configuration)
             .map_err(|error| format!("cannot write Perfetto trace configuration: {error}"))?;
         let trace = self.dir.join("perfetto-scheduling.perfetto-trace");
         // A sudo-launched Tracebox otherwise creates a root-only 0600 trace.
@@ -326,8 +334,17 @@ impl measurements::Session {
         File::create(&stdout_path)
             .map_err(|error| format!("cannot create Perfetto output: {error}"))?;
         let mut marker_output = open_trace_marker(marker)?;
-        let child = self
-            .command("perfetto")
+        let mut command = if let Some(service) = &service {
+            service.command("perfetto")
+        } else {
+            let mut command = Command::new(measurements::resolve_executable(
+                self.tool_dir.as_deref(),
+                "perfetto",
+            ));
+            command.arg("perfetto");
+            command
+        };
+        let child = command
             .args(["--txt", "--notify-fd", "1", "-c"])
             .arg(&config)
             .args(["-o"])
@@ -390,6 +407,7 @@ impl measurements::Session {
                     };
                 let state = self.state::<PerfettoState>();
                 let mut state = state.borrow_mut();
+                state.service = service;
                 state.trace = Some(trace);
                 state.trace_marker = marker_output.as_ref().map(|_| marker.to_path_buf());
                 state.trace_marker_output = marker_output;
@@ -748,29 +766,6 @@ fn state_style(state: &str, io_wait: bool) -> (&'static str, &'static str) {
     }
 }
 
-fn checked_trace_marker_path() -> Result<PathBuf, String> {
-    let paths = [
-        PathBuf::from("/sys/kernel/tracing/trace_marker"),
-        PathBuf::from("/sys/kernel/debug/tracing/trace_marker"),
-    ];
-    let mut denied = None;
-    for path in paths {
-        match fs::metadata(&path) {
-            Ok(metadata) if metadata.is_file() => return Ok(path),
-            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
-                if denied.is_none() {
-                    denied = Some((path, error));
-                }
-            }
-            _ => {}
-        }
-    }
-    match denied {
-        Some((path, error)) => Err(marker_access_error(&path, &error)),
-        None => Err(perfetto_tracefs_error()),
-    }
-}
-
 fn open_trace_marker(path: &Path) -> Result<File, String> {
     // Opening checks permissions without writing to an inactive trace buffer.
     OpenOptions::new()
@@ -779,6 +774,7 @@ fn open_trace_marker(path: &Path) -> Result<File, String> {
         .map_err(|error| marker_access_error(path, &error))
 }
 
+#[cfg(test)]
 fn probe_trace_marker_io(path: &Path) -> std::io::Result<()> {
     let mut marker = OpenOptions::new().write(true).open(path)?;
     write!(marker, "I|{}|asb.preflight", std::process::id())
@@ -1036,70 +1032,148 @@ data_sources {
     config
 }
 
-fn perfetto_probe_config() -> String {
-    perfetto_config(None).replacen("duration_ms: 3600000", "duration_ms: 250", 1)
+fn perfetto_instance_config(instance: &str) -> String {
+    perfetto_config(None).replacen(
+        "ftrace_config {",
+        &format!("ftrace_config {{\n      instance_name: \"{instance}\""),
+        1,
+    )
 }
 
-/// Probe the exact ftrace configuration used by ASB. `--background-wait`
-/// waits for Perfetto to acknowledge every data source, so a successful
-/// process launch cannot mask an unavailable tracefs instance.
-pub(crate) fn perfetto_probe(
-    executable: &Path,
-    measurement_dir: &Path,
-    sudo: bool,
-) -> Result<bool, String> {
+/// Read-only primary tracefs format metadata needed by Tracebox's decoder.
+/// No event enable/filter, raw pipe, or trace buffer permissions are included.
+pub(crate) fn required_trace_metadata() -> Vec<PathBuf> {
+    let root = if Path::new("/sys/kernel/tracing/events").is_dir() {
+        Path::new("/sys/kernel/tracing/events")
+    } else {
+        Path::new("/sys/kernel/debug/tracing/events")
+    };
+    let mut paths = vec![root.join("header_page"), root.join("header_event")];
+    for line in perfetto_config(None).lines() {
+        if let Some(event) = line
+            .trim()
+            .strip_prefix("ftrace_events: \"")
+            .and_then(|event| event.strip_suffix('"'))
+        {
+            paths.extend([root.join(event).join("format"), root.join(event).join("id")]);
+        }
+    }
+    paths.into_iter().filter(|path| path.is_file()).collect()
+}
+
+/// Probe the owned instance without autostart, global reset, or sudo fallback.
+fn perfetto_probe(service: &Service, measurement_dir: &Path) -> Result<bool, String> {
     let config = measurement_dir.join(".perfetto-preflight.pbtx");
     let trace = measurement_dir.join(".perfetto-preflight.perfetto-trace");
-    fs::write(&config, perfetto_probe_config())
-        .map_err(|error| format!("cannot write Perfetto preflight configuration: {error}"))?;
-    let mut command = if sudo {
-        let mut command = Command::new("sudo");
-        command.args(["-n", "--"]);
-        command.arg(executable);
-        command
-    } else {
-        Command::new(executable)
-    };
-    let result = command
-        .args(["--txt", "-c"])
-        .arg(&config)
-        .args(["-o"])
-        .arg(&trace)
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .output();
-    let _ = fs::remove_file(&config);
-    let _ = fs::remove_file(&trace);
-    match result {
-        Ok(output) => {
-            if !output.status.success() {
-                return Ok(false);
+    fs::write(
+        &config,
+        perfetto_instance_config(&service.instance).replacen(
+            "duration_ms: 3600000",
+            "duration_ms: 250",
+            1,
+        ),
+    )
+    .map_err(|error| format!("cannot write Perfetto preflight configuration: {error}"))?;
+    let stderr_path = measurement_dir.join(".perfetto-preflight.stderr");
+    let result = (|| -> std::io::Result<bool> {
+        let mut child = service
+            .command("perfetto")
+            .args(["--txt", "-c"])
+            .arg(&config)
+            .args(["-o"])
+            .arg(&trace)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::from(File::create(&stderr_path)?))
+            .spawn()?;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let success = loop {
+            match child.try_wait()? {
+                Some(status) => break status.success(),
+                None if Instant::now() >= deadline => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    break false;
+                }
+                None => std::thread::sleep(Duration::from_millis(25)),
             }
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            let unavailable_markers = [
+        };
+        let mut bytes = Vec::new();
+        File::open(&stderr_path)?
+            .take(256 * 1024)
+            .read_to_end(&mut bytes)?;
+        let stderr = String::from_utf8_lossy(&bytes);
+        Ok(success
+            && ![
                 "Failed to reset ftrace",
                 "Failed to create FtraceController",
                 "Data source id=1 not found",
-            ];
-            Ok(!unavailable_markers
-                .iter()
-                .any(|marker| stderr.contains(marker)))
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound && sudo => Ok(false),
-        Err(error) => Err(format!(
-            "cannot execute Perfetto at {}: {error}. Check parent-directory access and reinstall with `asb tool install perfetto`.",
-            executable.display()
-        )),
-    }
-}
-
-pub(crate) fn perfetto_tracefs_error() -> String {
-    "Perfetto needs the Linux tracefs ftrace interface, but ASB could not find trace_marker under /sys/kernel/tracing or /sys/kernel/debug/tracing. This is a host kernel interface, not an installable project tool. What to do: mount tracefs or enable kernel tracing, then rerun. If mounting tracefs requires privileges, grant the required passwordless sudo access before starting the benchmark; ASB never prompts for a password.".into()
+            ]
+            .iter()
+            .any(|marker| stderr.contains(marker)))
+    })();
+    let _ = fs::remove_file(&config);
+    let _ = fs::remove_file(&trace);
+    let _ = fs::remove_file(&stderr_path);
+    result.map_err(|error| format!("cannot execute owned Perfetto preflight client: {error}. Check .asb/perfetto service logs and reinstall with `asb tool install perfetto` if needed."))
 }
 
 #[cfg(test)]
 mod marker_tests {
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn perfetto_declares_namespace_launcher_and_detects_path_shadowing() {
+        use crate::runtime_inputs::{Context, Dependency};
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(
+            crate::workloads::TaskIdentity::local("perfetto-runtime-inputs", None).attempt_id,
+        );
+        let project = crate::project::ProjectConfig::default();
+        let bin = root.join(&project.tools_dir).join("perfetto/bin");
+        fs::create_dir_all(&bin).unwrap();
+        for name in ["tracebox", "trace_processor_shell"] {
+            let path = bin.join(name);
+            fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
+            fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let inputs = ADAPTER
+            .runtime_inputs(&Context {
+                root: &root,
+                project: &project,
+            })
+            .unwrap();
+        assert!(inputs.iter().any(
+            |input| matches!(input, Dependency::Program { path, .. } if path.ends_with("tracebox"))
+        ));
+        assert!(inputs.iter().any(|input| matches!(input, Dependency::Program { path, .. } if path.ends_with("trace_processor_shell"))));
+        let mut launcher = inputs.into_iter().find(|input| matches!(input, Dependency::Program { path, search: None } if path == Path::new("unshare"))).expect("same inherited PATH lookup as launch");
+        let first = root.join("first");
+        let second = root.join("second");
+        fs::create_dir_all(&first).unwrap();
+        fs::create_dir_all(&second).unwrap();
+        fs::copy("/bin/true", second.join("unshare")).unwrap();
+        if let Dependency::Program { search, .. } = &mut launcher {
+            *search = Some(
+                std::env::join_paths([&first, &second, Path::new("/usr/bin"), Path::new("/bin")])
+                    .unwrap()
+                    .into_string()
+                    .unwrap(),
+            );
+        }
+        let before =
+            crate::runtime_inputs::discover(Path::new("python3"), &[launcher.clone()]).unwrap();
+        assert!(before.contains(&second.join("unshare")));
+        fs::copy("/bin/true", first.join("unshare")).unwrap();
+        let after = crate::runtime_inputs::discover(Path::new("python3"), &[launcher]).unwrap();
+        assert!(after.contains(&first.join("unshare")));
+        assert_ne!(
+            before, after,
+            "a new earlier PATH candidate must invalidate the declared runtime closure"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
 
     fn scope_fixture_query(query: &str, scenario: &str) -> serde_json::Value {
         let script = r#"import json,sqlite3,sys
@@ -1296,7 +1370,7 @@ print(json.dumps(c.execute(sys.argv[1]).fetchall()))
         let mut session =
             measurements::Session::start_with_collectors(&root.join("run"), &[], Some(&tools))
                 .unwrap();
-        session.start_perfetto_with_marker(&marker).unwrap();
+        session.start_perfetto_with_marker(&marker, None).unwrap();
         let id = session.trace_id().to_owned();
         session.write_trace_marker("I|1|asb.test.event").unwrap();
         let contents = fs::read_to_string(&marker).unwrap();
@@ -1317,7 +1391,9 @@ print(json.dumps(c.execute(sys.argv[1]).fetchall()))
         let mut session =
             measurements::Session::start_with_collectors(&root.join("failed"), &[], Some(&tools))
                 .unwrap();
-        let error = session.start_perfetto_with_marker(&marker).unwrap_err();
+        let error = session
+            .start_perfetto_with_marker(&marker, None)
+            .unwrap_err();
         assert!(error.contains("tracing is off"), "{error}");
         let pid = session.collectors[0].child.id();
         drop(session);

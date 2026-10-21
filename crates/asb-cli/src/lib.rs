@@ -35,6 +35,12 @@ use std::process::ExitCode;
 /// Run the process CLI.
 #[must_use]
 pub fn entry(args: Vec<OsString>) -> ExitCode {
+    if args
+        .first()
+        .is_some_and(|arg| arg == "__asb-perfetto-probes")
+    {
+        return collectors::adapters::perfetto::bootstrap_entry(&args[1..]);
+    }
     if args.first().is_some_and(|arg| arg == "__asb-namespace") {
         return match agents::driver::namespace_id() {
             Ok(namespace) => {
