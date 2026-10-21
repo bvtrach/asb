@@ -23,6 +23,8 @@ pub(crate) struct SweepPlan {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scheduling: Option<super::scheduler::Scheduling>,
     pub entries: Vec<PlannedBenchmark>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resources: Option<crate::planning::Resources>,
 }
 
 fn unknown_mode() -> String {
@@ -32,6 +34,8 @@ fn unknown_mode() -> String {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PlannedBenchmark {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy: Option<crate::planning::ResolvedPlan>,
     pub reference: String,
     pub configuration: BenchmarkConfig,
     pub selection: TaskSelection,
@@ -90,7 +94,13 @@ fn build_with_catalog(
         }
         let selection = workloads::describe_selection(&config, &directory, catalogs[&key].as_ref())
             .map_err(Error::Input)?;
+        let mut policy = crate::planning::resolve(&config)?;
+        policy.task_requirements = catalogs[&key]
+            .as_ref()
+            .and_then(|catalog| catalog.requirements.get(&selection.task_id))
+            .cloned();
         entries.push(PlannedBenchmark {
+            policy: Some(policy),
             reference: reference.clone(),
             configuration: config,
             selection,
@@ -103,10 +113,42 @@ fn build_with_catalog(
         respect_record_timings: false,
         scheduling: None,
         entries,
+        resources: manifest.resources,
     })
 }
 
 impl SweepPlan {
+    pub(crate) fn resource_costs(
+        &self,
+        capacity: Option<crate::planning::Resources>,
+    ) -> Result<Vec<crate::planning::Resources>, Error> {
+        self.entries.iter().map(|entry| {
+            let reservation = entry.policy.as_ref().and_then(|policy| policy.reservation);
+            if capacity.is_some() && reservation.is_none() {
+                return Err(Error::Input(format!("resource admission requires an explicit planning.reservation for {}; no task cost was guessed", entry.reference)));
+            }
+            let cost = reservation.unwrap_or_default().replicas(entry.configuration.concurrency)?;
+            if let Some(capacity) = capacity {
+                let reservation = reservation.expect("checked admission reservation");
+                if capacity == crate::planning::Resources::default()
+                    || (capacity.cpu_millis > 0 && reservation.cpu_millis == 0)
+                    || (capacity.memory_mib > 0 && reservation.memory_mib == 0)
+                    || (capacity.disk_mib > 0 && reservation.disk_mib == 0) {
+                    return Err(Error::Input("resource admission cannot use empty reservations for budgeted dimensions".into()));
+                }
+                if let Some(requirements) = entry.policy.as_ref().and_then(|policy| policy.task_requirements.as_ref())
+                    && (requirements.cpu_millis.is_some_and(|n| reservation.cpu_millis < n)
+                        || requirements.memory_mib.is_some_and(|n| reservation.memory_mib < n)
+                        || requirements.disk_mib.is_some_and(|n| reservation.disk_mib < n)) {
+                        return Err(Error::Input("admission reservation is below module-declared task requirements".into()));
+                }
+            }
+            if capacity.is_some_and(|capacity| !cost.fits(capacity)) {
+                return Err(Error::Input(format!("replica resource reservation for {} exceeds sweep resources", entry.reference)));
+            }
+            Ok(cost)
+        }).collect()
+    }
     fn encode(&self) -> Result<Vec<u8>, Error> {
         let bytes =
             serde_json::to_vec_pretty(self).map_err(|error| Error::Io(error.to_string()))?;
@@ -213,7 +255,22 @@ impl SweepPlan {
                     path.display()
                 )));
             }
+            // Loading historical reports remains possible. Resume separately
+            // requires a matching resolved policy, including collector choices.
+            if let Some(policy) = &entry.policy
+                && (policy.schema_version != 1
+                    || policy.input_modalities != ["text"]
+                    || !matches!(policy.backend.as_str(), "native" | "local-docker"))
+            {
+                return Err(Error::Input("invalid saved execution policy".into()));
+            }
         }
+        if plan.resources != manifest.resources {
+            return Err(Error::Input(
+                "sweep resource capacity no longer matches saved plan".into(),
+            ));
+        }
+        plan.resource_costs(plan.resources)?;
         if let Some(scheduling) = plan.scheduling {
             scheduling.validate(
                 &plan
@@ -308,6 +365,7 @@ mod tests {
             ("terminal-bench-2.1", 89),
         ];
         let mut manifest = SweepFile {
+            resources: None,
             configs: Vec::new(),
         };
         for (workload, expected) in populations {
@@ -391,6 +449,7 @@ mod tests {
             )
             .unwrap();
             SweepFile {
+                resources: None,
                 configs: vec!["one.toml".into(), "two.toml".into()],
             }
         }
@@ -400,6 +459,7 @@ mod tests {
                 calls += 1;
                 assert_eq!(name, "fixture-suite");
                 Ok(Some(PlanningCatalog {
+                    requirements: Default::default(),
                     dataset:serde_json::from_value(json!({"source":"official-fixture","revision":"a".repeat(40),"split":"test"})).unwrap(),
                     task_ids:["one".into(), "two".into()].into_iter().collect(), evaluation_kind:"upstream-harness",
                 }))

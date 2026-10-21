@@ -122,8 +122,10 @@ admitted configuration's failure after parallel-sweep output breaks, without
 further writes or retries. Independent source and fixture review approved
 candidate `16528073`; exact-head ordinary/package checks and both mandatory
 coverage gates passed before integration with newer main. The integrated
-candidate stages patch **0.2.9**, after the shell-completion repair; fresh
-release-head qualification and delivery remain pending. Other subprocess/publication cleanup
+candidate shipped as **v0.2.9** after independently reviewed PR #269 merged as
+`3211d1bf330cbc81731e10cc83e7843f58152707`. Exact-head hosted/package CI and
+both post-merge jobs passed in run `39614537662`; GitHub verified its signed
+release tag. Other subprocess/publication cleanup
 items in this class are not claimed complete.
 
 Model-catalog transport candidate, staged patch **0.2.11**: replace blocking curl stdin/stdout operations,
@@ -196,7 +198,7 @@ and strict Clippy, with unchanged executable hashes. Integrated-version and
 ordinary/package hosted CI, merge and post-merge release verification remain
 pending. This does not close other structural items.
 
-Runner candidate, staged patch **0.2.10** (not yet merged/released): private consuming admission,
+Runner repair, released patch **0.2.10**: private consuming admission,
 preparation, execution-evidence, proxy-settlement, evaluation and finalization
 states now separate owned resources and independent outcomes. It repairs the
 verified path where collector lifecycle errors discarded client output or an
@@ -212,7 +214,10 @@ observer redaction and exact-once execution/evaluation/cleanup survive the
 combined failure paths. The larger phase matrix uses synthetic execution
 evidence, not full benchmark runs. This does not close the remaining comparison/sweep/driver structural
 work, stream-memory limits, blocking child-wait class or exact inner-principal
-native timing. Hosted and full final verification remain required.
+native timing. Independently reviewed PR #273 merged as
+`f2c8d7819d8f79e11c398f2a87ab6b938fa6c9ab` after exact-head hosted/package checks
+passed. Both post-merge jobs passed in run `39619889953`; **v0.2.10** was
+released from that exact commit with a GitHub-verified signed tag.
 
 Audit correction: current `perfetto_instance_config` is seven lines, not the
 reported 630. Comparison's filter JavaScript is already a separate asset.
@@ -317,6 +322,18 @@ failure kind/reason or explicit cleanup failure; unknown cleanup alone does not
 invent a failure. Reports generated from the actual native finish fixtures
 retain the numeric reward/null resolution and disclose provider uncertainty in
 both row status and HTML, while healthy native completion stays completed.
+Root source review approved `f7b7bb9d`; that immutable pre-planning integration
+passed the full offline suite (1,033 passed, 21 optional skips), strict Clippy,
+formatting and sequential build/documentation gates with unchanged binary bytes
+through the suite. The provisional **0.2.21** integration now also includes
+the exact planning/report checkpoint `c893de62`: admission policy, controller
+budgets, persisted policy/task plans and computed protocol fingerprints remain
+upstream-owned, while explicit provider finish still precedes publication and
+gates cleanup confirmation and receipts. Actual finish fixtures verify saved
+plan/policy/budget consistency and fingerprint propagation alongside native
+reward preservation. This newer integration awaits independent source review
+and its own full qualification; the pre-planning run is not evidence for the
+new head. Package/hosted CI, merge and release remain pending.
 
 ## 6. Shared implementation and lifecycle policies
 

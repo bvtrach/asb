@@ -110,6 +110,7 @@ impl Request {
             .is_some_and(|table| table.contains_key("configs"));
         let sweep = if single {
             crate::sweep::SweepFile {
+                resources: None,
                 configs: vec![
                     sweep_path
                         .file_name()

@@ -139,7 +139,7 @@ fn prepared(
             workload: Box::new(Workload {
                 invocation: workloads::session::TaskInvocation {
                     identity: workloads::TaskIdentity::local("fixture", None),
-                    prompt: "fixture".into(),
+                    input: "fixture".into(),
                     workspace: fixture.0.clone(),
                 },
                 operations: operations.clone(),
@@ -726,6 +726,13 @@ fn native_postexecution_event_failure_retains_actual_child_output_and_grade() {
 
 fn result() -> RunResult<'static> {
     RunResult {
+        planning: crate::planning::resolve(
+            &toml::from_str("agent='pi'\nprovider='fixture'\nmodel='fixture'\nworkload='fixture'")
+                .unwrap(),
+        )
+        .unwrap(),
+        effective_budgets: Default::default(),
+        execution_plan: None,
         execution_plan_fingerprint: None,
         module: None,
         benchmark_outcome: None,
@@ -1131,7 +1138,29 @@ fn full_entry_child(case: &str) {
         let measured: serde_json::Value =
             serde_json::from_slice(&std::fs::read(root.join("measurements/run.json")).unwrap())
                 .unwrap();
+        let plan: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(log["execution_plan"].as_str().unwrap()).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(plan["policy"], log["planning"]);
+        assert_eq!(plan["effective_controller_caps"], log["effective_budgets"]);
+        assert!(!plan["task"].is_null());
+        for record in [&log, &summary] {
+            assert_eq!(record["planning"], log["planning"]);
+            assert_eq!(record["effective_budgets"], log["effective_budgets"]);
+            assert_eq!(record["execution_plan"], log["execution_plan"]);
+        }
         for record in [&log, &summary, &measured] {
+            assert_eq!(
+                record["execution_plan_fingerprint"],
+                log["execution_plan_fingerprint"]
+            );
+            assert!(
+                record["execution_plan_fingerprint"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("asb-protocol-v1:")
+            );
             if case.contains("native") {
                 assert!(record["workload_success"].is_null());
                 assert!(record["success_rate"].is_null());

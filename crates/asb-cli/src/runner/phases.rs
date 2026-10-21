@@ -456,7 +456,10 @@ pub(super) fn finish_measurements(
     }
     issues.event(Some(&mut session), LifecycleEvent::RunFinishing);
     let measured = measurements::RunMeasurement {
-        execution_plan_fingerprint: result.execution_plan_fingerprint,
+        execution_plan_fingerprint: result
+            .execution_plan_fingerprint
+            .as_ref()
+            .map(|fingerprint| fingerprint.as_str()),
         module: result.module.as_ref(),
         benchmark_outcome: result.benchmark_outcome.as_ref(),
         replica_index: result.replica_index,

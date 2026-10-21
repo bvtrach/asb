@@ -24,6 +24,7 @@ pub(super) struct PreparedNative {
     route: crate::launch::CommandRoute,
     run_dir: PathBuf,
     runtime_path: PathBuf,
+    execution_budget: Duration,
 }
 
 impl NativePlan<'_> {
@@ -47,7 +48,23 @@ impl NativePlan<'_> {
             tape_mode,
         } = route;
         let workspace = &invocation.workspace;
-        let prompt = &invocation.prompt;
+        invocation
+            .input
+            .validate_for_agent(&config.agent)
+            .map_err(Error::Input)?;
+        let resolved = crate::planning::resolve_for_run(config, measurements.is_some())?;
+        if resolved.backend != "native" {
+            return Err(Error::Input(
+                "native execution cannot substitute for the selected module backend".into(),
+            ));
+        }
+        let execution_budget = Duration::from_secs(
+            resolved
+                .budgets
+                .execution_seconds
+                .unwrap_or(crate::planning::DEFAULT_NATIVE_EXECUTION_SECONDS),
+        );
+        let prompt = &invocation.input.instructions;
         // Adapters run with the benchmark workspace as their current directory.
         // Pass the canonical workspace explicitly so a relative configuration
         // value is not resolved a second time inside that directory (which is
@@ -167,6 +184,7 @@ impl NativePlan<'_> {
             route,
             run_dir,
             runtime_path,
+            execution_budget,
         })
     }
 }
@@ -184,13 +202,14 @@ impl PreparedNative {
         // bypassing it at the gate would silently undo those fixes while still
         // appearing to attach collectors correctly.
         let target = self.route.target(&self.command);
-        let child = run_measured_agent(
+        let child = run_measured_agent_with_budget(
             &mut self.command,
             &target,
             Some(self.route),
             measurements,
             show_output,
             output,
+            self.execution_budget,
         )?;
         Ok((
             ExecutionEvidence {
@@ -239,7 +258,7 @@ mod tests {
         };
         let invocation = workloads::session::TaskInvocation {
             identity: workloads::TaskIdentity::local("fixture", None),
-            prompt: "private fixture prompt".into(),
+            input: "private fixture prompt".into(),
             workspace: root.join("workspace"),
         };
         let connection = crate::endpoint::Connection {

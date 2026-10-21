@@ -146,6 +146,9 @@ impl workloads::WorkloadSession for Observed {
     fn invocation(&self) -> &workloads::session::TaskInvocation {
         self.inner.invocation()
     }
+    fn effective_budgets(&self) -> crate::planning::EffectiveBudgets {
+        self.inner.effective_budgets()
+    }
     fn evaluation_kind(&self) -> &'static str {
         self.inner.evaluation_kind()
     }
