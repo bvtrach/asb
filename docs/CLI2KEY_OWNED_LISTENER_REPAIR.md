@@ -1,8 +1,9 @@
-# Owned compatibility listener: delivery43 design, awaiting source approval
+# Owned compatibility listener: delivery43 design and focused source proof
 
 Actual main42 base `32329d76` (PR307), not runner-phase43. Version staged43.
-Only signed diagnostic cherry-pick `09a9a321fbeb89a63a882b1a8a3ca31e37e85ee0`
-and Cargo version differ so far; NO production repair. Runner-phase43 remains
+The initial design checkpoint `e4e82879` contained only signed diagnostic
+cherry-pick `09a9a321fbeb89a63a882b1a8a3ca31e37e85ee0` and Cargo version.
+Root approved that design before implementation. Runner-phase43 remains
 held separately and will receive a later delivery slot. Class44/45/47 untouched.
 AGENTS/original report read; development/architecture identity checked against
 already fully read qualified source. All new build/evidence lives in HOME.
@@ -147,5 +148,83 @@ callback modifications. Preserve configured original Command semantics.
 - Run unchanged original success/bridge-cleanup offline test and full cli2key
   families, strict lint/fmt, then independent source review BEFORE fresh full.
 
-No production implementation until root approves this exact design checkpoint.
 No blind CI rerun, budget increase, skip, fake-success or new authorization gate.
+
+## Implemented source and focused evidence, pending final independent review
+
+Signed `fec09d246744be6ca8591176ba0d1795a6b48b9f` implements the approved
+contract and its first matrix. Root read its entire production diff and asked
+for additional actual descriptor-fault/reservation-release tests. Signed
+`a391c7f84a816f75a23dc0e5974532c32651cf6d` adds them. Its production delta is
+only extraction of private spawn_reserved_proxy, called by the same spawn_proxy
+entry, enabling tests to pin the actual reservation address before failures.
+No implementation policy or receipt condition was relaxed.
+
+Production files are exclusively the cli2key implementation/custody/private
+proxy module, unsupported-backend signature and embedded proxy script.
+All other production Rust/assets (including runner42, termination, agent,
+workload, capture, publication, checkpoint and selection) stay byte-identical
+to actual main42. Cargo changes only stage43. No runner-phase43 implementation
+was imported. Public Bridge/ProviderSession and external/upstream behavior stay
+unchanged; only the private owned proxy startup contract changes.
+
+The main42-based historical controlled EADDRINUSE evidence above remains
+immutable. Its fixture was explicitly migrated after the repair: there is no
+released --port proposal now. The wrapper confirms it cannot bind the STILL
+HELD inherited listener, holds a separate unrelated occupied socket instead,
+execs actual Node, and requires successful model discovery and complete owned
+cleanup. This is not the old contention test silently passing unchanged.
+
+Every actual executable built FIRST, then was frozen for runtime. Own HOME
+CARGO_TARGET_DIR only, locked/offline/jobs1/incremental0, no concurrent relink.
+On fec09d24: build-v2 exit0,13.97s; frozen actual SHA256
+`e4243cc797e179e9440ed88b45724c3eeeab4026a73d250612b37cbc4ed32c68`.
+Library cli2key24/0/0,10.88s and offline cli2key7/0/0,1.83s passed, with matching
+before/after actual/frozen hashes. These earlier runs remain in target logs.
+
+Final focused source a391c7f8: `target/cli2key43-faults-build.log` exit0,13.36s.
+Actual and frozen `target/qualification/cli2key43-a391c7f8-asb` SHA256:
+`63c8c0a0ac80bee1affe534bca0d28670c97845dd9a61310a84ff9dd2522ddae`.
+Before, after and final actual/frozen hashes agree. Post-focus libtest hash is
+recorded separately; no pre-run libtest stability claim is made.
+
+| Retained target log | Terminal result |
+| --- | --- |
+| cli2key43-owned-listener-lib-focus-v2.log | 26/0/0ignored;24.73s compile,11.03s runtime |
+| cli2key43-owned-listener-offline-focus-v2.log | 7/0/0;1.98s runtime |
+| cli2key43-layout-focus.log | 1/0/0 |
+| cli2key43-owned-listener-clippy.log | Strict workspace/all-target/all-feature -Dwarnings exit0,15.61s |
+| cli2key43-owned-listener-fmt.log / diffcheck.log | exit0 / exit0 |
+
+Final total34 focused outer passes, no failures/ignored; prior runs overlap
+and are not added to that count. Expected caught unwind panic text is part of
+passing custody tests, not an unreported failure. All handles are terminal.
+No failed compilation or runtime test occurred in the repaired-source sequence.
+
+The actual additional cases run the bundled Node script with invalid999999 and
+an inherited owned REGULAR file descriptor; both fail before readiness, preserve
+the foreign sentinel listener and file bytes, and release the separately pinned
+real reservation without numeric-port fallback. Another test pins each address
+before reader/pre-spawn/startup-error/unwind/uncertain-reaper scenarios, requires
+truthful uncertainty for the latter, awaits exact owned reaper settlement,
+observes pinned child exits and reclaims the port. No process outside admission
+is killed. Generic old custody cases remain intact.
+
+Other actual tests cover four concurrent owned Node sessions with distinct
+held ports, reclaim after finish (including Command pre_exec owner release),
+unrelated sentinel survival, parent FD_CLOEXEC unchanged during unrelated child
+execs, no listener socket in actual owned curl's /proc FDs, normal curl/request
+cancellation, actual malformed/duplicate/late frames and unchanged original
+CI-failing success/bridge-cleanup plus concurrent-replica cases. Parser tests
+add exact schema/address/oversize matrices and bounded later-noise discard.
+
+Scope is native Linux x86_64/local Node/Python/curl fixtures; no credentials,
+live provider/SDK, privilege changes or Windows/nonLinux runtime qualification.
+Existing nonUnix local refusal remains, not a new platform removal. Root must
+approve source/focused evidence before full qualification or PR/push. Historical
+CI cause is STILL UNKNOWN despite the independently demonstrated/fixed race.
+
+The only new untracked source-tree artifact was exact empty
+crates/asb-cli/.asb/install.log from the existing tool adapter-hook test; it is
+recoverably moved into target/fixture-preservation after all runtime handles
+are terminal. No user file, old evidence or unrelated directory is removed.
