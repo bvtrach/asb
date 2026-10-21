@@ -2463,8 +2463,9 @@ mod tests {
         assert!(duration_series.contains("bucket_ranges(bucket)"));
         assert!(duration_series.contains("relevant AS"));
         assert!(
-            duration_series
-                .contains("MIN(r.ts+r.dur,bounds.start_ts+(bucket_ranges.bucket+1)*1000000000)")
+            duration_series.contains(
+                "MIN(r.ts+r.dur,bounds.end_ts,bounds.start_ts+(bucket_ranges.bucket+1)*1000000000)"
+            )
         );
         assert!(
             duration_series.contains("MAX(r.ts,bounds.start_ts+bucket_ranges.bucket*1000000000)")
