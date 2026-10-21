@@ -49,6 +49,60 @@ impl workloads::WorkloadSession for Workload {
             _ => Err("official verifier unavailable".into()),
         }
     }
+    fn metric_policy(&self) -> workloads::outcome::MetricPolicy {
+        use workloads::outcome::*;
+        if self.grade < 3 {
+            return MetricPolicy::default();
+        }
+        MetricPolicy {
+            id: "accuracy".into(),
+            reward: "accuracy".into(),
+            rewards: std::collections::BTreeMap::from([(
+                "accuracy".into(),
+                RewardSpec {
+                    unit: "ratio".into(),
+                    range: Some([0.0, 1.0]),
+                },
+            )]),
+            ..Default::default()
+        }
+    }
+    fn checkpoint_evidence(&self) -> Vec<PathBuf> {
+        if self.grade >= 3 {
+            vec![self.invocation.workspace.join("grade.json")]
+        } else {
+            vec![]
+        }
+    }
+    fn evaluate_outcome(&mut self, response: &str) -> workloads::outcome::EvaluationOutcome {
+        use workloads::outcome::EvaluationOutcome as Evaluation;
+        if self.grade >= 3 {
+            assert_eq!(response, "submission");
+            self.operations.borrow_mut().push("evaluate");
+            return match self.grade {
+                3 => Evaluation::Completed {
+                    resolution: None,
+                    rewards: std::collections::BTreeMap::from([("accuracy".into(), 0.5)]),
+                    reason: None,
+                },
+                4 => Evaluation::Pending {
+                    reason: "queued".into(),
+                },
+                _ => Evaluation::Error {
+                    reason: "native verifier unavailable".into(),
+                },
+            };
+        }
+        match self.evaluate(response) {
+            Ok(workloads::Evaluation::Passed) => Evaluation::binary(true),
+            Ok(workloads::Evaluation::Failed(reason)) => Evaluation::Completed {
+                resolution: Some(false),
+                rewards: std::collections::BTreeMap::from([("resolution".into(), 0.0)]),
+                reason: Some(reason),
+            },
+            Err(reason) => Evaluation::Error { reason },
+        }
+    }
     fn finish(&mut self) -> Result<(), String> {
         self.operations.borrow_mut().push(if self.grade == 2 {
             "preserve"
@@ -76,13 +130,16 @@ fn prepared(
     cleanup_error: bool,
     measurements: Option<measurements::Session>,
 ) -> (PreparedAttempt, Rc<RefCell<Vec<&'static str>>>) {
+    if grade >= 3 {
+        std::fs::write(fixture.0.join("grade.json"), "native evaluator evidence").unwrap();
+    }
     let operations = Rc::new(RefCell::new(Vec::new()));
     (
         PreparedAttempt {
             workload: Box::new(Workload {
                 invocation: workloads::session::TaskInvocation {
                     identity: workloads::TaskIdentity::local("fixture", None),
-                    prompt: "fixture".into(),
+                    input: "fixture".into(),
                     workspace: fixture.0.clone(),
                 },
                 operations: operations.clone(),
@@ -359,6 +416,49 @@ fn native_and_guest_apply_the_same_adapter_terminal_answer_policy() {
 }
 
 #[test]
+fn native_reward_pending_and_error_survive_marker_and_cleanup_failures() {
+    use workloads::outcome::EvaluationOutcome as Evaluation;
+    for grade in [3, 4, 5] {
+        for event in [
+            LifecycleEvent::PhaseBegin(LifecyclePhase::WorkloadEvaluation),
+            LifecycleEvent::PhaseEnd(LifecyclePhase::WorkloadEvaluation),
+            LifecycleEvent::PhaseBegin(LifecyclePhase::WorkloadCleanup),
+        ] {
+            let fixture = Fixture::new();
+            let mut session =
+                measurements::Session::start_with_collectors(&fixture.0.join("measure"), &[], None)
+                    .unwrap();
+            session.test_event_failure = Some(event);
+            let (prepared, operations) = prepared(&fixture, grade, true, Some(session));
+            let result = prepared
+                .executed(evidence(7, false), AttemptIssues::default())
+                .settle(None)
+                .evaluate("submission")
+                .finish();
+            match &result.outcome.evaluation {
+                Evaluation::Completed {
+                    resolution,
+                    rewards,
+                    ..
+                } => {
+                    assert_eq!(grade, 3);
+                    assert_eq!(*resolution, None);
+                    assert_eq!(rewards["accuracy"], 0.5);
+                }
+                Evaluation::Pending { .. } => assert_eq!(grade, 4),
+                Evaluation::Error { .. } => assert_eq!(grade, 5),
+            }
+            assert_eq!(&*operations.borrow(), &["evaluate", "finish"]);
+            assert_eq!(result.outcome.success(), None);
+            assert_eq!(result.evaluator_evidence.len(), 1);
+            assert!(!result.cleanup_confirmed);
+            assert!(result.issues.collector_failure().is_some());
+            assert!(result.issues.run_error.is_some());
+        }
+    }
+}
+
+#[test]
 fn every_evaluation_and_cleanup_marker_failure_still_invokes_owned_operations() {
     for event in [
         LifecycleEvent::PhaseBegin(LifecyclePhase::WorkloadEvaluation),
@@ -626,6 +726,16 @@ fn native_postexecution_event_failure_retains_actual_child_output_and_grade() {
 
 fn result() -> RunResult<'static> {
     RunResult {
+        planning: crate::planning::resolve(
+            &toml::from_str("agent='pi'\nprovider='fixture'\nmodel='fixture'\nworkload='fixture'")
+                .unwrap(),
+        )
+        .unwrap(),
+        effective_budgets: Default::default(),
+        execution_plan: None,
+        execution_plan_fingerprint: None,
+        module: None,
+        benchmark_outcome: None,
         replica_index: Some(1),
         execution_cohort: None,
         schema_version: 2,

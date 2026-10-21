@@ -378,6 +378,9 @@ pub fn available_collectors() -> Vec<String> {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct RunMeasurement<'a> {
+    pub(crate) execution_plan_fingerprint: Option<&'a str>,
+    pub(crate) module: Option<&'a crate::workloads::contracts::ModuleDescriptor>,
+    pub(crate) benchmark_outcome: Option<&'a crate::workloads::outcome::BenchmarkOutcome>,
     pub replica_index: Option<usize>,
     pub execution_cohort: Option<&'a ExecutionCohort>,
     pub schema_version: u32,
@@ -537,6 +540,7 @@ impl Session {
     }
 
     /// Start collectors with an optional project-initialized delegated cgroup.
+    #[cfg(test)]
     pub fn start_with_collectors_and_parent(
         dir: &Path,
         selected: &[String],
@@ -551,6 +555,24 @@ impl Session {
             collectors::all().to_vec(),
             false,
         )
+    }
+
+    /// Use exactly the negotiated adapter set. Later environment changes cannot
+    /// activate an adapter omitted from the saved plan.
+    pub(crate) fn start_with_resolved_collectors_and_parent(
+        dir: &Path,
+        selected: &[String],
+        active: &[String],
+        tool_dir: Option<&Path>,
+        cgroup_parent: Option<&Path>,
+    ) -> Result<Self, String> {
+        let adapters = active
+            .iter()
+            .map(|name| {
+                collectors::find(name).ok_or_else(|| format!("unknown resolved collector {name}"))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Self::start_with_adapters(dir, selected, tool_dir, cgroup_parent, adapters, false)
     }
 
     pub(crate) fn start_in_execution_namespace(
@@ -1978,6 +2000,9 @@ mod tests {
             ))
             .unwrap();
         let run = RunMeasurement {
+            execution_plan_fingerprint: None,
+            module: None,
+            benchmark_outcome: None,
             replica_index: None,
             execution_cohort: None,
             schema_version: 1,
