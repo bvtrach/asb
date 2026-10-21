@@ -35,7 +35,7 @@ Integrated candidate, staged patch **0.2.29**: independently source-approved
 bounded capture `823f5081` is combined with newly qualified sweep checkpoint
 `1657ae18`, preserving repeated native/official execution, fresh preparation,
 resource/artifact contracts and typed sweep/disposition ownership. Independent
-integration source review and fresh full qualification remain pending. Focused
+integration source review approved `8dabf284`. Focused
 offline checks passed 335 tests with five explicit optional skips: 103 runner,
 70 comparison, 74 sweep, one shared-isolation test and 87 tests across nine
 actual CLI/protocol targets. The actual binary was built first; strict
@@ -47,6 +47,19 @@ The unmeasured true/false/native reporting regressions retain resource/artifact
 fields and recorded planning/cap metadata without authorizing continuation.
 The private native fixture remains test-only, not new SDK qualification. The older
 qualification below is historical, not evidence for this new combined tree.
+The fresh all-target/all-feature offline suite at reviewed `8dabf284` passed
+1,193 tests with zero failures and 21 explicit optional skips across 22 targets.
+Strict Clippy, formatting and sequential build/private Rust docs/pinned AutoUML
+0.7.2/flows/interactive views/bash and zsh completions passed. Actual executable
+SHA-256 stayed unchanged before/after tests and final build:
+`3acc60d2381d4f6037159d1a7c41fb5f6ae6d0ed2b9acd64183de388934d59a6`.
+Exact-head hosted/package CI, main-ancestry publication review, merge, post-merge
+verification and release remain pending. This does not qualify optional skipped
+host/provider tests, runtime discovery, or the remaining overall audit.
+The subsequent signed ancestry merge retains actual main
+`46d20e382b7781c3fb3bf48216e6090ca4b37998` with a tree identical to qualified
+`650b3944`; production, tests, Cargo files and the qualified executable are
+unchanged. No redundant full test run substitutes for that exact tree check.
 
 Prior pre-main integration qualification: independently source-approved
 bounded capture/reporting repair `823f5081` is combined with qualified sweep
@@ -73,8 +86,11 @@ typed-disposition checkpoint `6553da9c`. Independent integration source review
 approved `b1459a9f`; its fresh all-target/all-feature offline qualification
 passed 1,178 tests with zero failures and 21 explicit optional skips across
 22 targets. Strict Clippy, formatting and sequential build/private docs/pinned
-AutoUML/flows/interactive views/completions passed. Hosted delivery remains
-pending; the earlier 1,077-test sweep evidence is not substituted for these checks.
+AutoUML/flows/interactive views/completions passed. Exact-head hosted/package CI
+passed in runs `39653948153` and `39653949094`; PR #293 merged as
+`46d20e382b7781c3fb3bf48216e6090ca4b37998`. Post-merge run `39655443641` and
+release remain pending. The earlier 1,077-test sweep evidence is not substituted
+for these checks.
 
 The parent typed run-disposition integration is staged as **0.2.27**, on the
 independently source-reviewed selection-identity integration **0.2.26**, after
@@ -105,7 +121,9 @@ run `39651552412`; **0.2.26** is released from that exact commit with
 GitHub-verified valid annotated tag `6643f6676d114c1b143ecb251b4eaf56909f1a67`.
 For **0.2.27**, exact-head hosted/package CI passed in runs `39651772993` and
 `39651776713`; PR #292 merged as `a0be2ed445fddb56231447adc03260607eb76f87`.
-Post-merge run `39653471931` and its release remain pending. The parent sweep candidate's
+Both post-merge jobs passed in run `39653471931`; **0.2.27** is released at
+that exact commit with GitHub-verified valid annotated tag
+`74934951a88a675e13b74ddf5fa961464ac33f1b`. The parent sweep candidate's
 current-main ancestry merge changes no production, test or Cargo bytes from
 qualified `1657ae18`.
 
