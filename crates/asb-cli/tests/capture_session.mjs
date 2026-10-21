@@ -1,0 +1,182 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import * as fs from "node:fs";
+import { join } from "node:path";
+import { createHash } from "node:crypto";
+import { CaptureSession } from "../assets/scripts/capture-session.mjs";
+
+function fixture(t, overrides = {}) {
+  const parent = join(process.cwd(), "target/capture-session-fixtures");
+  fs.mkdirSync(parent, { recursive: true });
+  const root = fs.mkdtempSync(join(parent, "capture-"));
+  const output = join(root, "trace.jsonl");
+  const receipt = join(root, "receipt.json");
+  const capture = new CaptureSession(output, { pid: process.pid, nonce: "fixture-nonce" }, { ...fs, ...overrides });
+  t.after(() => {
+    if (capture.outputCloseError !== null) assert.throws(() => capture.close(), (error) => error === capture.outputCloseError);
+    else capture.close();
+    fs.rmSync(root, { recursive: true });
+  });
+  return { capture, output, receipt };
+}
+
+function verifyBytes(value, output) {
+  const bytes = fs.readFileSync(output);
+  assert.equal(value.bytes, bytes.length);
+  assert.equal(value.sha256, createHash("sha256").update(bytes).digest("hex"));
+  assert.equal(value.accepted, value.completed + value.failed + value.inflight);
+}
+
+test("out-of-order handlers preserve exact UTF-8 bytes and separate inference/probes", (t) => {
+  const { capture, output, receipt } = fixture(t);
+  const first = capture.begin();
+  const second = capture.begin();
+  capture.append(second, { response: "Grüße 🦀" }, true);
+  capture.end(second, true);
+  capture.drain();
+  assert.equal(capture.begin(), null);
+  assert.throws(() => capture.finalize(receipt), /not quiesced/);
+  assert.equal(fs.existsSync(receipt), false);
+  capture.append(first, { status: 500, probe: true }, false);
+  capture.end(first, true);
+  const value = capture.finalize(receipt);
+  assert.equal(value.complete, true);
+  assert.equal(value.inference_requests, 1);
+  assert.equal(value.recorded, 2);
+  assert.equal(value.nonce, "fixture-nonce");
+  assert.deepEqual(JSON.parse(fs.readFileSync(receipt)), value);
+  verifyBytes(value, output);
+  assert.throws(() => capture.end(first, true), /not owned/);
+  assert.throws(() => capture.finalize(receipt), /already attempted/);
+});
+
+for (const scenario of ["empty", "probe-only", "downstream-disconnect", "upload-aborted"]) {
+  test(`terminal accounting: ${scenario}`, (t) => {
+    const { capture, output, receipt } = fixture(t);
+    if (scenario !== "empty") {
+      const token = capture.begin();
+      if (scenario !== "upload-aborted") capture.append(token, { response: "full response" }, false);
+      capture.end(token, scenario === "probe-only");
+    }
+    const value = capture.finalize(receipt);
+    assert.equal(value.complete, scenario === "empty" || scenario === "probe-only");
+    assert.equal(value.inference_requests, 0);
+    verifyBytes(value, output);
+  });
+}
+
+test("short writes are completed and a later write failure retains honest incomplete bytes", (t) => {
+  let writes = 0;
+  const { capture, output, receipt } = fixture(t, {
+    writeSync(fd, bytes, offset, length) {
+      if (++writes === 3) throw new Error("injected disk full");
+      return fs.writeSync(fd, bytes, offset, Math.min(length, 2));
+    },
+  });
+  const token = capture.begin();
+  assert.throws(() => capture.append(token, { response: "partial" }, true), /disk full/);
+  capture.end(token, false);
+  const value = capture.finalize(receipt);
+  assert.equal(value.complete, false);
+  assert.equal(value.recorded, 0);
+  assert.equal(value.inference_requests, 0);
+  assert.equal(value.bytes, 4);
+  verifyBytes(value, output);
+});
+
+test("failed payload sync never publishes a receipt", (t) => {
+  const { capture, receipt } = fixture(t, { fsyncSync() { throw new Error("injected sync failure"); } });
+  assert.throws(() => capture.finalize(receipt), /sync failure/);
+  assert.equal(fs.existsSync(receipt), false);
+  assert.throws(() => capture.finalize(receipt), /already attempted/);
+});
+
+test("output and receipt destinations are never overwritten", (t) => {
+  const { capture, output, receipt } = fixture(t);
+  assert.throws(() => new CaptureSession(output, { pid: process.pid, nonce: "other" }), /EEXIST/);
+  fs.writeFileSync(receipt, "preserve existing receipt");
+  assert.throws(() => capture.finalize(receipt), /EEXIST/);
+  assert.equal(fs.readFileSync(receipt, "utf8"), "preserve existing receipt");
+});
+
+for (const phase of ["payload-sync", "output-close", "receipt-write", "receipt-sync", "receipt-close", "link"]) {
+  test(`uncertain finalization is terminal: ${phase}`, (t) => {
+    let syncs = 0;
+    let closes = 0;
+    let injected = false;
+    function fail() {
+      injected = true;
+      throw new Error(`injected ${phase}`);
+    }
+    const { capture, receipt } = fixture(t, {
+      fsyncSync(fd) {
+        syncs += 1;
+        if (!injected && ((phase === "payload-sync" && syncs === 1) || (phase === "receipt-sync" && syncs === 2))) fail();
+        return fs.fsyncSync(fd);
+      },
+      closeSync(fd) {
+        closes += 1;
+        // Model an ambiguous close that has already closed its descriptor;
+        // another close must not accidentally target a subsequently reused fd.
+        fs.closeSync(fd);
+        if (!injected && ((phase === "output-close" && closes === 1) || (phase === "receipt-close" && closes === 2))) fail();
+      },
+      writeFileSync(...args) {
+        if (!injected && phase === "receipt-write") fail();
+        return fs.writeFileSync(...args);
+      },
+      linkSync(...args) {
+        if (!injected && phase === "link") fail();
+        return fs.linkSync(...args);
+      },
+    });
+    assert.throws(() => capture.finalize(receipt), /injected/);
+    assert.equal(injected, true);
+    assert.equal(fs.existsSync(receipt), false);
+    assert.throws(() => capture.finalize(receipt), /already attempted/);
+    if (phase === "output-close") assert.throws(() => capture.close(), /injected output-close/);
+    else capture.close();
+    const before = closes;
+    if (phase === "output-close") assert.throws(() => capture.close(), /injected output-close/);
+    else capture.close();
+    assert.equal(closes, before, "closure must be idempotent after uncertain finalization");
+  });
+}
+
+test("published receipt survives temporary-link cleanup failure without republishing", (t) => {
+  const { capture, output, receipt } = fixture(t, {
+    unlinkSync() { throw new Error("injected cleanup failure"); },
+  });
+  const value = capture.finalize(receipt);
+  assert.equal(value.complete, true);
+  assert.equal(capture.finalized, true);
+  assert.equal(capture.publicationCleanupConfirmed, false);
+  assert.match(capture.publicationCleanupError.message, /cleanup failure/);
+  assert.deepEqual(JSON.parse(fs.readFileSync(receipt)), value);
+  assert.throws(() => capture.finalize(receipt), /already attempted/);
+  verifyBytes(value, output);
+});
+
+test("accepting-stage overflow poisons completeness; draining rejection does not", (t) => {
+  const { capture } = fixture(t);
+  capture.accepted = 1_000_000;
+  assert.throws(() => capture.begin(), /count exceeds limit/);
+  assert.equal(capture.poisoned, true);
+  capture.drain();
+  assert.equal(capture.begin(), null);
+});
+
+test("plain close retains uncertainty without retrying a possibly reused descriptor", (t) => {
+  let closes = 0;
+  const { capture } = fixture(t, {
+    closeSync(fd) {
+      closes += 1;
+      fs.closeSync(fd);
+      throw new Error("ambiguous close");
+    },
+  });
+  assert.throws(() => capture.close(), /ambiguous close/);
+  assert.equal(capture.outputCleanupConfirmed, false);
+  assert.throws(() => capture.close(), (error) => error === capture.outputCloseError);
+  assert.equal(closes, 1);
+});

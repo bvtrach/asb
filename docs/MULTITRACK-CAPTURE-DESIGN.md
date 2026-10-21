@@ -4,6 +4,14 @@ Status: reviewed implementation design, not a claim of available CLI behavior.
 The archive/journal backend is implemented; recorder evidence and run integration
 are the next feature boundary. See MULTITRACK.md for the full delivery scope.
 
+The separate `capture-session.mjs` component now implements create-new output,
+exact-byte and handler accounting, sticky uncertain finalization/close state, and
+atomic no-clobber receipt publication with separate cleanup evidence. Its
+`capture_session` Cargo integration runs the extensible Node fault matrix. This
+does not yet qualify HTTP upload/fetch/delivery lifetime handling: the component
+is not yet wired into the proxy. Its caller must bound input before serialization;
+the post-serialization byte limit does not prevent that initial allocation.
+
 ## Authority and separation
 
 The run coordinator owns bundle detection, compatibility, persisted selection,

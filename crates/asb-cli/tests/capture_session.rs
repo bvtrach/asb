@@ -1,0 +1,22 @@
+//! Provider-free exact-byte recording and finalization fault qualification.
+mod support;
+use support::IsolatedEnvironment;
+
+#[test]
+fn recorder_accounting_and_publication_fault_matrix() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let output = std::process::Command::new("node")
+        .args(["--test"])
+        .arg(root.join("tests/capture_session.mjs"))
+        .current_dir(root)
+        .isolated_env()
+        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+        .output()
+        .expect("Node must be installed for the embedded recorder tests");
+    assert!(
+        output.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
