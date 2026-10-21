@@ -28,11 +28,11 @@ replace production panic fallbacks with errors containing protocol metadata
 only, never URLs or credentials. Registry-wide tests exercise every rejected
 interface/authentication pair and all advertised pairs without executing a
 client or contacting a provider. Independent review found no blocking issue.
-Delivery candidate: PR #256, patch version **0.2.4**, rebased by merging current
-main after the coverage prerequisite landed. Endpoint behavior and the complete
-matrix are unchanged from the independently reviewed candidate. Exact-head PR
-checks, merge, post-merge CI and release remain required; this entry does not
-mark the broader audit complete.
+Delivery: independently reviewed PR #256 merged as
+`bc0b1ae662b4e854082e3e25e5fef86aed8e0e59`, patch version **0.2.4**.
+Exact-head PR CI passed both ordinary checks and the mandatory coverage gate.
+Post-merge CI and release remain tracked on that PR; this entry does not mark
+the broader audit complete.
 
 ## 2. Report identities and shared path handling
 
@@ -45,6 +45,19 @@ nested-versus-literal keys, then consolidate genuinely equivalent sanitizers
 without changing established result/workspace identities unintentionally.
 Also review duplicated manifest reference validation and executable resolution;
 same names alone do not prove equivalent semantics. Pending.
+
+Candidate report repair: flatten numeric paths with escaped object separators
+and empty-key identities; reserve bounded portable SVG names, using digest
+suffixes for unsafe/long/colliding metric or series names. Shared series names
+and cross-source metric conflicts fail explicitly instead of last-writer-wins.
+Tests verify real summary values, distinct SVG titles/data and HTML references,
+repeat generation and repeated configuration stems. Existing safe unique
+artifact names stay unchanged; unusual keys use escaped path notation and
+consumers should obtain graph filenames from `comparison.json`.
+Delivery candidate: PR #257, patch version **0.2.5**, updated to main after
+the endpoint repair. Exact-head tests, mandatory coverage, hosted checks,
+merge, post-merge checks and release are required independently of earlier
+candidate verification.
 
 ## 3. Completion persistence, subprocess and cleanup failures
 
@@ -82,6 +95,8 @@ module names in those owning boundaries. Pending.
 Audit correction: current `perfetto_instance_config` is seven lines, not the
 reported 630. Comparison's filter JavaScript is already a separate asset.
 Do not perform redundant extraction based on stale line counts.
+The custom BPF scope validator is also a small function (about sixty lines),
+not the reported 533; its confirmed correctness defect is tracked below.
 
 ## 6. Shared implementation and lifecycle policies
 
@@ -92,10 +107,24 @@ their adapters. Audit mutable globals for necessary scope: atomics for unique
 names and synchronized process ownership are not intrinsically defects.
 Avoid removing synchronization without an ownership replacement. Pending.
 
+Process-gate inspection found an additional launch-contract problem: its
+`pre_exec` closure allocates buffers and enumerates the environment after fork
+in a multithreaded process. That needs async-signal-safety review and a launch
+descriptor/command construction design that performs fallible allocation in
+the parent. Rebuilding inherited environment also loses `Command::env_clear`
+intent, although no current production caller uses that method; do not claim
+an observed credential leak. Tests must preserve explicit environment removal,
+clearing, non-UTF8 arguments/environment, I/O, owner death and descendant cleanup.
+
 Independent review additionally found that wizard installation workers are
 detached: a draw error can return while an installer still mutates project
 files. Shared progress handling must own worker completion/cancellation, with
 a fake-install regression for terminal failure during active work.
+
+Coverage-driven inspection also found a wizard transition defect: saving
+trials consumes `selected_workload`, so the advertised next Enter reopens
+trial selection instead of finishing. Add bounded event-loop/PTY regressions,
+not only helper tests, and repair the explicit save/finish state in this class.
 
 ## 7. Limits, diagnostics and CLI consistency
 
@@ -117,3 +146,18 @@ ordinary suite and extracted package. Maintain honest null/unavailable
 measurements and preserve existing original-task evaluation evidence. A green
 focused test does not establish completion of a whole repair class or the
 90% coverage requirement.
+
+Additional safety finding from coverage tests: custom BPFTrace scope validation
+can skip multiline probe headers and accepts an OR-true predicate containing
+the process-tree variable. This contradicts the documented fail-closed scope
+contract. It needs a separate repair class with supported probe/predicate
+parsing, multiline/OR regressions, and preservation of valid process-tree
+profiles; it must not be hidden as a test-only cleanup. Pending.
+
+Installer inspection found that HTTP downloads write directly to the published
+destination. A failed/truncated or oversized response can replace a usable
+executable with partial bytes while retaining its executable mode. Required
+repair: stage downloads, validate size/checksum/exit status before atomic
+publication, preserve existing tools on failures, and test readiness queries
+with offline fake download commands. This is a verified publication issue,
+unlike blanket claims about every ignored scratch deletion. Pending.

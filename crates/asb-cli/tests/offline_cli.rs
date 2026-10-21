@@ -1442,11 +1442,15 @@ fn live_bpftrace_socket_profile_captures_replay_and_generates_graphs() {
         "{json}"
     );
     let comparison = project.0.join("results/suite-comparison");
-    assert!(
-        comparison
-            .join("metric-bpftrace-socket-operations.bpftrace.socket-operations.socket_calls.svg")
-            .is_file()
-    );
+    let report: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(comparison.join("comparison.json")).unwrap())
+            .unwrap();
+    assert!(report["graphs"].as_array().unwrap().iter().any(|graph| {
+        let svg = std::fs::read_to_string(comparison.join(graph.as_str().unwrap())).unwrap();
+        svg.contains(
+            r"<title>bpftrace-socket-operations.bpftrace\.socket-operations\.socket_calls</title>",
+        )
+    }));
     let html = std::fs::read_to_string(comparison.join("report.html")).unwrap();
     assert!(html.contains("bpftrace-socket-operations.svg"));
     assert!(html.contains("overlaps scheduler states"));
