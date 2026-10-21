@@ -14,6 +14,22 @@ informational, not a substitute for meaningful offline regressions. Required
 functional CI, independent review, exact-head validation and patch releases
 still apply to each repair class.
 
+Recording raw-source custody, staged patch **0.2.36**: integrated source
+`05ebf11d` retains the exact reviewed raw core from `bd2dea5e` alongside artifact,
+publication and bounded controller stack `b25d9f11`. The fresh focused matrix
+passed **680 tests**, zero failed, with four optional skips; strict workspace/
+all-target/all-feature Clippy and formatting passed with a stable actual 0.2.36
+executable hash. Parent qualifications do not qualify this combined tree.
+Detailed source boundaries, counts, hash and logs are recorded in
+[the raw custody integration proof](RECORDING_RAW_INTEGRATION.md).
+Fresh full execution remains held for independent integration review; hosted/
+package CI, merge, post-merge checks and release remain pending. No unrelated
+collector/runtime-input/installer/setup repair is folded in.
+
+Historical artifact35 snapshot below predates its later full qualification:
+`b25d9f11` subsequently passed 1,303 tests with 21 optional skips, recorded in
+`4b78a350`. That evidence remains distinct from the new raw36 focused matrix.
+
 Artifact integration, staged patch **0.2.35**, pending full qualification:
 historical artifact checkpoint `a2708632` is combined with committed
 publication34 `3359bfb2`.
