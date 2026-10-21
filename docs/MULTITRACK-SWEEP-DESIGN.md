@@ -46,6 +46,18 @@ and constructs per-batch options explicitly. The earlier caller-provided cohort
 was overwritten by the runner; partial-resume cohort handling still requires the
 deliberate admitted-slot/cohort seam below, not reuse of that inert input.
 
+Publication is now its own consuming phase between preparation and execution.
+It exclusively creates/locks the campaign root, publishes its immutable plan,
+stages private inputs and measurement directories without a provider, tool,
+agent, workload gate or recording journal. Its owned result retains the lock
+through execution; dropping it releases ownership but keeps published evidence.
+An explicit isolated campaign parent defaults recording into that unique root;
+standalone defaults and explicit cassette overrides stay unchanged. Read-only
+inspection precedes root creation, while parent creation and authoritative
+destination rechecks follow exclusive ownership, so a root-contained cassette
+cannot accidentally pre-create or adopt the campaign root. Sweep must collect
+all successful publications and durable index references before executing any.
+
 ## Ownership and shared contracts
 
 Extract a reusable runner-owned campaign plan and bounded reader from the

@@ -184,10 +184,13 @@ impl Prepared {
         let root = parent.join(&campaign);
         let recording_destination = (options.mode == Some(crate::tape::Mode::Record))
             .then(|| {
-                let destination = options
-                    .cassette
-                    .map(PathBuf::from)
-                    .unwrap_or_else(|| super::default_bundle_cassette(config_path, &config));
+                let destination = options.cassette.map(PathBuf::from).unwrap_or_else(|| {
+                    if campaign_parent.is_some() {
+                        root.join("recording.asb.zip")
+                    } else {
+                        super::default_bundle_cassette(config_path, &config)
+                    }
+                });
                 super::recording::inspect_destination(&destination)
             })
             .transpose()?;
@@ -253,6 +256,21 @@ fn activate(
     output: &mut dyn Write,
     warnings: &Mutex<BTreeSet<String>>,
 ) -> Result<(), Error> {
+    execute(publish_campaign(prepared)?, output, warnings)
+}
+
+/// Published layout/input ownership is not evidence of an attempted execution.
+struct PublishedCampaign {
+    config_path: PathBuf,
+    options: ActivationOptions,
+    root: PathBuf,
+    plan: Plan,
+    private_cassette: Option<String>,
+    replay: Option<Box<replay::Prepared>>,
+    _owner: crate::output_lock::OutputLock,
+}
+
+fn publish_campaign(prepared: Prepared) -> Result<PublishedCampaign, Error> {
     let Prepared {
         config_path,
         options,
@@ -262,27 +280,11 @@ fn activate(
         bytes,
         replay,
     } = prepared;
-    let config = &plan.configuration;
-    let repeat = plan.repeat;
-    let total = plan.slots.len();
-    let admission = plan.admission;
-    let campaign = plan.campaign.clone();
-    let recording_destination = plan.recording.clone();
-    let measurement_root = plan.measurement_root.clone();
-    let mode = match plan.mode {
-        crate::planning::ExecutionMode::Live => None,
-        crate::planning::ExecutionMode::Record => Some(crate::tape::Mode::Record),
-        crate::planning::ExecutionMode::Replay => Some(crate::tape::Mode::Replay),
-        crate::planning::ExecutionMode::Unknown => {
-            return Err(Error::Input(
-                "unknown campaign execution mode cannot be activated".into(),
-            ));
-        }
-    };
+    plan.validate_layout()?;
     // Inspection never reserved the output. Recheck before creating a campaign
     // or starting any dependency; the journal remains the final no-clobber owner.
-    if let Some(destination) = &recording_destination {
-        let observed = super::recording::preflight(destination)?;
+    if let Some(destination) = &plan.recording {
+        let observed = super::recording::inspect_destination(destination)?;
         if observed != *destination {
             return Err(Error::Input(
                 "recording destination changed after planning".into(),
@@ -296,16 +298,17 @@ fn activate(
         "execution campaign already has an owner",
     )
     .map_err(Error::Run)?;
+    // Root-contained cassettes must not create/adopt the root ahead of its
+    // exclusive owner. Inspection was not a reservation; recheck after owning it.
+    if let Some(destination) = &plan.recording {
+        let observed = super::recording::preflight(destination)?;
+        if observed != *destination {
+            return Err(Error::Input(
+                "recording destination changed during publication".into(),
+            ));
+        }
+    }
     publish_bytes(&root.join("plan.json"), &bytes)?;
-    let recording = recording_destination.map(|destination| {
-        Arc::new(super::recording::Recorder::new(
-            destination,
-            root.clone(),
-            campaign.clone(),
-            repeat,
-            config.concurrency,
-        ))
-    });
     let (private_cassette, replay) = match replay {
         Some(PreparedReplay::Selected(mut selected)) => {
             selected.stage(&root, &plan.replay_inputs)?;
@@ -314,7 +317,7 @@ fn activate(
         Some(PreparedReplay::Legacy(legacy)) => (legacy.stage(&root, &plan)?, None),
         None => (None, None),
     };
-    if let Some(measurement_root) = &measurement_root
+    if let Some(measurement_root) = &plan.measurement_root
         && measurement_root != &root
     {
         let parent = measurement_root
@@ -323,6 +326,56 @@ fn activate(
         private_directory(parent, true)?;
         private_directory(measurement_root, false)?;
     }
+    Ok(PublishedCampaign {
+        config_path,
+        options,
+        root,
+        plan,
+        private_cassette,
+        replay,
+        _owner,
+    })
+}
+
+fn execute(
+    published: PublishedCampaign,
+    output: &mut dyn Write,
+    warnings: &Mutex<BTreeSet<String>>,
+) -> Result<(), Error> {
+    let PublishedCampaign {
+        config_path,
+        options,
+        root,
+        plan,
+        private_cassette,
+        replay,
+        _owner,
+    } = published;
+    let config = &plan.configuration;
+    let repeat = plan.repeat;
+    let total = plan.slots.len();
+    let admission = plan.admission;
+    let campaign = plan.campaign.clone();
+    let measurement_root = plan.measurement_root.clone();
+    let mode = match plan.mode {
+        crate::planning::ExecutionMode::Live => None,
+        crate::planning::ExecutionMode::Record => Some(crate::tape::Mode::Record),
+        crate::planning::ExecutionMode::Replay => Some(crate::tape::Mode::Replay),
+        crate::planning::ExecutionMode::Unknown => {
+            return Err(Error::Input(
+                "unknown campaign execution mode cannot be activated".into(),
+            ));
+        }
+    };
+    let recording = plan.recording.as_ref().map(|destination| {
+        Arc::new(super::recording::Recorder::new(
+            destination.clone(),
+            root.clone(),
+            campaign.clone(),
+            repeat,
+            config.concurrency,
+        ))
+    });
     if options.json {
         serde_json::to_writer(
             &mut *output,
@@ -768,8 +821,7 @@ mod tests {
     use super::super::replica::CompletionObserver;
     use super::*;
 
-    #[test]
-    fn campaign_planning_has_no_output_side_effects_and_activation_rechecks_destination() {
+    fn planning_fixture() -> (PathBuf, BenchmarkConfig, PathBuf) {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../target/campaign-planning-fixtures")
             .join(crate::workloads::TaskIdentity::local("planning", None).attempt_id);
@@ -786,6 +838,152 @@ mod tests {
         .unwrap();
         let config_path = root.join("benchmark.toml");
         fs::write(&config_path, toml::to_string(&config).unwrap()).unwrap();
+        (root, config, config_path)
+    }
+
+    #[test]
+    fn published_internal_recording_owns_root_without_starting_a_journal_or_client() {
+        let (root, config, path) = planning_fixture();
+        let parent = root.join("isolated/campaigns");
+        let prepared = Prepared::prepare(
+            &path,
+            config.clone(),
+            2,
+            RunOptions {
+                mode: Some(crate::tape::Mode::Record),
+                ..Default::default()
+            },
+            Some(&parent),
+        )
+        .unwrap();
+        assert_eq!(
+            prepared.plan.recording.as_ref().unwrap(),
+            &prepared.root.join("recording.asb.zip")
+        );
+        assert!(!parent.exists());
+        let published = publish_campaign(prepared).unwrap();
+        let campaign = published.root.clone();
+        let lock = campaign.join(".owner.lock");
+        assert!(campaign.join("plan.json").is_file());
+        assert!(!campaign.join("recording.asb.zip").exists());
+        assert!(!campaign.join(".recording.asb.zip.partial").exists());
+        assert!(!campaign.join("batch-1").exists());
+        assert!(crate::output_lock::OutputLock::acquire(&lock, "busy").is_err());
+        drop(published);
+        let owner = crate::output_lock::OutputLock::acquire(&lock, "busy").unwrap();
+        assert!(campaign.join("plan.json").is_file());
+        drop(owner);
+
+        struct BrokenOutput(PathBuf);
+        impl Write for BrokenOutput {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                assert!(crate::output_lock::OutputLock::acquire(&self.0, "busy").is_err());
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "publication-only fixture output closed",
+                ))
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let prepared = Prepared::prepare(
+            &path,
+            config,
+            1,
+            RunOptions {
+                mode: Some(crate::tape::Mode::Record),
+                ..Default::default()
+            },
+            Some(&parent),
+        )
+        .unwrap();
+        let campaign = prepared.root.clone();
+        let published = publish_campaign(prepared).unwrap();
+        let error = execute(
+            published,
+            &mut BrokenOutput(campaign.join(".owner.lock")),
+            &Mutex::new(BTreeSet::new()),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("fixture output closed"));
+        assert!(!campaign.join("batch-1").exists());
+        assert!(!campaign.join(".recording.asb.zip.partial").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn later_publication_failure_retains_earlier_plan_and_cannot_execute_any_campaign() {
+        let (root, config, path) = planning_fixture();
+        let parent = root.join("isolated/campaigns");
+        let first = Prepared::prepare(
+            &path,
+            config.clone(),
+            1,
+            RunOptions {
+                mode: Some(crate::tape::Mode::Record),
+                ..Default::default()
+            },
+            Some(&parent),
+        )
+        .unwrap();
+        let first_root = first.root.clone();
+        let second = Prepared::prepare(
+            &path,
+            config.clone(),
+            1,
+            RunOptions {
+                mode: Some(crate::tape::Mode::Record),
+                ..Default::default()
+            },
+            Some(&parent),
+        )
+        .unwrap();
+        fs::create_dir_all(&second.root).unwrap();
+        let foreign = second.plan.recording.as_ref().unwrap().clone();
+        fs::write(&foreign, b"foreign cassette").unwrap();
+        let second_root = second.root.clone();
+        let executions = std::cell::Cell::new(0);
+        let result = (|| -> Result<(), Error> {
+            let all = [first, second]
+                .into_iter()
+                .map(publish_campaign)
+                .collect::<Result<Vec<_>, _>>()?;
+            for published in all {
+                executions.set(executions.get() + 1);
+                execute(published, &mut Vec::new(), &Mutex::new(BTreeSet::new()))?;
+            }
+            Ok(())
+        })();
+        assert!(result.unwrap_err().to_string().contains("already exists"));
+        assert_eq!(executions.get(), 0);
+        assert!(first_root.join("plan.json").is_file());
+        assert!(!first_root.join("batch-1").exists());
+        assert!(!first_root.join(".recording.asb.zip.partial").exists());
+        assert!(!second_root.join("plan.json").exists());
+        assert_eq!(fs::read(foreign).unwrap(), b"foreign cassette");
+        let owner =
+            crate::output_lock::OutputLock::acquire(&first_root.join(".owner.lock"), "busy")
+                .unwrap();
+        drop(owner);
+
+        let prepared =
+            Prepared::prepare(&path, config, 1, RunOptions::default(), Some(&parent)).unwrap();
+        let foreign_root = prepared.root.clone();
+        fs::create_dir_all(&foreign_root).unwrap();
+        fs::write(foreign_root.join("sentinel"), b"untouched").unwrap();
+        assert!(publish_campaign(prepared).is_err());
+        assert_eq!(
+            fs::read(foreign_root.join("sentinel")).unwrap(),
+            b"untouched"
+        );
+        assert!(!foreign_root.join("plan.json").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn campaign_planning_has_no_output_side_effects_and_activation_rechecks_destination() {
+        let (root, config, config_path) = planning_fixture();
         let parent = root.join("isolated/sweep-configuration/campaigns");
         let destination = root.join("recordings/new/trials.asb.zip");
         let (prepared, saved_policy) = {
