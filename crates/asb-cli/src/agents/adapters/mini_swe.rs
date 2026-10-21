@@ -3,7 +3,6 @@ use super::{
     StaticAdapter,
 };
 use crate::{Error, install::Recipe};
-use std::path::Path;
 pub(super) static ADAPTER: StaticAdapter = StaticAdapter::new(
     "mini-swe",
     "mini",
@@ -16,13 +15,11 @@ pub(super) static ADAPTER: StaticAdapter = StaticAdapter::new(
     command,
     prepare_adapter,
 )
-.with_collection(collect);
-
-pub(super) fn final_response(workspace: &Path) -> Option<String> {
-    let trajectory = workspace.join(".asb-mini-swe.traj.json");
-    let output = std::fs::read_to_string(trajectory).ok()?;
-    super::super::structured_final_response_document(&output)
-}
+.with_collection(collect)
+.with_artifact_specs(&[super::super::ArtifactSpec {
+    namespace: "mini-swe",
+    filename: "trajectory.json",
+}]);
 fn command(context: &CommandContext<'_>) -> CommandSpec {
     CommandSpec {
         program: "mini".into(),
@@ -40,13 +37,15 @@ fn command(context: &CommandContext<'_>) -> CommandSpec {
             context.prompt.into(),
             "--yolo".into(),
             "--exit-immediately".into(),
-            "--output".into(),
-            ".asb-mini-swe.traj.json".into(),
         ],
         append_prompt: false,
     }
 }
 fn prepare_adapter(context: &mut PreparationContext<'_>) -> Result<(), Error> {
+    context
+        .command
+        .arg("--output")
+        .arg(context.run_dir.join("mini-swe/trajectory.json"));
     let connection = context.connection;
     let (family, prefix) = match connection.interface {
         crate::endpoint::Interface::AnthropicMessages => ("ANTHROPIC", "anthropic"),
@@ -75,19 +74,17 @@ fn prepare_adapter(context: &mut PreparationContext<'_>) -> Result<(), Error> {
 }
 
 fn collect(context: &CollectionContext<'_>) -> AgentArtifacts {
-    let trajectory = context.workspace.join(".asb-mini-swe.traj.json");
-    if !trajectory.is_file() {
+    let Some(document) = context.frozen.document("trajectory.json") else {
         return AgentArtifacts::default();
-    }
+    };
     AgentArtifacts {
-        token_usage: Some(trajectory_usage(&trajectory)),
-        steps: trajectory_steps(&trajectory),
-        cleanup_paths: vec![trajectory],
+        final_response: super::super::final_text_from_event(document),
+        token_usage: Some(trajectory_usage(document)),
+        steps: trajectory_steps(document),
     }
 }
 
-fn trajectory_steps(path: &Path) -> Option<u64> {
-    let value = super::super::read_usage_document(path)?;
+fn trajectory_steps(value: &serde_json::Value) -> Option<u64> {
     // mini-SWE 2.4.6 increments this counter in query() and uses it for its
     // configured step limit. It includes failed model-call attempts, unlike
     // the number of successful response/usage records in the trajectory.
@@ -97,17 +94,8 @@ fn trajectory_steps(path: &Path) -> Option<u64> {
     value.pointer("/info/model_stats/api_calls")?.as_u64()
 }
 
-fn trajectory_usage(path: &Path) -> crate::measurements::TokenUsage {
-    let fallback = || crate::measurements::token_usage_from_path(path);
-    if std::fs::metadata(path).map_or(true, |m| m.len() > 16 * 1024 * 1024) {
-        return Default::default();
-    }
-    let Ok(bytes) = std::fs::read(path) else {
-        return Default::default();
-    };
-    let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
-        return Default::default();
-    };
+fn trajectory_usage(value: &serde_json::Value) -> crate::measurements::TokenUsage {
+    let fallback = || crate::measurements::token_usage_from_document(value);
     let Some(messages) = value.get("messages").and_then(|v| v.as_array()) else {
         return fallback();
     };
@@ -174,13 +162,17 @@ mod tests {
         ] {
             std::fs::write(&trajectory, document).unwrap();
             let artifacts = collect(&CollectionContext {
-                workspace: &workspace,
+                frozen: &serde_json::from_str(document)
+                    .ok()
+                    .map(|value| {
+                        super::super::super::FrozenArtifacts::for_test("trajectory.json", value)
+                    })
+                    .unwrap_or_default(),
                 run_dir: &workspace,
                 interface: None,
                 anthropic_input_includes_cache: false,
             });
             assert_eq!(artifacts.steps, expected, "{document}");
-            assert_eq!(artifacts.cleanup_paths, vec![trajectory.clone()]);
         }
         std::fs::remove_dir_all(workspace).unwrap();
     }
@@ -195,13 +187,15 @@ mod tests {
             .expect("trajectory exists");
 
         let artifacts = collect(&CollectionContext {
-            workspace: &workspace,
+            frozen: &super::super::super::FrozenArtifacts::for_test(
+                "trajectory.json",
+                serde_json::json!({"input_tokens":13,"output_tokens":21}),
+            ),
             run_dir: &workspace,
             interface: None,
             anthropic_input_includes_cache: false,
         });
 
-        assert_eq!(artifacts.cleanup_paths, vec![trajectory]);
         assert_eq!(
             artifacts
                 .token_usage

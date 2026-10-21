@@ -14,6 +14,203 @@ informational, not a substitute for meaningful offline regressions. Required
 functional CI, independent review, exact-head validation and patch releases
 still apply to each repair class.
 
+Recording raw-source custody, staged patch **0.2.36**: integrated source
+`05ebf11d` retains the exact reviewed raw core from `bd2dea5e` alongside artifact,
+publication and bounded controller stack `b25d9f11`. The fresh focused matrix
+passed **680 tests**, zero failed, with four optional skips; strict workspace/
+all-target/all-feature Clippy and formatting passed with a stable actual 0.2.36
+executable hash. Parent qualifications do not qualify this combined tree.
+Detailed source boundaries, counts, hash and logs are recorded in
+[the raw custody integration proof](RECORDING_RAW_INTEGRATION.md).
+Independent integration review approved `98c51664`; signed `807012d9` then folds
+the independently reviewed packaged-fixture permission teardown without changing
+production or version. Fresh full locked/offline/workspace/all-target/all-feature
+qualification at `807012d9` passed **1,314 tests**, zero failed, with 21 optional
+skips across 24 outer targets. Before/after/final actual executable hash stayed
+`dfc3f9dcd0a22a66eb0f91f3336c2dad15c1c9bf075b7e3f26c4b9846d6c542a`.
+Fresh artifact entry two (all ten scenarios), recording/raw 12, strict Clippy/fmt,
+sequential make/private Rustdocs/pinned AutoUML/flows/interactive/completions and
+Bash/Zsh syntax checks all passed. Logs and exact limitations are in the linked
+integration proof. Final independent qualification review, hosted/package CI,
+merge, post-merge checks and release remain pending. No unrelated
+collector/runtime-input/installer/setup repair is folded in.
+
+Historical artifact35 snapshot below predates its later full qualification:
+`b25d9f11` subsequently passed 1,303 tests with 21 optional skips, recorded in
+`4b78a350`. That evidence remains distinct from the new raw36 focused matrix.
+
+Artifact integration, staged patch **0.2.35**, local qualification and package-fixture repair, delivery pending:
+historical artifact checkpoint `a2708632` is combined with committed
+publication34 `3359bfb2`.
+The incoming bundled recording/replay, selected-track capture proofs and typed
+recording-failure disposition are retained. Native exact frozen-byte evidence
+handoff still precedes initial result construction; recording commit then updates
+that result before log and measurement publication. Artifact evidence locations
+remain attached to failed publishers. Guest pending/final publication, pinned
+namespace custody, instrumentation guard and execution workspace are unchanged
+from the reviewed artifact integration. Both parents' recording, publication,
+capture and artifact tests are retained, including the actual private MiniSWE
+`--output` fixture. Initial `8cf06433` included only the committed publication
+checkpoint, not unfinished cross-feature work; later committed and qualified
+tests are recorded below. No runtime/collector repair is
+folded in. Earlier 511-, 1,246- and 1,258-test results describe their historical
+trees, not this combined source. Source review, fresh focused and full qualification
+are recorded below; final independent qualification review, hosted/package CI,
+merge, post-merge verification and release remain pending. No build, test or
+cache use accompanied initial `8cf06433`.
+Windows identity, publication and independent-reader qualification remains
+source-only; this merge adds no Windows runtime evidence.
+
+Root independently source-reviewed integration `8cf06433` and test-only
+cross-feature checkpoint `c4cfa8f8`. Qualified publication tests and actual-main
+ancestry were folded by `402ebee6` without production changes. Six additional
+native MiniSWE cases reuse the existing bounded loopback provider and publication
+fault scopes: true/false/nullable-native grades, failed recorder commit plus log
+or measurement publication, and selected private replay after source replacement.
+Exact frozen private trajectory bytes retain the answer, 34 tokens and four
+steps after original consumption, while validated tape usage remains authoritative
+at five tokens despite misleading stdout usage/answer. Assertions preserve
+exactly-once grading/workload/provider/client actions, failed-publication error
+ordering, locatable 0600 frozen evidence and no receipt or next-batch admission.
+
+The actual 0.2.35 CLI was built first. The focused matrix at `c4cfa8f8` passed
+**669 tests**, zero failed, with four explicit optional skips: bundle two (15
+isolated cases plus three clean replay baselines), agents 65, layout one, actual
+artifact entry two, runner 110 (excluding the already-counted bundle family),
+workloads 169, comparison 70, checkpoint 34, repeated CLI 29, benchmark protocol
+35, guest agent 14, measurements 72, evidence 18, cassette 46 and capture-session
+two. A command initially named nonexistent Cargo target `benchmark_guest`;
+`target/artifact35-guest.log` preserves that invocation failure, and the correct
+`guest_agent` target passed separately in `artifact35-guest-v2.log`. No guest test
+ran in the failed invocation; no runtime failure was retried.
+
+After all runtime handles were terminal, signed `727869da` tightened only the
+fixture's output-path guard: a missing argument or a path outside the current
+private attempt must fail before writing. Both affected bundle tests (all 15
+cases) then passed afresh. Strict workspace/all-target/all-feature Clippy and
+formatting passed at that source. Production/Cargo are byte-identical to the
+reviewed integration, and the actual executable SHA-256 stayed
+`eb1ccde0206f8afa34378522b9506efadfb049093b1dd14bdc497cf30304a0ba`
+before/after/final. Logs/hashes are `target/artifact35-*`. Only the allocated
+REPORT target cache was used. This is focused Linux/offline qualification, not
+a fresh full suite, Windows runtime, original external SDK or live-provider
+qualification. Full execution initially remained held for final independent
+review before the subsequently authorized qualification below.
+
+Final independent review approved `1b69f4ee`; signed actual-main34 ancestry merge
+`b25d9f11` has an identical tree. The fresh locked/offline workspace/all-target/
+all-feature suite at exact `b25d9f11` then passed **1,303 tests**, zero failed,
+with 21 explicit optional skips across **24 outer targets**. The library accounts
+for 1,071 passed and 13 skipped; the remaining targets account for 232 passed
+and eight skipped. `target/artifact35-full-summary.log` retains each Cargo
+target's final outer result without double-counting nested child-test summaries;
+the complete transcript is `target/artifact35-full.log`. No failed full run was
+retried, and no source edit or actual executable relink occurred during runtime.
+
+Only after the full handle was terminal, strict workspace/all-target/all-feature
+Clippy and formatting passed, followed by sequential offline `make build` with
+pinned AutoUML 0.7.2. That completed actual build, private Rustdocs, type diagrams,
+data/control flows, interactive views and both generated completions. Bash and
+Zsh completion syntax checks also passed. Graphviz emitted two ordinary layout
+fallback warnings, not failed gates. Logs are `target/artifact35-full-clippy.log`,
+`artifact35-full-fmt.log`, `artifact35-full-make.log` and corresponding full
+shell-syntax logs under `target/`. The actual ASB SHA-256 matched before full,
+after full and after all gates:
+`eb1ccde0206f8afa34378522b9506efadfb049093b1dd14bdc497cf30304a0ba`.
+The generated empty installation log is preserved as
+`target/artifact35-full-install.log`; earlier failure/focused evidence remains.
+
+All local handles are terminal. This signed qualification update changes only
+documentation: production, tests, Cargo and CI remain identical to `b25d9f11`.
+No raw-recording-custody, runtime-input or collector follow-up was folded in.
+Native Windows/original external SDK/live-provider qualification is not claimed.
+Hosted/package CI, final independent proof review, PR/merge, both post-merge jobs
+and release remain pending for this staged patch; no push was performed here.
+
+PR #300 exact-head CI at `4b78a350` passed checkout tests but failed the extracted
+crate's new `agent_artifact_ownership` target: its Python fixture assumed a
+checkout-level `workloads` directory and attempted `/tmp/workloads` after package
+extraction. The full failed hosted log is retained as
+`target/pr300-ci-failed.log`; no failed CI was blindly retried.
+
+Independently reviewed test-only `75d0213b` anchors fixture inputs to the actual
+crate's packaged `assets/workloads`, keeps fresh retained evidence beneath that
+crate's target directory, and validates the fake client's private output argument
+before any write. No production, assertions, Cargo or workflow changes are made.
+The actual checkout target passed both tests/all ten scenarios; an actual Cargo
+archive was extracted and its packaged Python fixture passed all ten scenarios
+against the same frozen CLI. Strict Clippy/formatting passed and actual CLI hash
+remained `eb1ccde0206f8afa34378522b9506efadfb049093b1dd14bdc497cf30304a0ba`.
+Root also ran locked/offline `cargo package --no-verify` without `--allow-dirty`:
+it passed despite the deliberately retained untracked fixture artifacts, which
+Cargo excludes from the archive. Earlier full qualification remains tied to its
+actual source; this test-only correction has fresh owning-layout qualification
+and still requires a new exact-head hosted/package CI run before merge.
+
+The next hosted run, `39673871945` at `0f0680a7`, passed every extracted-crate
+test, including the two-test artifact target and all ten Python scenarios. Its
+step then failed while removing the extraction directory: this fixture had
+deliberately left workspace/trajectory directories read-only. Exact failure
+evidence remains in `target/pr300-ci-39673871945-failed.log`.
+
+Independently source-reviewed test-only `83caa6e9` journals the original mode and
+device/inode before applying each permission fault. Per-case `finally` restores
+only an opened, no-follow, identity-matching owned directory after all assertions;
+it attempts other restorations on failure, never recursively chmods or deletes
+evidence, and never changes production or CI policy. Exact signed-source checkout
+qualification passed both tests/all ten scenarios. A fresh actual Cargo archive
+passed all ten extracted scenarios, all ten journals/thirteen owned directory
+modes matched, and the exact disposable extraction could then be removed
+successfully. Older failure fixtures, source evidence, archive and logs remain.
+Additional teardown checks exercise assertion unwind and foreign symlink/regular
+directory replacement without changing foreign permissions. Strict Clippy/fmt
+passed; frozen actual CLI hash remains `eb1ccde0206f8afa34378522b9506efadfb049093b1dd14bdc497cf30304a0ba`.
+Logs: `target/artifact35-permission-fix-{checkout-final,extracted,cleanup,faults,package-committed,clippy,fmt}.log`
+and `artifact35-permission-fix-final.sha256`. This correction still needs fresh
+exact-head CI; neither failed hosted run is reclassified as a successful gate.
+
+Historical artifact integration:
+
+Integrated source candidate, staged patch **0.2.33**: independently reviewed
+attempt-artifact checkpoint `eccb92be` is combined with qualified publication32
+stack `5516c4e9`. The original artifact namespace/snapshot/custody implementation
+is retained, including exact frozen-byte native evidence handoff before source
+consumption and retention on failed handoff. Guest first/pending/final metadata
+publication preserves the newer instrumentation receipt, inherited execution
+workspace snapshot and staging guard through execution and ownership handoff.
+Fresh HOME/executable precedence, material/shared-launch gates, independent
+resource settlement and explicit-null fields, capture completeness, typed grade
+permission and controller deadlines remain present. Valid independent artifact
+documents can supply evidence after incomplete transcript capture; the transcript
+still cannot supply answer, usage or steps. The capture fixture now writes the
+adapter's actual private `--output` path rather than the obsolete workspace file.
+The exact artifact module allowance extends the reviewed named layout guard
+without weakening controller-directory or registered-adapter exclusions.
+Both parents' actual publication/capture/artifact tests are retained. Historical
+old-base artifact checks and publication32's 1,246-test qualification do not
+qualify this new combined tree. Focused checks for the corrected integration are
+recorded below; final independent source review, fresh full qualification,
+hosted/package CI, merge, post-merge verification and release remain pending.
+No collector35/runtime34 changes are included. Windows identity,
+publication and independent-reader behavior remain source-only qualification.
+
+Independent source review of `a9bfa663` identified a definite compile defect:
+the prepared guest was destructured but revalidation still addressed the old
+wrapper field. Signed `300cbadb` instead revalidates the retained instrumentation
+guard binding against the same request owner and keeps it alive through the full
+run. The first actual build of this corrected integration passed. Its focused
+offline matrix passed **511 tests** with four explicit optional skips: agents 65,
+layout one, actual artifact-entry two, runner 105, workloads 169, comparison 70,
+checkpoint 33, repeated CLI 17, benchmark protocol 35 and guest/native-gate 14.
+This includes the artifact/capture/publication and grade/resource regression
+families together, not just synthetic snapshot tests. Strict workspace/all-target/
+all-feature Clippy and formatting passed. The actual executable SHA-256 stayed
+`5312430ea785a54fb73438ea926a85f26585131f8a2a12563745594906cf9e9b`
+before/after all runtime checks. Logs and hashes are `target/artifact33-*`;
+the source and executable were frozen until every runtime handle was terminal.
+Full qualification remains held for independent review and cache coordination.
+Historical publication34 integration:
+
 Publication integration, staged patch **0.2.34**: the qualified
 historical publication stack `5516c4e9` is combined with current-main bounded
 controller integration `af0eb258`. Incoming peer main `cabaa576` supplies bundled
@@ -989,6 +1186,26 @@ Patch **0.2.23** is released at that merge commit; GitHub verifies annotated
 tag `a073a80e836aa4911c5a11931dcdde57a26926a0` as valid.
 
 ## 6. Shared implementation and lifecycle policies
+
+Agent-artifact ownership candidate (no version/delivery claim): ignored native
+and guest cleanup errors could leave Mini-SWE's fixed workspace trajectory to
+provide a previous attempt's answer, usage and steps to a silent next client.
+Offline actual-entry A/B reproductions retain the failing evidence. Adapter-owned
+fresh private namespaces, a single bounded no-follow snapshot and consuming
+identity-checked settlement replace that path/cleanup-list contract. Mini-SWE
+and Hermes own their document interpretation; orchestration contains no new
+agent-specific policy. Scratch retention is ancillary and never fabricates a
+process/container quiescence failure or changes an official grade. Foreign
+workspace bytes, symlinks and replacements survive; no client retries occur.
+Unix runtime qualification, Windows source-only handle identity and honest
+retention where identity is unavailable remain distinct. Independent source
+review, integrated full qualification and hosted delivery remain pending.
+Focused offline qualification passed 57 adapter/ownership, 22 token-usage and
+72 runner tests (three explicit optional skips), plus 21 tests across actual
+artifact-route, guest, completion-diagnostic and unmeasured-sweep targets.
+Strict all-target/all-feature Clippy and formatting passed. This checkpoint is
+based on the reviewed sweep stack, not the later repeated-execution main; its
+integration must preserve that main's fresh client state and SDK preparation.
 
 Review repeated sudo consent/probes, three wizard progress-worker patterns,
 usage aggregation and original workload grade/inspect/recovery implementations.

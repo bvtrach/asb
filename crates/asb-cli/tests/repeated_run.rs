@@ -953,6 +953,96 @@ fn recording_population_metadata_budget_fails_before_any_client_or_inference() {
 }
 
 #[test]
+fn raw_custody_consumption_keeps_true_false_track_grades_and_actual_offline_replay() {
+    for grade in [true, false] {
+        let project = Project::new();
+        project.config(1);
+        if !grade {
+            fs::write(
+                project.0.join("false-grade-first"),
+                "leave original broken file",
+            )
+            .unwrap();
+        }
+        let provider = RecordingProvider::new();
+        let recorded = record(&project, &provider, None);
+        assert_eq!(
+            recorded.status.success(),
+            grade,
+            "{}\n{}",
+            String::from_utf8_lossy(&recorded.stdout),
+            String::from_utf8_lossy(&recorded.stderr)
+        );
+        let rows = records(&recorded.stdout);
+        let summary = rows.iter().find(|row| row.get("task").is_some()).unwrap();
+        assert_eq!(summary["process_success"], true);
+        assert_eq!(summary["workload_success"], grade);
+        let raw = PathBuf::from(summary["recording"]["producer"].as_str().unwrap());
+        assert!(!raw.exists());
+        let parent = raw.parent().unwrap();
+        let custody: Vec<_> = fs::read_dir(parent)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| {
+                path.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with(".asb-raw-custody-")
+            })
+            .collect();
+        assert_eq!(custody.len(), 1);
+        assert!(fs::read_dir(&custody[0]).unwrap().next().is_none());
+        assert_eq!(
+            fs::read_dir(parent.join(".asb-completions"))
+                .unwrap()
+                .count(),
+            1,
+            "confirmed ordinary grades retain their existing continuation record"
+        );
+        let evidence: asb_cli::cassette::TrackEvidence =
+            serde_json::from_value(summary["recording"]["track"].clone()).unwrap();
+        evidence
+            .verify(asb_cli::cassette::Limits::default())
+            .unwrap();
+        let mut archive = asb_cli::cassette::Archive::open(
+            &project.0.join("new-recording.jsonl"),
+            asb_cli::cassette::Limits::default(),
+        )
+        .unwrap();
+        assert_eq!(archive.manifest().tracks[0].process_success, Some(true));
+        assert_eq!(archive.manifest().tracks[0].workload_success, Some(grade));
+        assert!(!archive.read_track(1).unwrap().is_empty());
+        assert_eq!(provider.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        drop(provider);
+        // Actual selected-track replay after closing the only loopback fixture
+        // provider, not a reconstructed result or a second recording attempt.
+        let replayed = replay_bundle(&project, &["--track", "1"]);
+        assert_eq!(
+            replayed.status.success(),
+            grade,
+            "{}\n{}",
+            String::from_utf8_lossy(&replayed.stdout),
+            String::from_utf8_lossy(&replayed.stderr)
+        );
+        let replay_rows = records(&replayed.stdout);
+        let replay_summary = replay_rows
+            .iter()
+            .find(|row| row.get("task").is_some())
+            .unwrap();
+        assert_eq!(replay_summary["workload_success"], grade);
+        assert_eq!(replay_summary["execution"]["replay_track"], 1);
+        assert_eq!(
+            records(&fs::read(project.0.join("attempts.jsonl")).unwrap()).len(),
+            2
+        );
+        assert_eq!(
+            fs::read_to_string(project.0.join("workspace/preserve-user-file")).unwrap(),
+            "untouched user material"
+        );
+    }
+}
+
+#[test]
 fn bundled_recording_uses_fresh_default_and_stable_repeated_slots_even_with_jsonl_suffix() {
     for (repeat, concurrency) in [(None, 1), (Some("2"), 2)] {
         let project = Project::new();

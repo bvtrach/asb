@@ -1263,10 +1263,10 @@ pub fn token_usage_from_sources(
         .unwrap_or_default()
 }
 /// Read and normalize usage events from an agent artifact.
-pub fn token_usage_from_path(path: &Path) -> TokenUsage {
+pub fn token_usage_from_document(value: &serde_json::Value) -> TokenUsage {
     collectors::all()
         .iter()
-        .find_map(|adapter| adapter.usage_file(path))
+        .find_map(|adapter| adapter.usage_document(value))
         .unwrap_or_default()
 }
 

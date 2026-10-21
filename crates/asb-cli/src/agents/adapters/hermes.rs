@@ -24,6 +24,10 @@ pub(super) static ADAPTER: StaticAdapter = StaticAdapter::new(
     prepare_adapter,
 )
 .with_collection(collect)
+.with_artifact_specs(&[super::super::ArtifactSpec {
+    namespace: "hermes",
+    filename: "usage.json",
+}])
 .with_state_environment_vars(&["HERMES_HOME"])
 .with_final_response(final_response);
 
@@ -138,14 +142,13 @@ fn yaml_quote(value: &str) -> String {
 }
 
 fn collect(context: &CollectionContext<'_>) -> AgentArtifacts {
-    let path = context.run_dir.join("hermes/usage.json");
-    let Some(value) = super::super::read_usage_document(&path) else {
+    let Some(value) = context.frozen.document("usage.json") else {
         return AgentArtifacts::default();
     };
     AgentArtifacts {
-        token_usage: Some(super::super::usage_fields(&value).with_derived_total()),
+        token_usage: Some(super::super::usage_fields(value).with_derived_total()),
         steps: value.get("api_calls").and_then(serde_json::Value::as_u64),
-        cleanup_paths: vec![path],
+        final_response: None,
     }
 }
 
@@ -268,7 +271,10 @@ mod tests {
         )
         .unwrap();
         let artifacts = collect(&CollectionContext {
-            workspace: Path::new("."),
+            frozen: &super::super::super::FrozenArtifacts::for_test(
+                "usage.json",
+                serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap(),
+            ),
             run_dir: &root,
             interface: Some(crate::endpoint::Interface::OpenAiResponses),
             anthropic_input_includes_cache: false,

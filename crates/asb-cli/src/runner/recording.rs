@@ -1,4 +1,5 @@
 //! Run-owned recording coordination; providers and proxies see only JSONL.
+mod raw;
 use super::{RunResult, io_error, replica};
 use crate::cassette::{
     Compatibility, Limits, Manifest, Publication, RecordingJournal, Statistics, Track,
@@ -392,15 +393,19 @@ impl Recorder {
             }
             let mut published = journal.finalize().map_err(recording_error)?;
             if producers_quiescent {
-                let mut raw_retained=false;
+                let mut cleanup_failures=0;
                 for track in &published.manifest.tracks {
                     let output = producer(&self.root,track.batch,track.replica as usize,self.concurrency);
                     match cleanup_raw(&output,track,state.raw_identities.get(&track.id)) {
                         Ok(()) => (),
-                        Err(_) => { published.cleanup_complete=false; raw_retained=true; }
+                        Err(error) => {
+                            published.cleanup_complete=false;
+                            cleanup_failures+=1;
+                            if cleanup_failures<=16 { published.warnings.push(error.to_string()); }
+                        }
                     }
                 }
-                if raw_retained { published.warnings.push("published cassette is usable; raw capture cleanup was incomplete or unconfirmed; inspect artifacts".into()); }
+                if cleanup_failures>0 { published.warnings.push(format!("published cassette is usable; {cleanup_failures} raw capture cleanups were incomplete or durability-unconfirmed; inspect artifacts (at most 16 details retained)")); }
             } else { published.cleanup_complete=false; published.warnings.push("published cassette is usable; raw captures retained because producer cleanup is unconfirmed".into()); }
             Ok(Some(published))
         })
@@ -508,47 +513,15 @@ fn read_association(evidence: &TrackEvidence) -> Result<Association, Error> {
     serde_json::from_slice(&bytes)
         .map_err(|_| Error::Input("recording association is malformed".into()))
 }
-fn cleanup_raw(output: &Path, track: &Track, original: Option<&fs::Metadata>) -> Result<(), Error> {
-    let Some(mut file) = open_payload(output)? else {
-        return Ok(());
+#[cfg(test)]
+std::thread_local! {
+    static BEFORE_RAW_UNLINK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const {
+        std::cell::RefCell::new(None)
     };
-    let original =
-        original.ok_or_else(|| Error::Io("raw capture has no original file identity".into()))?;
-    verify_raw_identity(original, &file.metadata().map_err(io_error)?)?;
-    if payload_identity(&mut file)? != (track.bytes, track.sha256.clone()) {
-        return Err(Error::Io(
-            "raw capture changed after commit; retained".into(),
-        ));
-    }
-    verify_raw_identity(original, &file.metadata().map_err(io_error)?)?;
-    let current = fs::symlink_metadata(output).map_err(io_error)?;
-    if !current.is_file() {
-        return Err(Error::Io("raw capture pathname changed; retained".into()));
-    }
-    verify_raw_identity(original, &current)?;
-    fs::remove_file(output).map_err(io_error)?;
-    File::open(output.parent().expect("owned producer parent"))
-        .and_then(|parent| parent.sync_all())
-        .map_err(io_error)
 }
-fn verify_raw_identity(original: &fs::Metadata, current: &fs::Metadata) -> Result<(), Error> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        if original.dev() == current.dev()
-            && original.ino() == current.ino()
-            && original.len() == current.len()
-            && original.mtime() == current.mtime()
-            && original.mtime_nsec() == current.mtime_nsec()
-            && original.ctime() == current.ctime()
-            && original.ctime_nsec() == current.ctime_nsec()
-        {
-            return Ok(());
-        }
-    }
-    Err(Error::Io(
-        "raw capture identity changed or cannot be confirmed; retained".into(),
-    ))
+
+fn cleanup_raw(output: &Path, track: &Track, original: Option<&fs::Metadata>) -> Result<(), Error> {
+    raw::cleanup(output, track, original)
 }
 fn open_payload(output: &Path) -> Result<Option<File>, Error> {
     match fs::symlink_metadata(output) {
@@ -605,6 +578,79 @@ fn recording_error(error: crate::cassette::Error) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn raw_cleanup_preserves_foreign_entries_replaced_after_final_check() {
+        struct Owned(PathBuf);
+        impl Drop for Owned {
+            fn drop(&mut self) {
+                BEFORE_RAW_UNLINK.with_borrow_mut(|hook| {
+                    hook.take();
+                });
+                fs::remove_dir_all(&self.0).unwrap();
+            }
+        }
+        let mut failures = Vec::new();
+        for mode in ["regular", "symlink", "parent"] {
+            let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../target/raw-cleanup-race-fixtures")
+                .join(crate::workloads::TaskIdentity::local("raw-cleanup-race", None).attempt_id);
+            fs::create_dir_all(root.join("producer")).unwrap();
+            let _owned = Owned(root.clone());
+            let output = root.join("producer/capture.jsonl");
+            fs::write(&output, b"{}\n").unwrap();
+            let original = fs::metadata(&output).unwrap();
+            let track = Track {
+                id: 1,
+                batch: 1,
+                replica: 1,
+                complete: false,
+                process_success: None,
+                workload_success: None,
+                bytes: 3,
+                sha256: crate::cassette::digest(b"{}\n"),
+                statistics: Statistics::default(),
+            };
+            let replacement_root = root.clone();
+            BEFORE_RAW_UNLINK.with_borrow_mut(|hook| {
+                *hook = Some(Box::new(move || {
+                    let output = replacement_root.join("producer/capture.jsonl");
+                    if mode == "parent" {
+                        fs::rename(
+                            replacement_root.join("producer"),
+                            replacement_root.join("saved-producer"),
+                        )
+                        .unwrap();
+                        fs::create_dir(replacement_root.join("producer")).unwrap();
+                    } else {
+                        fs::rename(&output, replacement_root.join("saved-original")).unwrap();
+                    }
+                    if mode == "symlink" {
+                        let target = replacement_root.join("foreign-target");
+                        fs::write(&target, b"foreign content").unwrap();
+                        std::os::unix::fs::symlink(target, &output).unwrap();
+                    } else {
+                        fs::write(&output, b"foreign content").unwrap();
+                    }
+                }));
+            });
+            let cleaned = cleanup_raw(&output, &track, Some(&original));
+            let Ok(metadata) = fs::symlink_metadata(&output) else {
+                failures.push(format!(
+                    "{mode}: removed a foreign pathname after validating the original: {cleaned:?}"
+                ));
+                continue;
+            };
+            if fs::read(&output).unwrap() != b"foreign content" {
+                failures.push(format!("{mode}: changed foreign bytes"));
+            }
+            if mode == "symlink" && !metadata.file_type().is_symlink() {
+                failures.push("symlink: replaced the foreign link".into());
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("; "));
+    }
 
     #[test]
     fn destination_inspection_is_read_only_and_activation_rechecks_foreign_outputs() {

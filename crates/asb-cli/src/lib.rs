@@ -157,7 +157,8 @@ mod adapter_layout_tests {
             CategoryLayout {
                 category: "agents",
                 ids: super::agents::names().collect(),
-                root_modules: &["mod.rs", "driver.rs"],
+                // Attempt artifact ownership is generic adapter infrastructure.
+                root_modules: &["mod.rs", "driver.rs", "artifacts.rs"],
                 root_directories: &[],
             },
             CategoryLayout {

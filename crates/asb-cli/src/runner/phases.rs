@@ -107,6 +107,7 @@ impl std::ops::Deref for MeasuredOutput {
 }
 
 pub(super) struct ExecutionEvidence {
+    pub artifact_owner: Option<agents::ArtifactOwner>,
     pub output: Output,
     pub capture_complete: bool,
     pub run_dir: PathBuf,
@@ -121,7 +122,12 @@ pub(super) struct AgentOutcome {
 }
 
 impl ExecutionEvidence {
-    pub fn agent_outcome(&self, agent: &str, workspace: &Path) -> AgentOutcome {
+    pub fn agent_outcome(
+        &self,
+        agent: &str,
+        workspace: &Path,
+        artifact_response: Option<&str>,
+    ) -> AgentOutcome {
         // Prefer the agent's structured final response when deciding whether a
         // zero-exit process succeeded. Tool output can legitimately contain a
         // transient failed command that the agent repairs before its final answer;
@@ -135,7 +141,9 @@ impl ExecutionEvidence {
         };
         let final_response = match guest.as_ref() {
             Some(metadata) => metadata.final_response.clone(),
-            None => agents::final_response(agent, &stdout, workspace),
+            None => artifact_response
+                .map(str::to_owned)
+                .or_else(|| agents::final_response(agent, &stdout, workspace)),
         };
         let adapter_failure = (!self.capture_complete)
             .then(|| {
@@ -203,7 +211,7 @@ pub(super) struct SettledAttempt {
     pub evidence: ExecutionEvidence,
     pub proxy_evidence: crate::proxy::Evidence,
     pub cassette_usage_verified: bool,
-    issues: AttemptIssues,
+    pub issues: AttemptIssues,
 }
 
 impl ExecutedAttempt {
@@ -390,6 +398,15 @@ impl LogPublication {
     pub fn confirmed(&self) -> bool {
         matches!(self, Self::Confirmed)
     }
+    pub fn with_artifact_evidence(self, paths: &[String]) -> Self {
+        match self {
+            Self::Failed(error) if !paths.is_empty() => Self::Failed(Error::Run(format!(
+                "{error}; retained frozen agent evidence (relative to private attempt runtime parent): {}",
+                paths.join(", ")
+            ))),
+            other => other,
+        }
+    }
     pub fn into_error(self) -> Option<Error> {
         match self {
             Self::Confirmed => None,
@@ -437,6 +454,15 @@ pub(super) enum MeasurementCompletion {
 impl MeasurementCompletion {
     pub fn confirmed(&self) -> bool {
         matches!(self, Self::Confirmed)
+    }
+    pub fn with_artifact_evidence(self, paths: &[String]) -> Self {
+        match self {
+            Self::Incomplete(mut errors) if !paths.is_empty() => {
+                errors.push(format!("retained frozen agent evidence (relative to private attempt runtime parent): {}", paths.join(", ")));
+                Self::Incomplete(errors)
+            }
+            other => other,
+        }
     }
     pub fn into_error(self) -> Option<Error> {
         match self {
