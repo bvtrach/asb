@@ -516,6 +516,14 @@ Cancellation accepts a stopped-preserved acknowledgement and still reports
 the interrupted operation as failed; normal completion requires removal and
 cannot accept that acknowledgement as a completed attempt. A preserved
 environment's filesystem is retained, not its running process/shell state.
+Official sessions also track whether their latest evaluator response actually
+completed a matching task grade. Errors, missing/contradictory resolved flags
+and mismatched identities cannot take the normal close/removal path. Session
+finish cancels into stopped preservation and reports the artifact location
+instead. Valid unresolved and empty-submission outcomes are completed grades,
+not permission to repeat the client. A later evaluator failure invalidates
+the previous completion flag rather than allowing old evidence to delete
+new or ungraded work.
 Task controllers now persist a private `resources.json` before creating their
 declared containers, Compose networks and volumes. The journal binds the exact
 names to one attempt, a random ownership label and the Docker daemon identity;

@@ -2042,3 +2042,24 @@ sixteen benchmark protocol suites and the remaining guest/diagram/parallel/
 partial/replay/unmeasured checks, strict Clippy and `make build` including
 rustdoc, complete diagrams and completions. Normal mixed original-task,
 package and exact-head hosted qualifications are recorded after completion.
+
+Follow-up inspection confirmed a second loss path: the generic runner always
+called session finish even when the official evaluator returned an error.
+Official sessions now remember only their latest task-matching completed grade;
+finish without one cancels into stopped preservation and reports the retained
+artifact location, rather than sending destructive normal close. A valid false
+grade or empty submission remains completed and removes resources normally.
+Missing/contradictory resolved flags and mismatched task identities cannot
+enable removal, and a later evaluation failure clears an earlier completion
+flag. Provider-free controller fixtures verify normal close versus EOF on
+these paths without starting a client, provider, SDK or Docker. These changes
+preserve ungraded work; they still do not manufacture a recovered outcome or
+rerun an agent. The preceding preservation commit is `27380255`; its actual
+mixed original-task qualification passed in 96.267 seconds at the fresh
+project's `parallel-original-tasks-s172plqe` directory, and its local source/
+package suites passed. Exact-head hosted CI for `27380255` passed in run
+`39521575007`, including packaged tests and installation smoke checks; the
+local-host job was skipped by repository configuration. The follow-up source
+passed all 444 unit tests, 87 offline CLI tests, sixteen protocol suites and
+the remaining integration checks, strict Clippy and `make build`. Its real
+normal-path/package/hosted checks are recorded after completion.

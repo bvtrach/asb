@@ -105,6 +105,7 @@ struct Session {
     measurement_active: bool,
     preparation_active: bool,
     cleanup_attempted: bool,
+    evaluation_completed: bool,
     artifacts: PathBuf,
 }
 
@@ -327,6 +328,7 @@ pub(crate) fn launch(
         measurement_active: false,
         preparation_active: false,
         cleanup_attempted: false,
+        evaluation_completed: false,
         artifacts,
     }))
 }
@@ -522,6 +524,13 @@ impl WorkloadSession for Session {
         vec![self.artifacts.clone()]
     }
     fn finish(&mut self) -> Result<(), String> {
+        if !self.evaluation_completed {
+            self.cancel()?;
+            return Err(format!(
+                "official evaluation is incomplete; task resources and partial work were stopped and preserved at {}; do not repeat the agent as the same attempt",
+                self.artifacts.display()
+            ));
+        }
         self.cleanup_attempted = true;
         match self.controller.finish(Duration::from_secs(240)) {
             Ok(()) => Ok(()),
@@ -574,6 +583,7 @@ impl WorkloadSession for Session {
         Some(result)
     }
     fn evaluate(&mut self, _response: &str) -> Result<Evaluation, String> {
+        self.evaluation_completed = false;
         let event = self.controller.request(
             json!({"op":"evaluate","timeout":1800}),
             "evaluated",
@@ -588,9 +598,15 @@ impl WorkloadSession for Session {
         {
             return Err("official evaluation does not match this dataset instance".into());
         }
-        match result["outcome"].as_str() {
-            Some("resolved") => Ok(Evaluation::Passed),
-            Some("unresolved" | "empty_submission") => Ok(Evaluation::Failed("official evaluator did not resolve the selected instance".into())),
+        match (result["outcome"].as_str(), result["resolved"].as_bool()) {
+            (Some("resolved"), Some(true)) => {
+                self.evaluation_completed = true;
+                Ok(Evaluation::Passed)
+            }
+            (Some("unresolved" | "empty_submission"), Some(false)) => {
+                self.evaluation_completed = true;
+                Ok(Evaluation::Failed("official evaluator did not resolve the selected instance".into()))
+            }
             _ => Err("official evaluator did not return a completed task-specific grade; inspect task artifacts".into()),
         }
     }
@@ -605,5 +621,97 @@ impl Drop for Session {
         if !self.cleanup_attempted {
             let _ = self.cancel();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn session(results: &[Value], completed: bool) -> Session {
+        let script = format!(
+            "import json,sys\nresults=json.loads(sys.argv[1])\nprint(json.dumps(dict(event='ready')),flush=True)\nfor result in results:\n request=json.loads(sys.stdin.readline())\n assert request['op']=='evaluate'\n print(json.dumps(dict(event='evaluated',result=result)),flush=True)\nlast=sys.stdin.readline()\nassert bool(last)=={completed}\nif last: assert json.loads(last)['op']=='close'\nprint(json.dumps(dict(event='closed',cleanup='removed' if last else 'stopped-preserved')),flush=True)\n",
+            completed = if completed { "True" } else { "False" },
+        );
+        let mut command = Command::new("python3");
+        command.args([
+            "-u",
+            "-c",
+            &script,
+            &serde_json::to_string(results).unwrap(),
+        ]);
+        let mut controller = Controller::spawn(&mut command).unwrap();
+        controller
+            .receive(Instant::now() + Duration::from_secs(3))
+            .unwrap();
+        Session {
+            controller,
+            invocation: TaskInvocation {
+                identity: TaskIdentity::local("fixture", Some("original-task")),
+                prompt: "fixture issue".into(),
+                workspace: "fixture-workspace".into(),
+            },
+            baseline: BaselineEvidence::UpstreamTaskDefinition {
+                base_commit: "a".repeat(40),
+            },
+            guest_workspace: "/task".into(),
+            agent_timeout: Duration::from_secs(1),
+            measurement_active: false,
+            preparation_active: false,
+            cleanup_attempted: false,
+            evaluation_completed: false,
+            artifacts: "retained-attempt".into(),
+        }
+    }
+
+    fn result(outcome: &str, resolved: Value) -> Value {
+        json!({"workload":"fixture", "task_id":"original-task", "dataset":null,
+               "outcome":outcome, "resolved":resolved})
+    }
+
+    #[test]
+    fn only_matching_completed_grades_allow_destructive_session_finish() {
+        for (outcome, resolved) in [
+            ("resolved", true),
+            ("unresolved", false),
+            ("empty_submission", false),
+        ] {
+            let mut task = session(&[result(outcome, json!(resolved))], true);
+            assert!(task.evaluate("").is_ok());
+            assert!(task.evaluation_completed);
+            task.finish().unwrap();
+        }
+        let mut wrong_task = result("resolved", json!(true));
+        wrong_task["task_id"] = json!("another-task");
+        for invalid in [
+            result("evaluation_error", json!(false)),
+            result("resolved", json!(false)),
+            result("unresolved", json!(true)),
+            result("resolved", Value::Null),
+            wrong_task,
+        ] {
+            let mut task = session(&[invalid], false);
+            assert!(task.evaluate("").is_err());
+            assert!(!task.evaluation_completed);
+            let error = task.finish().unwrap_err();
+            assert!(error.contains("stopped and preserved at retained-attempt"));
+            assert!(task.cleanup_attempted);
+        }
+    }
+
+    #[test]
+    fn later_evaluator_failure_cannot_reuse_an_earlier_grade_to_delete_work() {
+        let mut task = session(
+            &[
+                result("unresolved", json!(false)),
+                result("evaluation_error", json!(false)),
+            ],
+            false,
+        );
+        assert!(task.evaluate("").is_ok());
+        assert!(task.evaluation_completed);
+        assert!(task.evaluate("").is_err());
+        assert!(!task.evaluation_completed);
+        assert!(task.finish().unwrap_err().contains("preserved"));
     }
 }
