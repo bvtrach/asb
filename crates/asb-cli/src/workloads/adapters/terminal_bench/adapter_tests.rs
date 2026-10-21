@@ -33,7 +33,7 @@ impl Fixture {
         fs::write(installed.join("catalog.json"), serde_json::to_vec(&json!({
             "schema_version":1,"workload":adapter.id,
             "dataset":{"source":adapter.source,"revision":adapter.revision,"split":adapter.split},
-            "sdk":{"package":adapter.tool,"version":adapter.version},
+            "sdk":{"package":adapter.engine.tool(),"version":adapter.version},
             "source_sha256":"a".repeat(64),"archive_sha256":"b".repeat(64),"tasks":tasks
         })).unwrap()).unwrap();
         Self { root, project }
@@ -133,7 +133,7 @@ fn official_adapter_selection_retention_and_missing_sdk_are_explicit() {
                 path: fixture
                     .root
                     .join("tools")
-                    .join(adapter.tool)
+                    .join(adapter.engine.tool())
                     .join("venv/bin/python"),
                 site: true
             })
@@ -177,7 +177,7 @@ fn preparation_checks_selection_runtime_and_allocation_before_any_task_launch() 
         context.trial = Some("unknown-task");
         assert!(reason(&context).contains("absent from the installed dataset"));
         context.trial = Some("task-0");
-        fs::create_dir_all(fixture.root.join("tools").join(adapter.tool)).unwrap();
+        fs::create_dir_all(fixture.root.join("tools").join(adapter.engine.tool())).unwrap();
         let error = reason(&context);
         assert!(
             error.contains("cannot inspect installed evaluator runtime"),
@@ -186,7 +186,7 @@ fn preparation_checks_selection_runtime_and_allocation_before_any_task_launch() 
         let interpreter = fixture
             .root
             .join("tools")
-            .join(adapter.tool)
+            .join(adapter.engine.tool())
             .join("venv/bin/python");
         fs::create_dir_all(interpreter.parent().unwrap()).unwrap();
         symlink("/bin/false", &interpreter).unwrap();

@@ -16,6 +16,7 @@ mod bigcodebench;
 mod core_bench;
 mod evalplus;
 mod livecodebench;
+mod official_engine;
 mod prompt;
 mod swe_bench;
 mod swe_bench_lite;
