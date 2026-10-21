@@ -9,6 +9,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from test_environment import coverage_env
 
 sys.dont_write_bytecode = True
 from benchmark_retained import Fixture, swe
@@ -32,8 +33,8 @@ class SweepFixture:
         metadata.mkdir(parents=True)
         (metadata / "METADATA").write_text("Name: swebench\nVersion: 5.0.2\n")
         (metadata / "direct_url.json").write_text(json.dumps({"vcs_info":{"commit_id":swe.HARNESS_REVISION}}))
-        self.env = {"PATH":os.environ.get("PATH", ""), "HOME":str(self.root),
-                    "PYTHONPATH":str(metadata.parent), "PYTHONDONTWRITEBYTECODE":"1"}
+        self.env = coverage_env({"PATH":os.environ.get("PATH", ""), "HOME":str(self.root),
+                    "PYTHONPATH":str(metadata.parent), "PYTHONDONTWRITEBYTECODE":"1"})
         entries = []
         for index, (workload, tool) in enumerate(WORKLOADS):
             python = self.root / "tools" / tool / "venv/bin/python"

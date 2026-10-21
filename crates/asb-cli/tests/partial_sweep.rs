@@ -1,9 +1,11 @@
 //! Provider-free fault injection for graded siblings plus one reserved slot.
 #![cfg(unix)]
 use serde_json::{Value, json};
+mod support;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use support::IsolatedEnvironment;
 
 struct Project(PathBuf);
 impl Drop for Project {
@@ -16,12 +18,9 @@ fn asb(root: &Path, args: &[&str]) -> Output {
     command
         .current_dir(root)
         .args(args)
-        .env_clear()
+        .isolated_env()
         .env("HOME", root)
         .env("PATH", std::env::var_os("PATH").unwrap_or_default());
-    if let Some(profile) = std::env::var_os("LLVM_PROFILE_FILE") {
-        command.env("LLVM_PROFILE_FILE", profile);
-    }
     command.output().unwrap()
 }
 fn read(path: impl AsRef<Path>) -> Value {

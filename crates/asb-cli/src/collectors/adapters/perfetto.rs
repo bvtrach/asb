@@ -1170,6 +1170,10 @@ fn perfetto_probe(service: &Service, measurement_dir: &Path) -> Result<bool, Str
 }
 
 #[cfg(test)]
+#[path = "perfetto/coverage_tests.rs"]
+mod coverage_tests;
+
+#[cfg(test)]
 mod marker_tests {
     use super::*;
 

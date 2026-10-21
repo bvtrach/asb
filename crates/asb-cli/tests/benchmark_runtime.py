@@ -11,6 +11,7 @@ import sys
 import tempfile
 import time
 import unittest
+from test_environment import coverage_env
 
 sys.dont_write_bytecode = True
 sys.path.insert(0,str(Path(__file__).parents[1]/"assets/benchmarks"))
@@ -28,7 +29,7 @@ class RuntimeTests(unittest.TestCase):
             executable = Path(directory) / "asb"
             shutil.copy2(original, executable)
             process = subprocess.Popen([executable, "__asb-gate", "/bin/true"],
-                                       env={"PATH": os.defpath}, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                                       env=coverage_env({"PATH": os.defpath}), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             try:
                 deadline = time.monotonic() + 5
                 while not any(line.startswith("State:") and "T" in line
@@ -74,10 +75,10 @@ class RuntimeTests(unittest.TestCase):
                     content = content.replace(subject.ROOT.encode(),str(root).encode())
                 target.write_bytes(content)
                 target.chmod(mode)
-            result = subprocess.run([root/"asb","--version"],env={"PATH":os.defpath},capture_output=True,text=True,timeout=10)
+            result = subprocess.run([root/"asb","--version"],env=coverage_env({"PATH":os.defpath}),capture_output=True,text=True,timeout=10)
             self.assertEqual(result.returncode,0,result.stderr)
             self.assertTrue(result.stdout.startswith("asb "),result.stdout)
-            result = subprocess.run([root/"asb","__asb-agent"],env={"PATH":os.defpath,"ASB_GUEST_AGENT_REQUEST":"invalid"},
+            result = subprocess.run([root/"asb","__asb-agent"],env=coverage_env({"PATH":os.defpath,"ASB_GUEST_AGENT_REQUEST":"invalid"}),
                                     capture_output=True,text=True,timeout=10)
             self.assertNotEqual(result.returncode,0)
             self.assertIn("invalid guest execution request",result.stderr)
@@ -94,8 +95,8 @@ class RuntimeTests(unittest.TestCase):
                 "workspace":str(project/"workspace")}, "connection":{"interface":"open_ai_chat","authentication":"bearer",
                 "base_url":"http://127.0.0.1:1/v1","credential":"fixture"}, "prompt":"offline fixture",
                 "project_root":str(project),"runtime_dir":str(project/"private"),"run_dir":str(project/"private/attempt")}
-            process = subprocess.Popen([root/"asb","__asb-agent"],env={"PATH":os.defpath,"HOME":str(project),
-                "ASB_GUEST_AGENT_REQUEST":json.dumps(request)},stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+            process = subprocess.Popen([root/"asb","__asb-agent"],env=coverage_env({"PATH":os.defpath,"HOME":str(project),
+                "ASB_GUEST_AGENT_REQUEST":json.dumps(request)}),stdout=subprocess.PIPE,stderr=subprocess.PIPE)
             try:
                 self.assertTrue(select.select([process.stdout],[],[],5)[0],"guest did not become ready")
                 self.assertEqual(process.stdout.readline().strip(),f"__ASB_GATE__:{process.pid}".encode())

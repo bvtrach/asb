@@ -232,6 +232,10 @@ pub(crate) fn start<'a>(
 }
 
 #[cfg(test)]
+#[path = "../../tests/unit/workload_process.rs"]
+mod coverage_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::os::unix::net::UnixStream;
