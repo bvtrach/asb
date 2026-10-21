@@ -120,6 +120,14 @@ ASB is deliberately split into a small CLI and a file-backed workload directory:
   without granting host-wide trace read access or host-root capabilities.
   Startup also waits for `linux.ftrace` and `linux.process_stats` registration
   through bounded queries to the private service before admitting captures.
+  Captures stream compressed data to the artifact every second instead of
+  retaining only the tail of a 64 MiB ring. The delegated instance requests
+  at least 4 MiB per CPU, 100 ms draining and a half-full wakeup threshold;
+  primary tracefs controls remain untouched. Each file is capped at 1 GiB and
+  one hour. Post-processing verifies the startup marker, ordered terminal
+  boundary and relevant service/kernel loss counters. A limit, missing boundary
+  or reported loss marks the collector failed and suppresses scheduler metrics,
+  series and timelines; the task's independent official grade is preserved.
   Init's explicit host-consent flow can create/repair only the selected owned
   instances and grant execute-only parent traversal when necessary; it never
   delegates parent write/list access. Ordinary capture uses no sudo. Upstream's
