@@ -505,6 +505,12 @@ requires sealing, continuation and reconciliation to reject without publishing
 any group or replica receipt. Wire fixtures retain schema-1 compatibility and
 reject unknown/malformed records; the unmeasured sweep CLI fixture additionally
 checks invalid groups cannot start another synthetic client or change receipts.
+That public CLI check also removes only the late invalid member's group and
+slot receipts, requires its exact invariant diagnostic before allocation
+inspection, and checks no replacement receipt or changed outcome bytes. Valid
+earlier/sibling receipts stay unchanged. The allocated unit fixture separately
+proves all-candidate validation precedes publication; neither fixture qualifies
+an original task runtime.
 
 An opt-in complete-catalog planning/reporting check runs with no agent,
 provider, Docker or evaluator execution:

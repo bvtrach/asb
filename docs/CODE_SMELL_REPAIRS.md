@@ -134,7 +134,12 @@ invariants retain schema-1 group compatibility, schema-2 slot requirements,
 dataset/evaluator bindings and false grades. Independent mutation fixtures
 exercise every invariant through sealing, continuation and reconciliation,
 requiring no receipt publication; actual replay-only CLI rejection checks keep
-client-launch counts and historical receipt bytes unchanged. Independent review
+client-launch counts and historical receipt bytes unchanged. Removing the
+invalid native member's group/slot receipts additionally proves public CLI
+unsealed-slot validation reaches the exact named invariant before allocation
+inspection, without republishing those receipts. Earlier valid native seals
+remain intact; all-candidate publication ordering is covered separately by the
+allocated unit fixture, not claimed as original-runtime qualification. Independent review
 and hosted delivery remain pending. This does not close other structural items.
 
 Runner candidate, staged patch **0.2.10** (not yet merged/released): private consuming admission,

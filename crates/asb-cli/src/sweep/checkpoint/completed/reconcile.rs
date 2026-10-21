@@ -436,11 +436,7 @@ pub(super) mod tests {
                 "/workload_evidence/0",
                 json!("relative"),
             ),
-            (
-                "evidence missing",
-                "/workload_evidence/0",
-                json!("/asb-fixture-absent-evidence"),
-            ),
+            ("evidence missing", "/workload_evidence/0", Value::Null),
             ("proxy relative", "/proxy_evidence", json!(["relative"])),
         ];
         for (name, pointer, replacement) in mutations {
@@ -448,7 +444,11 @@ pub(super) mod tests {
             // A late invalid member must also prevent publishing an earlier
             // valid reconciliation candidate, regardless of directory order.
             let mut record = fixture.read(1);
-            *record.pointer_mut(pointer).unwrap() = replacement;
+            *record.pointer_mut(pointer).unwrap() = if name == "evidence missing" {
+                json!(fixture.root.join("absent-evaluator-evidence"))
+            } else {
+                replacement
+            };
             fixture.write(1, &record);
             assert!(fixture.seal().is_err(), "seal: {name}");
             assert!(
