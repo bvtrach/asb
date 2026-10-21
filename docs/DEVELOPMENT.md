@@ -595,6 +595,24 @@ completion records and seals, then closes both slots through public
 `--resume --reconcile-completed`, checks unchanged repeats without new provider
 requests and regenerates honest grade-only comparison output. These tests
 must not promote a recovered grade to measured process success.
+The completed-outcome invariant matrix starts from the current schema-2
+retained fixture with original start intents and allocations, mutates each
+protocol, identity, grade, cleanup and path obligation independently, and
+requires sealing, continuation and reconciliation to reject without publishing
+any group or replica receipt. Wire fixtures retain schema-1 compatibility and
+reject unknown/malformed records; the unmeasured sweep CLI fixture additionally
+checks invalid groups cannot start another synthetic client or change receipts.
+That public CLI check also removes only the late invalid member's group and
+slot receipts, requires its exact invariant diagnostic before allocation
+inspection, and checks no replacement receipt or changed outcome bytes. Valid
+earlier/sibling receipts stay unchanged. The allocated unit fixture separately
+proves all-candidate validation precedes publication; neither fixture qualifies
+an original task runtime.
+Structured-outcome checkpoint fixtures additionally seal completed native
+rewards with null resolution and both process results, preserving legacy
+structured/unstructured Boolean grades. Independent mutations reject pending,
+error, missing primary rewards, policy/module, lineage, process/resolution,
+cleanup and evaluator-root mismatches through the same validated constructor.
 
 An opt-in complete-catalog planning/reporting check runs with no agent,
 provider, Docker or evaluator execution:

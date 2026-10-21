@@ -175,6 +175,27 @@ Simplify checkpoint validation into named invariants without losing checks.
 Review broad parameter lists, result structs, visibility, dead API surface and
 module names in those owning boundaries. Pending.
 
+Checkpoint candidate, staged patch **0.2.20**: completion group/replica sealing, partial continuation
+and retained-outcome reconciliation now consume a private validated outcome
+instead of passing an unchecked wire record after a long Boolean expression.
+Named protocol/cleanup, cohort, identity, grade/baseline and evidence-path
+invariants retain schema-1 group compatibility, schema-2 slot requirements,
+dataset/evaluator bindings and false grades. Independent mutation fixtures
+exercise every invariant through sealing, continuation and reconciliation,
+requiring no receipt publication; actual replay-only CLI rejection checks keep
+client-launch counts and historical receipt bytes unchanged. Removing the
+invalid native member's group/slot receipts additionally proves public CLI
+unsealed-slot validation reaches the exact named invariant before allocation
+inspection, without republishing those receipts. Earlier valid native seals
+remain intact; all-candidate publication ordering is covered separately by the
+allocated unit fixture, not claimed as original-runtime qualification. Independent
+source review approved `9d0c6f3f`; a separate execution passed all 23 checkpoint
+tests and both public CLI tests. The worker's stable-binary full qualification
+passed 933 tests with 20 explicit optional skips, followed sequentially by fmt
+and strict Clippy, with unchanged executable hashes. Integrated-version and
+ordinary/package hosted CI, merge and post-merge release verification remain
+pending. This does not close other structural items.
+
 Runner candidate, staged patch **0.2.10** (not yet merged/released): private consuming admission,
 preparation, execution-evidence, proxy-settlement, evaluation and finalization
 states now separate owned resources and independent outcomes. It repairs the
@@ -231,7 +252,8 @@ and repair before claiming all chart families faithfully display negatives.
 The custom BPF scope validator is also a small function (about sixty lines),
 not the reported 533; its confirmed correctness defect is tracked below.
 
-cli2key startup/session candidate: explicit external versus local ownership
+cli2key startup/session candidate, staged patch **0.2.21** after checkpoint
+**0.2.20**: explicit external versus local ownership
 keeps the shared fallibly pre-established `OwnedReaper` through successful
 session transfer. Both children enter immediate custody; each nonblocking
 output worker is created fallibly before its child. Readiness has byte, line,
@@ -273,6 +295,22 @@ to aborted/destroyed responses. Actual partial-POST abort/shutdown fixtures
 retain a sibling request and require cooperative exit/reaping. A full-suite
 concurrent-proxy startup exit remains under investigation with bounded fixture
 stderr; a passing isolated rerun is not claimed as its diagnosis.
+Independent source review approved `bdf219d4`; root separately passed its 18
+cli2key library tests, two provider-finish matrix entries (including five actual
+runner cases and loopback catalog cases), and four actual CLI regressions.
+The signed `ad5ce506` integration retains the structured native outcome/report
+pipeline and bounded model transport from **0.2.19**; its native/provider
+integration still requires independent source review. Seven actual runner
+finish cases now include completed numeric rewards with null resolution:
+provider uncertainty preserves those rewards, legacy grades and execution
+success, sets structured cleanup confirmation false and withholds receipts.
+The approved structured checkpoint constructor from `3fa5239c` (**0.2.20**)
+is retained without restoring Boolean-only native outcome requirements.
+Final integrated source review, full stable-binary qualification, package and
+hosted CI, merge and release remain pending. The earlier `93babfdd` full-suite
+proxy-startup failure remains unattributed; bounded fixture stderr and 100
+passing fresh concurrency fixtures are diagnostic evidence, not proof of its
+cause or repair. No live-provider qualification is claimed.
 
 ## 6. Shared implementation and lifecycle policies
 
