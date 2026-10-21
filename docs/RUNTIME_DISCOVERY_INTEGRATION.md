@@ -61,3 +61,17 @@ preserved the exact executable at `target/qualification/runtime38-2f30840d-asb`.
 A scoped `cargo clean --package asb-cli` then reclaimed 2 GiB of rebuildable CLI
 cache outputs. Source, transcripts, retained failures and benchmark data were
 not removed; loss of the cache's derived binary is not a qualification failure.
+
+## Actual-main promotion
+
+Signed merge `a7ba3cc49aef76cd88350c5fffefc39322b5dd7b` preserves actual
+PR #302 main ancestry (`1a88ed8547270bdb4bb70cc88183fe2c449be0d5`). The merge
+changes only three delivery/proof documents relative to the independently
+approved local source. All production, tests, Cargo files and workflows remain
+byte-identical; this is not a claim of another full run.
+
+PR #301 passed both post-merge jobs and signed v0.2.36 was published. PR #302
+passed exact-head CI `39679529018` and merged with an identical tree; its two
+post-merge jobs and v0.2.37 release remain prerequisites to merging this runtime
+repair. This repair still requires its own exact-head hosted/package CI, both
+post-merge jobs, and signed v0.2.38 release. The removed coverage gate stays removed.
