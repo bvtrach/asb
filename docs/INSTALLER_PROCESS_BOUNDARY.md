@@ -557,3 +557,25 @@ supervisor stays cfg(test)-only; legacy APIs and their four red fixtures are
 unchanged. Actual Staging-bound consumed permission, typed all-caller abort/
 fallback migration, remaining offline faults and outer diagnostic rendering
 remain required. No full suite, external installation, PR, push or release.
+
+Root independently reviewed repaired checkpoint `1a2eb7f2`, the complete core
+and protected gate delta, all four observed-red regressions, added delayed-
+readiness and foreign-scope tests, exact 35-distinct focused results and frozen
+hash records. The late continuation, non-prefix logging and configuration
+reload findings are corrected. The existing gate resume path delegates with
+constant true; its protocol and ordinary behavior are unchanged. This review
+does not turn the cfg(test) core into a production installer qualification.
+
+Broad typed caller migration is now authorized under the approved design:
+wire the real Staging owner/retained-on-uncertainty lease, bind consumed producer
+permission to that same owner, and preserve Abort through every callback and
+fallback. Remove unsafe legacy installer APIs only after all owners migrate.
+Complete the listed remaining faults and meaningful timeout/log diagnostics;
+never call pending writer state a complete log. Signed production source plus
+focused cross-seam evidence requires independent review before a full suite.
+Do not publish a PR or claim this class complete from prototype tests.
+
+Local version44 is staging, not final release allocation. A separately
+reproduced compatibility-proxy startup repair must precede the queued runner
+delivery; root will coordinate monotonic patch versions during final ancestry
+integration. Preserve all current source/binary checkpoints rather than amend.
