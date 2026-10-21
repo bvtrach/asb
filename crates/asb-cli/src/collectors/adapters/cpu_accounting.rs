@@ -316,6 +316,10 @@ fn attach(pid: u32, configured_parent: Option<&Path>) -> Result<Leaf, String> {
 }
 
 #[cfg(test)]
+#[path = "../../../tests/unit/cpu_accounting.rs"]
+mod boundary_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     #[test]

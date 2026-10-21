@@ -7,6 +7,8 @@
 
 use crate::collectors;
 mod cohort;
+#[cfg(test)]
+mod coverage_tests;
 pub use cohort::ExecutionCohort;
 use serde::{Deserialize, Serialize};
 use std::any::{Any, TypeId};
@@ -974,13 +976,12 @@ impl Session {
         {
             let stdout = read_bounded(&collector.stdout_path);
             let mut stderr = read_bounded(&collector.stderr_path);
-            let _ = fs::remove_file(&collector.stdout_path);
-            let _ = fs::remove_file(&collector.stderr_path);
             let context = collectors::ProcessContext {
                 name: &collector.name,
                 status: &status,
                 stdout: &stdout,
                 stderr: &stderr,
+                stderr_path: &collector.stderr_path,
             };
             let data = match collector.adapter.process(self, &context) {
                 Ok(data) => data,
@@ -993,6 +994,8 @@ impl Session {
                     data
                 }
             };
+            let _ = fs::remove_file(&collector.stdout_path);
+            let _ = fs::remove_file(&collector.stderr_path);
             let result = CollectorResult {
                 schema_version: 1,
                 collector: collector.name.clone(),
@@ -1756,6 +1759,7 @@ mod tests {
                 _: &mut Session,
                 context: &collectors::ProcessContext<'_>,
             ) -> Result<collectors::ProcessData, String> {
+                assert!(context.stderr_path.is_file());
                 if self.0 {
                     std::thread::sleep(Duration::from_millis(150));
                 }
@@ -1825,6 +1829,10 @@ mod tests {
             session.process_stopped_collectors().unwrap();
             assert!(session.collectors.is_empty());
             assert!(dir.join("whole-run-fixture.json").is_file());
+            for name in ["execution-fixture", "whole-run-fixture"] {
+                assert!(!dir.join(format!("{name}.stdout")).exists());
+                assert!(!dir.join(format!("{name}.stderr")).exists());
+            }
             assert_eq!(
                 fs::read_to_string(dir.join("execution-fixture.json")).unwrap(),
                 "preserved"
@@ -1848,8 +1856,9 @@ mod tests {
             fn process(
                 &self,
                 _: &mut Session,
-                _: &collectors::ProcessContext<'_>,
+                context: &collectors::ProcessContext<'_>,
             ) -> Result<collectors::ProcessData, String> {
+                assert!(context.stderr_path.is_file());
                 Err("fixture SVG export failed".into())
             }
         }
@@ -1891,6 +1900,8 @@ mod tests {
             serde_json::from_str(&fs::read_to_string(dir.join("failing-export.json")).unwrap())
                 .unwrap();
         assert_eq!(result["status"], "failed");
+        assert!(!dir.join("failing-export.stdout").exists());
+        assert!(!dir.join("failing-export.stderr").exists());
         assert!(
             result["stderr"]
                 .as_str()

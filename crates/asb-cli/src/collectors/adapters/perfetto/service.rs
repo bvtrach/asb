@@ -10,6 +10,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 static SERVICES: OnceLock<Mutex<BTreeMap<PathBuf, Weak<Service>>>> = OnceLock::new();
 
+#[cfg(test)]
+#[path = "probe_tests.rs"]
+mod probe_tests;
+
 pub(super) struct Service {
     pub instance: String,
     pub marker: PathBuf,
@@ -307,9 +311,26 @@ fn producer_registered(command: &mut Command) -> Result<bool, String> {
 
 impl Drop for Service {
     fn drop(&mut self) {
-        if let Some(owner) = self.owner.take() {
+        let joined = if let Some(owner) = self.owner.take() {
             let _ = owner.stop.send(());
-            let _ = owner.thread.join();
+            owner.thread.join().is_ok()
+        } else {
+            true
+        };
+        let reaped = joined
+            && self.children.lock().is_ok_and(|mut children| {
+                children
+                    .iter_mut()
+                    .all(|child| matches!(child.try_wait(), Ok(Some(_))))
+            });
+        if reaped {
+            // A concurrent fork can retain this open file description even
+            // before exec closes its incidental copy. Once ALL owned daemons
+            // are confirmed reaped, normal shutdown explicitly releases the
+            // lease. SIGKILL never runs Drop: inherited daemon copies retain
+            // the lock throughout their crash shutdown as before. Failed or
+            // uncertain cleanup must not optimistically unlock a live service.
+            let _ = self._lease.unlock();
         }
     }
 }
@@ -476,6 +497,10 @@ fn inherit_lease(command: &mut Command, lease: &File) {
 fn inherit_lease(_: &mut Command, _: &File) {}
 
 #[cfg(all(test, target_os = "linux"))]
+#[path = "../../../../tests/unit/perfetto_service.rs"]
+mod coverage_tests;
+
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
@@ -574,7 +599,167 @@ else:
     }
 
     #[test]
+    fn normal_shutdown_releases_lease_despite_an_incidental_inherited_descriptor() {
+        use std::os::fd::AsRawFd;
+        use std::os::unix::fs::MetadataExt;
+        let root = std::env::temp_dir().join(
+            crate::workloads::TaskIdentity::local("perfetto-inherited-lease", None).attempt_id,
+        );
+        let executable = fixture(&root);
+        let service = start_fixture(&root, &executable);
+        let descriptor = service._lease.as_raw_fd();
+        let metadata = service._lease.metadata().unwrap();
+        // An intentionally retained copy of the same open file description is
+        // deterministic evidence for the incidental fork-before-exec window.
+        let mut command = Command::new("python3");
+        command.args(["-c","import pathlib,sys; pathlib.Path(sys.argv[1]).write_text('ready'); sys.stdin.buffer.read(1)"])
+            .arg(root.join("incidental-ready"))
+            .stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null());
+        inherit_lease(&mut command, &service._lease);
+        let mut incidental = TestChild(command.spawn().unwrap());
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !root.join("incidental-ready").is_file() && Instant::now() < deadline {
+            assert!(incidental.0.try_wait().unwrap().is_none());
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(root.join("incidental-ready").is_file());
+        let retained =
+            fs::metadata(format!("/proc/{}/fd/{descriptor}", incidental.0.id())).unwrap();
+        assert_eq!(
+            (retained.dev(), retained.ino()),
+            (metadata.dev(), metadata.ino())
+        );
+        let other = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(root.join("slot.lease"))
+            .unwrap();
+        assert!(
+            other.try_lock().is_err(),
+            "live owned daemons must retain the lease"
+        );
+        let pids = service
+            .children
+            .lock()
+            .unwrap()
+            .iter()
+            .map(Child::id)
+            .collect::<Vec<_>>();
+        drop(service);
+        assert!(
+            pids.iter()
+                .all(|pid| !Path::new(&format!("/proc/{pid}")).exists())
+        );
+        assert!(
+            incidental.0.try_wait().unwrap().is_none(),
+            "incidental child must remain alive"
+        );
+        other
+            .try_lock()
+            .expect("confirmed normal shutdown must explicitly release the lease");
+        drop(incidental);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn uncertain_owner_cleanup_never_explicitly_unlocks_an_inherited_lease() {
+        for poison in [false, true] {
+            let root = std::env::temp_dir().join(
+                crate::workloads::TaskIdentity::local("perfetto-uncertain-lease", None).attempt_id,
+            );
+            fs::create_dir(&root).unwrap();
+            let lease = OpenOptions::new()
+                .create_new(true)
+                .read(true)
+                .write(true)
+                .open(root.join("slot.lease"))
+                .unwrap();
+            lease.try_lock().unwrap();
+            let incidental = lease.try_clone().unwrap();
+            let children = Arc::new(Mutex::new(Vec::new()));
+            let (stop, _receiver) = mpsc::channel();
+            let owner = if poison {
+                let shared = Arc::clone(&children);
+                assert!(
+                    std::thread::spawn(move || {
+                        let _guard = shared.lock().unwrap();
+                        panic!("fixture-only poisoned cleanup ownership");
+                    })
+                    .join()
+                    .is_err()
+                );
+                None
+            } else {
+                Some(Owner {
+                    stop,
+                    thread: std::thread::spawn(|| panic!("fixture-only owner join failure")),
+                })
+            };
+            let service = Service {
+                instance: "fixture".into(),
+                marker: root.join("trace_marker"),
+                executable: root.join("not-started"),
+                producer: String::new(),
+                consumer: String::new(),
+                children,
+                owner,
+                _lease: lease,
+            };
+            drop(service);
+            let other = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(root.join("slot.lease"))
+                .unwrap();
+            assert!(
+                other.try_lock().is_err(),
+                "uncertain cleanup must not clear inherited ownership"
+            );
+            // This fixture has no daemons: after checking the production
+            // fail-closed branch, explicitly release our synthetic ownership.
+            // Merely closing the clone can itself race an unrelated fork.
+            incidental.unlock().unwrap();
+            drop(incidental);
+            other.try_lock().unwrap();
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
     fn creator_thread_exit_and_failed_client_do_not_kill_a_sibling_service() {
+        // A parallel libtest worker can fork while this lease is open. Even
+        // CLOEXEC descriptors survive in that unrelated child until exec, so
+        // daemon exit alone cannot prove immediate lock release in the shared
+        // process. Keep the ownership assertions in an exclusive test process.
+        const ISOLATED: &str = "ASB_TEST_ISOLATED_MANUAL_SERVICE";
+        if std::env::var_os(ISOLATED).is_none() {
+            let temporary = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../target/perfetto-service-isolation");
+            fs::create_dir_all(&temporary).unwrap();
+            let name = format!(
+                "{}::creator_thread_exit_and_failed_client_do_not_kill_a_sibling_service",
+                module_path!().split_once("::").unwrap().1
+            );
+            let mut command = Command::new(std::env::current_exe().unwrap());
+            command
+                .args(["--exact", &name, "--nocapture"])
+                .env_clear()
+                .env("PATH", "/usr/bin:/bin")
+                .env("TMPDIR", temporary)
+                .env(ISOLATED, "1");
+            if let Some(profile) = std::env::var_os("LLVM_PROFILE_FILE") {
+                command.env("LLVM_PROFILE_FILE", profile);
+            }
+            let output = command.output().unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+            return;
+        }
         let root = std::env::temp_dir()
             .join(crate::workloads::TaskIdentity::local("perfetto-service", None).attempt_id);
         let executable = fixture(&root);
@@ -630,6 +815,56 @@ else:
         {
             assert!(entry.metadata().unwrap().len() <= 256 * 1024);
         }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cloexec_lease_remains_in_an_owned_fork_child_until_exec() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/perfetto-fork-lease")
+            .join(crate::workloads::TaskIdentity::local("fixture", None).attempt_id);
+        fs::create_dir_all(&root).unwrap();
+        let source = r#"
+import os,fcntl,sys
+from pathlib import Path
+path=Path(sys.argv[1])/'lease'
+original=path.open('w+b')
+fcntl.flock(original,fcntl.LOCK_EX|fcntl.LOCK_NB)
+assert fcntl.fcntl(original,fcntl.F_GETFD)&fcntl.FD_CLOEXEC
+probe=path.open('r+b')
+read_fd,write_fd=os.pipe()
+pid=os.fork()
+if pid==0:
+    os.close(write_fd)
+    os.read(read_fd,1)
+    os.execv('/bin/true',['true'])
+os.close(read_fd)
+original.close()
+blocked=False
+try:
+    fcntl.flock(probe,fcntl.LOCK_EX|fcntl.LOCK_NB)
+except BlockingIOError:
+    blocked=True
+finally:
+    os.write(write_fd,b'x')
+    os.close(write_fd)
+    _,status=os.waitpid(pid,0)
+assert os.waitstatus_to_exitcode(status)==0
+assert blocked,'CLOEXEC does not close a lease before exec'
+fcntl.flock(probe,fcntl.LOCK_EX|fcntl.LOCK_NB)
+probe.close()
+"#;
+        let output = Command::new("/usr/bin/python3")
+            .args(["-I", "-S", "-B", "-c", source])
+            .arg(&root)
+            .env_clear()
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
         fs::remove_dir_all(root).unwrap();
     }
 

@@ -1,7 +1,9 @@
 //! Provider-free setup contracts: catalogs are synthetic, no SDK is executed.
 use serde_json::json;
+mod support;
 use std::path::PathBuf;
 use std::process::{Command, Output};
+use support::IsolatedEnvironment;
 
 struct Project(PathBuf);
 impl Project {
@@ -28,7 +30,7 @@ impl Project {
     fn setup(&self, workload: &str, extra: &[&str]) -> Output {
         Command::new(env!("CARGO_BIN_EXE_asb"))
             .current_dir(&self.0)
-            .env_clear()
+            .isolated_env()
             .env("HOME", &self.0)
             .env("PATH", std::env::var_os("PATH").unwrap_or_default())
             .args([

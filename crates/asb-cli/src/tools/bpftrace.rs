@@ -199,3 +199,66 @@ pub(crate) fn bpftrace_missing_dependency(dependency: &str, error: std::io::Erro
         bpftrace_dependency_commands(dependency)
     ))
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/bpftrace_install.rs"]
+mod coverage_tests;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prerequisite_diagnostics_name_the_failure_and_supported_distribution_repairs() {
+        for dependency in ["curl", "tar", "cmake", "unknown-build-dependency"] {
+            let commands = bpftrace_dependency_commands(dependency);
+            for distribution in ["Red Hat/Fedora:", "Debian/Ubuntu:", "openEuler:"] {
+                assert!(commands.contains(distribution));
+            }
+            if dependency != "unknown-build-dependency" {
+                assert!(commands.contains(dependency));
+            } else {
+                assert_eq!(commands, bpftrace_source_commands());
+            }
+            let error = bpftrace_missing_dependency(
+                dependency,
+                std::io::Error::new(std::io::ErrorKind::NotFound, "fixture tool is missing"),
+            );
+            let message = error.to_string();
+            assert!(message.contains(&format!("`{dependency}`")));
+            assert!(message.contains("fixture tool is missing"));
+            assert!(message.contains("asb tool install bpftrace"));
+            assert!(message.contains(commands));
+        }
+        assert!(bpftrace_host_commands().contains("apt-get install -y bpftrace"));
+        assert!(bpftrace_source_commands().contains("libbpf-dev"));
+        assert!(bpftrace_source_commands().contains("libclang-dev"));
+    }
+
+    #[test]
+    fn executable_discovery_skips_cmake_internal_outputs_and_searches_nested_targets() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/bpftrace-build-fixtures")
+            .join(format!(
+                "{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+        assert_eq!(find_built_bpftrace(&root), None);
+        fs::create_dir_all(root.join("CMakeFiles")).unwrap();
+        fs::write(root.join("CMakeFiles/bpftrace"), "not a published target").unwrap();
+        fs::write(root.join("README"), "not a binary").unwrap();
+        assert_eq!(find_built_bpftrace(&root), None);
+        // A directory with the target's name must not be returned as a binary.
+        fs::create_dir_all(root.join("obj/bpftrace")).unwrap();
+        assert_eq!(find_built_bpftrace(&root), None);
+        fs::create_dir_all(root.join("src/release")).unwrap();
+        let expected = root.join("src/release/bpftrace");
+        fs::write(&expected, "fixture executable").unwrap();
+        assert_eq!(find_built_bpftrace(&root), Some(expected));
+        fs::remove_dir_all(root).unwrap();
+    }
+}

@@ -328,6 +328,10 @@ fn normalize_endpoint(value: &str) -> Result<String, Error> {
 }
 
 #[cfg(test)]
+#[path = "../../../../tests/unit/cli2key_lifecycle.rs"]
+mod lifecycle_tests;
+
+#[cfg(test)]
 mod tests {
     use super::normalize_endpoint;
 

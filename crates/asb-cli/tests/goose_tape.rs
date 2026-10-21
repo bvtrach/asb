@@ -1,6 +1,7 @@
 //! Loopback-only regression for the Goose adapter's record/replay routing.
 #![cfg(unix)]
 
+mod support;
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::os::unix::fs::PermissionsExt;
@@ -11,6 +12,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use support::IsolatedEnvironment;
 
 struct MockProvider {
     endpoint: String,
@@ -97,15 +99,12 @@ fn run_with_changed_request(root: &Path, endpoint: &str, args: &[&str], changed:
     command
         .current_dir(root)
         .args(args)
-        .env_clear()
+        .isolated_env()
         .env("HOME", root)
         .env("PATH", std::env::var_os("PATH").unwrap_or_default())
         .env("OPENROUTER_BASE_URL", endpoint)
         .env("OPENROUTER_API_KEY", "fixture-key")
         .env("ASB_TEST_UPSTREAM", endpoint.trim_end_matches("/v1"));
-    if let Some(profile) = std::env::var_os("LLVM_PROFILE_FILE") {
-        command.env("LLVM_PROFILE_FILE", profile);
-    }
     if changed {
         command.env("ASB_TEST_CHANGED", "1");
     }
