@@ -366,3 +366,99 @@ fn parent_wait_expiry_retains_the_real_dependency_until_matching_quiescence() {
     }
     assert!(sentinel.0.try_wait().unwrap().is_none());
 }
+
+struct ContinueRelease(Arc<AtomicBool>);
+impl Drop for ContinueRelease {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Release);
+    }
+}
+fn paused_admission_must_not_resume_after_abort(expire: bool) {
+    let root = root();
+    let mut context = context(&root);
+    if expire {
+        context.deadline = Instant::now() + Duration::from_millis(500);
+    }
+    let mut sentinel = Sentinel::start();
+    let reached = Arc::new(AtomicBool::new(false));
+    let released = Arc::new(AtomicBool::new(false));
+    let settled = Arc::new(AtomicBool::new(false));
+    let release_guard = ContinueRelease(Arc::clone(&released));
+    let mut step = shell(&context, "printf forbidden > client-started; sleep 30");
+    step.before_continue = Some(native::AdmissionPause {
+        reached: Arc::clone(&reached),
+        release: Arc::clone(&released),
+        settled: Arc::clone(&settled),
+        client_marker: root.join("client-started"),
+    });
+    let (send, receive) = mpsc::sync_channel(1);
+    std::thread::spawn(move || {
+        let _ = send.send(step.run(ProducerLease::default()));
+    });
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !reached.load(Ordering::Acquire) {
+        assert!(
+            Instant::now() < deadline,
+            "stopped readiness hook not reached"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    if !expire {
+        context.cancel();
+    }
+    let result = receive.recv_timeout(Duration::from_secs(8)).unwrap();
+    assert!(matches!(result, Err(InstallFailure::Abort(_))));
+    assert!(!root.join("client-started").exists());
+    drop(release_guard);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !settled.load(Ordering::Acquire) {
+        assert!(
+            Instant::now() < deadline,
+            "no actual matching guardian quiescence after release"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(sentinel.0.try_wait().unwrap().is_none());
+    assert!(
+        !root.join("client-started").exists(),
+        "core resumed the client AFTER caller Abort; {}",
+        root.display()
+    );
+}
+
+#[test]
+fn core_review_cancelled_stopped_guardian_must_not_resume_after_parent_abort() {
+    paused_admission_must_not_resume_after_abort(false);
+}
+#[test]
+fn core_review_expired_stopped_guardian_must_not_resume_after_parent_abort() {
+    paused_admission_must_not_resume_after_abort(true);
+}
+
+#[test]
+fn core_review_step_preparation_uses_frozen_config_not_a_fresh_invalid_file() {
+    let root = root();
+    fs::create_dir(root.join(".asb")).unwrap();
+    let path = root.join(".asb/project.toml");
+    let config = ProjectConfig::default();
+    fs::write(&path, toml::to_string(&config).unwrap()).unwrap();
+    let (_, loaded) = crate::project::load(&root).unwrap();
+    let context = OperationContext::new(&root, &loaded).unwrap();
+    let mut invalid = config;
+    invalid.installation.probe_timeout_seconds = 0;
+    fs::write(&path, toml::to_string(&invalid).unwrap()).unwrap();
+    assert!(
+        crate::project::load(&root).is_err(),
+        "replacement fixture was not invalid"
+    );
+    assert!(
+        PreparedStep::new(
+            &context,
+            "/bin/true",
+            Purpose::Probe,
+            "frozen config fixture"
+        )
+        .is_ok(),
+        "preparation reloaded a configuration that should be frozen for this operation"
+    );
+}

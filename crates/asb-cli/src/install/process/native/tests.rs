@@ -1,5 +1,6 @@
 use super::*;
 use std::os::unix::fs::{PermissionsExt, symlink};
+use std::sync::Condvar;
 
 fn root() -> PathBuf {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -114,4 +115,92 @@ fn private_log_modes_hold_under_umask_022_in_an_isolated_owned_process() {
             .status()
             .success()
     );
+}
+
+struct PressureWriter {
+    file: File,
+    reached: Arc<AtomicBool>,
+    release: Arc<(Mutex<bool>, Condvar)>,
+}
+impl Write for PressureWriter {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.reached.store(true, Ordering::Release);
+        let (lock, wake) = &*self.release;
+        let mut released = lock.lock().unwrap();
+        while !*released {
+            released = wake.wait(released).unwrap();
+        }
+        self.file.write(bytes)
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        self.file.flush()
+    }
+}
+struct ReleasePressure(Arc<(Mutex<bool>, Condvar)>);
+impl Drop for ReleasePressure {
+    fn drop(&mut self) {
+        let (lock, wake) = &*self.0;
+        *lock.lock().unwrap() = true;
+        wake.notify_all();
+    }
+}
+
+#[test]
+fn core_review_log_pressure_must_preserve_only_the_first_bytes_prefix() {
+    let root = root();
+    let reached = Arc::new(AtomicBool::new(false));
+    let release = Arc::new((Mutex::new(false), Condvar::new()));
+    let guard = ReleasePressure(Arc::clone(&release));
+    let held = Arc::clone(&reached);
+    let unblock = Arc::clone(&release);
+    let mut sink = LogSink::new(
+        &root,
+        Some(Box::new(move |file| {
+            Box::new(PressureWriter {
+                file,
+                reached: held,
+                release: unblock,
+            })
+        })),
+    );
+    sink.push(b"A");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !reached.load(Ordering::Acquire) {
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    for _ in 0..16 {
+        sink.push(b"B");
+    }
+    sink.push(b"LOST");
+    assert_eq!(sink.report.lock().unwrap().accepted, 17);
+    assert_eq!(sink.report.lock().unwrap().discarded, 4);
+    drop(guard);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while sink.report.lock().unwrap().retained != 17 {
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    // Queue room exists again, but bytes after the first lost byte must not
+    // create a falsely contiguous log by appending a later distinct chunk.
+    sink.push(b"LATE");
+    sink.queue.take();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let report = loop {
+        let report = sink.report.lock().unwrap().clone();
+        if report.settled {
+            break report;
+        }
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(2));
+    };
+    let expected = [b"A".as_slice(), b"BBBBBBBBBBBBBBBB".as_slice()].concat();
+    assert_eq!(
+        fs::read(report.path.unwrap()).unwrap(),
+        expected,
+        "logging resumed after loss and no longer represents a true first-bytes prefix"
+    );
+    assert_eq!(report.accepted, 17);
+    assert_eq!(report.retained, 17);
+    assert_eq!(report.discarded, 8);
 }

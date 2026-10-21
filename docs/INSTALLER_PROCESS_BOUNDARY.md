@@ -469,3 +469,34 @@ Class45 must not treat this intermediate outcome as its final publication
 permission. No additional full suite, live installation, push or PR was run.
 All runtime handles are terminal at this checkpoint. Root requested a pause
 before broad migration for independent review of this narrow core and evidence.
+
+## Core review: independently found gaps and observed RED before repair
+
+Root found three concrete gaps in immutable `b7f819e4`: preparation/readiness
+can outlast cancellation/deadline and still reach unconditional CONT; queue
+pressure drops bytes but permits later chunks, violating first-bytes prefix
+policy; and per-step apply_network_proxy reloads project configuration instead
+of using the operation snapshot, including a potentially foreign network scope.
+Independent first review approved the limited core but did not find these gaps;
+neither review constitutes production-caller or full-class qualification.
+
+Four added tests plus private test-only admission hooks reproduced the old core
+before any repair. `target/installer44-review-red.log`: compile23.54s,
+**0 passed /4 failed /0ignored**, exit101,12.70s. All failures were intended:
+the log contained late bytes after a forced lost chunk; both cancelled and
+expired stopped guardians subsequently ran their real client marker AFTER the
+parent had returned Abort; and preparation rejected a newly invalid config that
+the existing operation should not reload. The late-start cases first observed
+actual stopped readiness, held the worker until parent Abort, released it,
+observed actual guardian quiescence, and verified the unrelated sentinel alive
+before failing on the forbidden client marker. The post-CONT observation hook
+only gives an actually resumed program scheduling time; it does not create the
+marker or manufacture status. The forced-pressure writer was fully settled
+before byte comparison. Markers/log directories remain under the owned target.
+
+Actual ASB remained `558cf2b6d44c892791af1a6e9f04346cfa82b7bb558c6df45b05830d94729ff0`,
+matching the preserved b7 core actual. The new red libtest is preserved separately
+as `target/qualification/installer44-review-red-libtests`; its post-run hash is
+recorded in `target/installer44-review-red.sha256`. This checkpoint contains
+tests/hooks/evidence only, not the fixes. Original legacy-API red tests remain
+unchanged. No broad caller migration, full suite, live tool installation or PR.

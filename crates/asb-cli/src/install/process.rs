@@ -231,6 +231,8 @@ pub(crate) struct PreparedStep {
     log_writer: Option<native::WriterFactory>,
     #[cfg(test)]
     hold_observation: Option<Arc<AtomicBool>>,
+    #[cfg(test)]
+    before_continue: Option<native::AdmissionPause>,
 }
 impl PreparedStep {
     pub(crate) fn new(
@@ -264,6 +266,8 @@ impl PreparedStep {
             log_writer: None,
             #[cfg(test)]
             hold_observation: None,
+            #[cfg(test)]
+            before_continue: None,
         })
     }
     pub(crate) fn command_mut(&mut self) -> &mut std::process::Command {

@@ -16,6 +16,14 @@ const CHUNK: usize = 8192;
 #[cfg(test)]
 pub(super) type WriterFactory = Box<dyn FnOnce(File) -> Box<dyn Write + Send> + Send>;
 
+#[cfg(test)]
+pub(super) struct AdmissionPause {
+    pub(super) reached: Arc<AtomicBool>,
+    pub(super) release: Arc<AtomicBool>,
+    pub(super) settled: Arc<AtomicBool>,
+    pub(super) client_marker: PathBuf,
+}
+
 #[derive(Clone, Debug, Default)]
 pub(crate) struct LogReport {
     pub(crate) path: Option<PathBuf>,
@@ -394,8 +402,29 @@ fn supervise(
             ended: unusable,
         },
     ];
-    if cause.is_none() && gate.resume().is_err() {
-        cause = Some(AbortCause::Custody);
+    #[cfg(test)]
+    if let Some(pause) = &step.before_continue {
+        if gate.wait_stopped().is_err() {
+            cause = Some(AbortCause::Custody);
+        }
+        pause.reached.store(true, Ordering::Release);
+        while !pause.release.load(Ordering::Acquire) {
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+    if cause.is_none() {
+        if gate.resume().is_err() {
+            cause = Some(AbortCause::Custody);
+        }
+        #[cfg(test)]
+        if let Some(pause) = &step.before_continue {
+            // An observation-only scheduling hook ensures an already resumed
+            // target can publish its marker before cancellation is polled.
+            let until = Instant::now() + Duration::from_secs(2);
+            while !pause.client_marker.is_file() && Instant::now() < until {
+                std::thread::sleep(Duration::from_millis(2));
+            }
+        }
     }
     let mut status = None;
     let mut cleanup_deadline = None;
@@ -462,6 +491,10 @@ fn supervise(
         if let Some(status) = status
             && pipes.iter().all(|pipe| pipe.ended)
         {
+            #[cfg(test)]
+            if let Some(pause) = &step.before_continue {
+                pause.settled.store(true, Ordering::Release);
+            }
             if !sent {
                 let log = log.finish();
                 let result = match cause {
