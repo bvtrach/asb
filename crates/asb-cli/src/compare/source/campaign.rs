@@ -26,10 +26,26 @@ pub(super) fn load(path: &str) -> Result<LoadedReport, Error> {
             toml::to_string(configuration).map_err(|error| Error::Input(error.to_string()))?,
         )]),
     };
+    let (rows, previews) = rows(&layout, &request, 0, config, None)?;
+    Ok(LoadedReport {
+        request,
+        rows,
+        previews,
+    })
+}
+
+pub(super) fn rows(
+    layout: &Layout,
+    request: &Request,
+    index: usize,
+    config: PathBuf,
+    selection: Option<&crate::workloads::TaskSelection>,
+) -> Result<(Vec<BenchmarkData>, BTreeMap<String, String>), Error> {
+    let configuration = &layout.plan.configuration;
     let mut rows = Vec::new();
     let mut previews = BTreeMap::new();
     let mut context = Configuration {
-        index: 0,
+        index,
         config: config.clone(),
         result_dir: layout.root.clone(),
         agent: configuration.agent.clone(),
@@ -42,7 +58,7 @@ pub(super) fn load(path: &str) -> Result<LoadedReport, Error> {
         measurement_snapshot: None,
         measurement_override: Some(None),
         standalone: Some(configuration.clone()),
-        selection: None,
+        selection: selection.cloned(),
         outcomes: BTreeMap::new(),
     };
     for slot in &layout.plan.slots {
@@ -91,17 +107,17 @@ pub(super) fn load(path: &str) -> Result<LoadedReport, Error> {
             serde_json::to_value(layout.plan.execution(slot))
                 .map_err(|error| Error::Input(error.to_string()))?,
         );
-        context.measurement_override = Some(measurement);
+        context.measurement_override = Some(layout.measurement_directory(slot));
         context.measurement_snapshot = layout.measurement(slot)?;
         context.outcomes = recorded
             .map(|record| BTreeMap::from([(slot.replica, record)]))
             .unwrap_or_default();
-        let mut row = load_attempt(&request, &context, slot.replica)?;
+        let mut row = load_attempt(request, &context, slot.replica)?;
         if let Some(outcome) = &outcome {
             verify_recording(&outcome.value)?;
         }
         row.label = format!(
-            "{}-batch-{}-replica-{}",
+            "{index:03}-{}-batch-{}-replica-{}",
             configuration.agent, slot.batch, slot.replica
         );
         for (href, physical) in &row.artifact_sources {
@@ -116,11 +132,7 @@ pub(super) fn load(path: &str) -> Result<LoadedReport, Error> {
         }
         rows.push(row);
     }
-    Ok(LoadedReport {
-        request,
-        rows,
-        previews,
-    })
+    Ok((rows, previews))
 }
 
 fn verify_recording(raw: &Value) -> Result<(), Error> {

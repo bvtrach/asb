@@ -97,6 +97,10 @@ impl Plan {
             return Err(invalid("configuration fingerprint differs"));
         }
         if (self.mode == ExecutionMode::Record) != self.recording.is_some()
+            || (self.measurement_storage.is_some()
+                && self.measurement_root.as_ref().is_none_or(|root| {
+                    root.file_name().and_then(|name| name.to_str()) != Some(self.campaign.as_str())
+                }))
             || self
                 .recording
                 .as_ref()
@@ -134,7 +138,8 @@ impl Plan {
 
     fn validate_replay(&self) -> Result<(), Error> {
         if self.mode != ExecutionMode::Replay {
-            if !self.replay_inputs.is_empty()
+            if self.replay_source.is_some()
+                || !self.replay_inputs.is_empty()
                 || self.replay_selection.is_some()
                 || self
                     .slots
@@ -144,6 +149,13 @@ impl Plan {
                 return Err(invalid("non-replay campaign contains replay state"));
             }
             return Ok(());
+        }
+        if self
+            .replay_source
+            .as_ref()
+            .is_some_and(|source| !source.is_absolute())
+        {
+            return Err(invalid("nominal replay source must be absolute"));
         }
         if self.replay_inputs.is_empty() {
             return Err(invalid("replay campaign has no private inputs"));

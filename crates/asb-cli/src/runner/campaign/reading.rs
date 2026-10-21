@@ -57,8 +57,32 @@ fn bounded_file(file: File, limit: u64) -> Result<Vec<u8>, Error> {
 impl Layout {
     pub fn read(path: &Path) -> Result<Self, Error> {
         let bytes = bounded(path, MAX_PLAN_BYTES)?;
+        let layout = Self::decode(path, &bytes)?;
+        layout.preflight()?;
+        Ok(layout)
+    }
+
+    /// Read only a referenced plan. Callers validate every campaign/index
+    /// association before admitting any observation or recording payload read.
+    pub fn read_reference(results: &Path, reference: &super::Reference) -> Result<Self, Error> {
+        let relative = reference.root.join("plan.json");
+        #[cfg(unix)]
+        let bytes = bounded_file(rooted::open(results, &relative)?, MAX_PLAN_BYTES)?;
+        #[cfg(not(unix))]
+        let bytes = bounded(&results.join(&relative), MAX_PLAN_BYTES)?;
+        if bytes.len() as u64 != reference.bytes
+            || crate::cassette::digest(&bytes) != reference.sha256
+        {
+            return Err(invalid(
+                "campaign plan differs from its owning sweep reference",
+            ));
+        }
+        Self::decode(&results.join(relative), &bytes)
+    }
+
+    fn decode(path: &Path, bytes: &[u8]) -> Result<Self, Error> {
         let plan: Plan =
-            serde_json::from_slice(&bytes).map_err(|_| invalid("malformed execution plan"))?;
+            serde_json::from_slice(bytes).map_err(|_| invalid("malformed execution plan"))?;
         plan.validate_layout()?;
         let root = std::path::absolute(
             path.parent()
@@ -77,14 +101,13 @@ impl Layout {
             root,
             remaining: Cell::new(MAX_OBSERVATION_BYTES),
         };
-        layout.preflight()?;
         Ok(layout)
     }
 
     /// Bound the complete primary observation population before any outcome
     /// hash or recording payload verification. Actual reads share another budget
     /// so growth/replacement after this inspection cannot evade the cap.
-    fn preflight(&self) -> Result<(), Error> {
+    pub fn preflight(&self) -> Result<u64, Error> {
         let mut total = 0u64;
         let mut inspect = |path: &Path, limit: u64| -> Result<(), Error> {
             let metadata = match fs::symlink_metadata(path) {
@@ -119,20 +142,11 @@ impl Layout {
                 inspect(&self.root.join(reference.path), MAX_OUTCOME_BYTES)?;
             }
             inspect(&self.root.join(&slot.log), MAX_PLAN_BYTES)?;
-            if let Some(path) = &slot.measurements {
-                inspect(
-                    &self
-                        .plan
-                        .measurement_root
-                        .as_ref()
-                        .expect("validated measurement root")
-                        .join(path)
-                        .join("run.json"),
-                    MAX_PLAN_BYTES,
-                )?;
+            if let Some(directory) = self.measurement_directory(slot) {
+                inspect(&directory.join("run.json"), MAX_PLAN_BYTES)?;
             }
         }
-        Ok(())
+        Ok(total)
     }
 
     fn read_observation(&self, path: &Path, limit: u64) -> Result<Vec<u8>, Error> {
@@ -163,16 +177,10 @@ impl Layout {
     }
 
     pub fn measurement(&self, slot: &Slot) -> Result<Option<Value>, Error> {
-        let Some(relative) = &slot.measurements else {
+        let Some(directory) = self.measurement_directory(slot) else {
             return Ok(None);
         };
-        let path = self
-            .plan
-            .measurement_root
-            .as_ref()
-            .expect("validated measurement root")
-            .join(relative)
-            .join("run.json");
+        let path = directory.join("run.json");
         match fs::symlink_metadata(&path) {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(error) => return Err(io_error(error)),
@@ -181,6 +189,19 @@ impl Layout {
         serde_json::from_slice(&self.read_observation(&path, MAX_PLAN_BYTES)?)
             .map(Some)
             .map_err(|_| invalid("malformed measurement record"))
+    }
+
+    pub fn measurement_directory(&self, slot: &Slot) -> Option<PathBuf> {
+        let relative = slot.measurements.as_ref()?;
+        let root = if self.plan.measurement_storage == Some(super::MeasurementStorage::Campaign) {
+            &self.root
+        } else {
+            self.plan
+                .measurement_root
+                .as_ref()
+                .expect("validated measurement root")
+        };
+        Some(root.join(relative))
     }
 
     /// Missing references remain missing observations; malformed/present ones

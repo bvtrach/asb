@@ -9,6 +9,7 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+mod campaigns;
 mod checkpoint;
 mod execution;
 mod lock;
@@ -42,6 +43,9 @@ pub(crate) struct SweepFile {
 
 #[derive(Clone, Copy)]
 pub(crate) struct Options<'a> {
+    pub repeat: Option<u64>,
+    pub track: Option<crate::cassette::Selector>,
+    pub seed: Option<u64>,
     pub json: bool,
     pub show_output: bool,
     pub mode: Option<crate::tape::Mode>,
@@ -57,6 +61,9 @@ pub(crate) struct Options<'a> {
 impl Default for Options<'_> {
     fn default() -> Self {
         Self {
+            repeat: None,
+            track: None,
+            seed: None,
             json: false,
             show_output: false,
             mode: None,
@@ -126,11 +133,19 @@ pub(crate) fn run_with_options(
             || options.cassette_root.is_some()
             || options.jobs != 1
             || options.max_active_attempts.is_some()
+            || options.repeat.is_some()
+            || options.track.is_some()
+            || options.seed.is_some()
         {
             return Err(Error::Input(
                 "--import-grades is report-only and cannot be combined with execution options"
                     .into(),
             ));
+        }
+        if plan::SweepPlan::source_snapshot(&parent.join(format!("{stem}-results")), parent)?
+            .is_some_and(|saved| saved.execution.is_some())
+        {
+            return Err(Error::Input("campaign grade import requires saved-slot validation; existing results were not changed".into()));
         }
         return recovered::import(sweep_path, &sweep, parent, stem, json, output);
     }

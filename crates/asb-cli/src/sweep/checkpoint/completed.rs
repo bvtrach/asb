@@ -878,6 +878,7 @@ mod tests {
                 population_size: Some(2),
             };
             let entry = PlannedBenchmark {
+                campaign: None,
                 policy: None,
                 reference: "benchmark.toml".into(),
                 configuration,

@@ -71,7 +71,7 @@ pub(super) fn run(
 }
 
 /// Own frozen planning facts and opened sources, never an active process/lock.
-struct Prepared {
+pub(crate) struct Prepared {
     config_path: PathBuf,
     options: ActivationOptions,
     parent: PathBuf,
@@ -96,7 +96,7 @@ struct ActivationOptions {
 }
 
 impl Prepared {
-    fn prepare(
+    pub(crate) fn prepare(
         config_path: &Path,
         config: BenchmarkConfig,
         repeat: u64,
@@ -149,6 +149,12 @@ impl Prepared {
                 .as_ref()
                 .is_some_and(|value| value.enabled);
         let mut slots = planned_slots(&config, repeat, measured)?;
+        let replay_source = (options.mode == Some(crate::tape::Mode::Replay))
+            .then(|| {
+                super::replay_cassette(config_path, &config, options.cassette)
+                    .and_then(|path| std::path::absolute(path).map_err(io_error))
+            })
+            .transpose()?;
         let (replay, replay_inputs) =
             match replay::Prepared::open(config_path, &config, options, repeat)? {
                 Some(selected) => {
@@ -189,6 +195,12 @@ impl Prepared {
             .transpose()
             .map_err(io_error)?;
         let plan = Plan {
+            replay_source,
+            measurement_storage: measured.then_some(if options.measurement_dir.is_some() {
+                super::campaign::MeasurementStorage::Override
+            } else {
+                super::campaign::MeasurementStorage::Campaign
+            }),
             replay_selection: replay.as_ref().and_then(|replay| match replay {
                 PreparedReplay::Selected(selected) => selected.selection.clone(),
                 PreparedReplay::Legacy(_) => None,
@@ -234,6 +246,55 @@ impl Prepared {
             replay,
         })
     }
+
+    pub(crate) fn reference(&self, results: &Path) -> Result<super::campaign::Reference, Error> {
+        let results = std::path::absolute(results).map_err(io_error)?;
+        Ok(super::campaign::Reference {
+            root: self
+                .root
+                .strip_prefix(results)
+                .map_err(|_| {
+                    Error::Input("campaign must be beneath its owning sweep results".into())
+                })?
+                .to_path_buf(),
+            bytes: self.bytes.len() as u64,
+            sha256: crate::cassette::digest(&self.bytes),
+        })
+    }
+
+    pub(crate) fn input_cost(&self) -> (usize, u64) {
+        (
+            self.plan.replay_inputs.len(),
+            self.plan
+                .replay_inputs
+                .iter()
+                .map(|input| input.bytes)
+                .sum(),
+        )
+    }
+
+    /// Open source handles remain pinned; only their durable display locations
+    /// change when the owning sweep preserves the previous results tree.
+    pub(crate) fn preserve_source_locations(
+        &mut self,
+        old: &Path,
+        preserved: &Path,
+    ) -> Result<(), Error> {
+        let old = std::path::absolute(old).map_err(io_error)?;
+        let preserved = std::path::absolute(preserved).map_err(io_error)?;
+        if let Some(source) = &mut self.plan.replay_source
+            && let Ok(relative) = source.strip_prefix(&old)
+        {
+            *source = preserved.join(relative);
+        }
+        for input in &mut self.plan.replay_inputs {
+            if let Ok(relative) = input.source.strip_prefix(&old) {
+                input.source = preserved.join(relative);
+            }
+        }
+        self.bytes = encode(&self.plan)?;
+        Ok(())
+    }
 }
 
 fn activate(
@@ -245,7 +306,7 @@ fn activate(
 }
 
 /// Published layout/input ownership is not evidence of an attempted execution.
-struct PublishedCampaign {
+pub(crate) struct PublishedCampaign {
     config_path: PathBuf,
     options: ActivationOptions,
     root: PathBuf,
@@ -255,7 +316,7 @@ struct PublishedCampaign {
     _owner: crate::output_lock::OutputLock,
 }
 
-fn publish_campaign(prepared: Prepared) -> Result<PublishedCampaign, Error> {
+pub(crate) fn publish_campaign(prepared: Prepared) -> Result<PublishedCampaign, Error> {
     let Prepared {
         config_path,
         options,
@@ -322,7 +383,7 @@ fn publish_campaign(prepared: Prepared) -> Result<PublishedCampaign, Error> {
     })
 }
 
-fn execute(
+pub(crate) fn execute(
     published: PublishedCampaign,
     output: &mut dyn Write,
     warnings: &Mutex<BTreeSet<String>>,

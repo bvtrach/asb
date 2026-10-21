@@ -8,6 +8,16 @@ mod layout;
 pub(super) use layout::{MAX_EXECUTIONS, planned_slots};
 pub(crate) mod reading;
 
+/// Exact retained campaign plan beneath an owning sweep's results directory.
+/// This references intended slots, never completion or continuation authority.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct Reference {
+    pub root: PathBuf,
+    pub bytes: u64,
+    pub sha256: String,
+}
+
 /// The same execution identity is emitted by the runner and checked by readers.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -64,9 +74,23 @@ pub(crate) struct ReplayInput {
     pub sha256: String,
 }
 
+/// Whether measurements move with their owned campaign or remain at an explicit
+/// external override. Historical plans omit this distinction; readers do not guess.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum MeasurementStorage {
+    Campaign,
+    Override,
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Plan {
+    /// Nominal source preserves sparse legacy routing, not just its first file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replay_source: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub measurement_storage: Option<MeasurementStorage>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub replay_selection: Option<crate::cassette::SelectionPlan>,
     #[serde(skip_serializing_if = "Option::is_none")]

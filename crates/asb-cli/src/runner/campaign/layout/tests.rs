@@ -7,6 +7,8 @@ fn plan(mode: ExecutionMode, concurrency: usize, repeat: u64, measured: bool) ->
         "agent='pi'\nprovider='openrouter'\nmodel='fixture'\nworkload='bug-fix'\nconcurrency={concurrency}"
     )).unwrap();
     let mut plan = Plan {
+        replay_source: None,
+        measurement_storage: None,
         replay_selection: None,
         recording: (mode == ExecutionMode::Record)
             .then(|| PathBuf::from("/project/recording.asb.zip")),
@@ -41,6 +43,25 @@ fn plan(mode: ExecutionMode, concurrency: usize, repeat: u64, measured: bool) ->
         }
     }
     plan
+}
+
+#[test]
+fn measurement_storage_is_explicit_bounded_and_legacy_absence_remains_unknown() {
+    use crate::runner::campaign::MeasurementStorage;
+    let mut value = plan(ExecutionMode::Live, 1, 2, true);
+    for storage in [MeasurementStorage::Campaign, MeasurementStorage::Override] {
+        value.measurement_storage = Some(storage);
+        assert!(value.validate_layout().is_ok());
+        value.measurement_root = Some("/external/foreign-campaign".into());
+        assert!(value.validate_layout().is_err());
+        value.measurement_root = Some("/external/fixture".into());
+    }
+    value.measurement_storage = None;
+    value.measurement_root = Some("/external/legacy-location".into());
+    assert!(value.validate_layout().is_ok());
+    value.measurement_storage = Some(MeasurementStorage::Campaign);
+    value.measurement_root = None;
+    assert!(value.validate_layout().is_err());
 }
 
 fn selected(mut plan: Plan, bundled: bool) -> Plan {

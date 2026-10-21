@@ -10,7 +10,7 @@ use disposition::{FailureKind, RunDisposition, RunFacts, RunFailure};
 mod native;
 mod phases;
 pub(crate) mod recording;
-mod repeated;
+pub(crate) mod repeated;
 use phases::{
     AdmittedAttempt, AttemptIssues, ExecutionEvidence, FinalizedAttempt, MeasuredOutput,
     PreparedAttempt,
@@ -1612,18 +1612,22 @@ fn replay_cassette(
         (1..=crate::benchmark::MAX_CONCURRENCY)
             .map(|replica| crate::benchmark_paths::replica_path(&legacy, replica)),
     ) {
-        match std::fs::symlink_metadata(&path) {
-            Ok(_) => return Ok(legacy),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
-            Err(error) => return Err(io_error(error)),
+        if crate::cassette::Source::is_present(&path)
+            .map_err(|failure| Error::Input(failure.to_string()))?
+        {
+            return Ok(legacy);
         }
     }
     let bundle = default_bundle_cassette(config_path, config);
-    match std::fs::symlink_metadata(&bundle) {
-        Ok(_) => Ok(bundle),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(legacy),
-        Err(error) => Err(io_error(error)),
-    }
+    Ok(
+        if crate::cassette::Source::is_present(&bundle)
+            .map_err(|failure| Error::Input(failure.to_string()))?
+        {
+            bundle
+        } else {
+            legacy
+        },
+    )
 }
 
 fn default_bundle_cassette(config_path: &Path, config: &BenchmarkConfig) -> PathBuf {

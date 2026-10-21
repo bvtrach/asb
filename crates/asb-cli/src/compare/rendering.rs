@@ -84,7 +84,7 @@ pub(super) fn render(stage: &Path, prepared: &PreparedReport) -> Result<(), Erro
         "campaign": prepared.data.request.campaign,
         "success_rate_definition": "resolved task attempts / all selected task attempts, including failures; not process exit rate or pass@k; smoke checks excluded",
         "resolution_groups": resolution_groups,
-        "selection_plan": plan.as_ref().map(|plan| json!({"run_id":plan.run_id,"configuration_match":true,"execution_mode":plan.execution_mode,"respect_record_timings":plan.respect_record_timings,"scheduling":plan.scheduling})),
+        "selection_plan": plan.as_ref().map(|plan| json!({"run_id":plan.run_id,"configuration_match":true,"execution_mode":plan.execution_mode,"respect_record_timings":plan.respect_record_timings,"scheduling":plan.scheduling,"execution":plan.execution,"replay_seed_scope":plan.execution.as_ref().map(|_|"bundled-configurations")})),
         "evaluation_coverage":evaluation_coverage,
         "population_coverage":population_coverage,
         "metric_groups": prepared.metric_groups,

@@ -99,6 +99,63 @@ tests and strict Clippy pass after adapting the new fixture constructor to the
 optional metadata fields. This does not substitute for full qualification of
 the integrated head or the remaining feature work.
 
+## Fresh sweep integration checkpoint
+
+The source branch now wires repeat, numeric/statistic selection and seed options
+into the existing consuming sweep phases and weighted scheduler. Schema-two
+indexes retain execution intent plus one bounded checksummed campaign reference
+per configuration; schema-one indexes remain the legacy reader. The whole
+reference population is validated before observation lookup. Comparison binds
+each referenced configuration/mode/timing/repeat/selection, keeps the saved task
+selection and enumerates original configuration/batch/replica identities.
+User-supplied seeds are distinguished from generated shared seeds, which apply
+only to bundled inputs; legacy seeds/statistics are never fabricated.
+
+Fresh preparation pins every configuration before preserving old output. The
+index is published once, then every campaign plan/private input is published
+before the scheduler receives execution authority. A separate publication marker
+binds the index bytes, not completion. Partial publication retains the index and
+published roots without starting clients. Each campaign lock is consumed outside
+its short ownership mutex. Ordinary settled failures can continue; uncertain
+settlement or typed input/IO failures stop new configuration admission while
+admitted siblings settle. Scheduling counts original C, not N times C; only the
+bounded file-backed presentation spool scales to the execution population.
+
+Default recordings live under project `cassettes/sweep-RUNID/CONFIG/` so moving
+result trees never moves authoritative recording journals. Explicit cassette
+roots retain precedence. Discovery shares invalid-present semantics with run:
+a dangling link/directory cannot silently select a different legacy input.
+Campaign plans retain the nominal replay source separately from actual opened
+input files, preserving sparse legacy routing on subsequent default replay.
+Both display locations are rebased before immutable index hashes are computed;
+publication still stages from the previously opened source handles.
+
+New optional measurement-storage metadata distinguishes campaign-owned files
+from explicit overrides. Historical comparison resolves owned measurements from
+the actual retained campaign root, while validating saved logical declarations;
+external overrides stay fixed. Older plans without this distinction retain
+unknown historical behavior rather than guessed relocation authority. JSON and
+HTML disclose mode, repetition, individual execution/replay identity and the
+limits of interpreting replay as provider performance.
+
+Real CLI tests cover two configurations at N2/C2/jobs2 recording eight tracks,
+seeded N3 replay with jobs1/2 producing the same choices and twelve report rows,
+no replay inference calls, second-input failure before output rotation, default
+N1 recording with changed-concurrency replay/replay-again, measured history
+comparison, invalid-present bundle refusal, numeric legacy intent mutation and
+distinct sparse legacy replica responses across repeated result rotations.
+Pure tests bound the whole index before configuration callbacks and keep legacy
+spool concurrency bounds separate from campaign presentation counts.
+
+This is not full feature-five readiness: modern continuation/reconciliation
+and grade import explicitly refuse before historical writes instead of falling
+through to legacy receipts. Aggregate input validation before any legacy hash,
+grouped immutable recording-proof verification, campaign input/continuation seals
+and complete source/package/hosted qualification remain required. The preceding
+integrated-head regression gate passed 1312 tests with 21 existing ignored and
+zero failures before this fresh-sweep wiring; that evidence does not qualify the
+new implementation by itself.
+
 ## Ownership and shared contracts
 
 Extract a reusable runner-owned campaign plan and bounded reader from the

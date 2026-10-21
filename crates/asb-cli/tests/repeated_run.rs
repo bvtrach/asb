@@ -7,6 +7,9 @@ use std::path::PathBuf;
 use std::process::{Command, Output};
 use support::IsolatedEnvironment;
 
+#[path = "support/repeated_sweep.rs"]
+mod sweep_tests;
+
 struct Project(PathBuf);
 impl Project {
     fn new() -> Self {

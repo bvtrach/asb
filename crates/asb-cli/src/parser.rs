@@ -128,6 +128,9 @@ pub(crate) fn run(args: &[OsString], stdout: &mut dyn Write, stderr: &mut dyn Wr
             sweep::run_with_options(
                 &options.path,
                 sweep::Options {
+                    repeat: options.repeat,
+                    track: options.track,
+                    seed: options.seed,
                     json: options.json,
                     show_output: options.show_output,
                     mode,
@@ -351,6 +354,15 @@ struct RunArgs {
 struct SweepArgs {
     #[arg(value_name = "SWEEP")]
     path: String,
+    /// Sequential fresh batches per configuration, at its configured concurrency.
+    #[arg(long, value_parser = clap::value_parser!(u64).range(1..=65533))]
+    repeat: Option<u64>,
+    /// Replay one track ID, or min|max|median:tokens|duration|requests.
+    #[arg(long, requires = "replay")]
+    track: Option<crate::cassette::Selector>,
+    /// Shared reproducible seed for configuration-ordered bundled selections.
+    #[arg(long, requires = "replay")]
+    seed: Option<u64>,
     /// Import existing official grades for reporting only; never run an agent or evaluator.
     #[arg(long, conflicts_with_all = ["resume", "reconcile_completed", "record", "replay", "show_output", "respect_record_timings", "cassette_root", "max_active_attempts"])]
     import_grades: bool,

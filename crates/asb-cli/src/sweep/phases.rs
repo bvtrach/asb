@@ -11,24 +11,28 @@ enum PreparedMode {
     },
 }
 enum ActiveMode {
+    Campaigns,
     Fresh(Option<checkpoint::Inputs>),
     Resumed(checkpoint::Inputs),
 }
 impl ActiveMode {
     fn checkpoint(&self) -> Option<&checkpoint::Inputs> {
         match self {
+            Self::Campaigns => None,
             Self::Fresh(value) => value.as_ref(),
             Self::Resumed(value) => Some(value),
         }
     }
     fn into_checkpoint(self) -> Option<checkpoint::Inputs> {
         match self {
+            Self::Campaigns => None,
             Self::Fresh(value) => value,
             Self::Resumed(value) => Some(value),
         }
     }
 }
 pub(super) struct PreparedSweep<'a> {
+    campaigns: Option<campaigns::Prepared>,
     source: String,
     parent: PathBuf,
     stem: String,
@@ -60,6 +64,11 @@ impl<'a> PreparedSweep<'a> {
             .filter(|v| !v.is_empty())
             .unwrap_or("sweep");
         let mode = options.mode;
+        if options.resume
+            && (options.repeat.is_some() || options.track.is_some() || options.seed.is_some())
+        {
+            return Err(Error::Input("campaign continuation requires saved-slot validation; existing results were not changed".into()));
+        }
         let cassette_root = options.cassette_root;
         let mut plan = plan::build(parent, &sweep)?;
         plan.execution_mode = match mode {
@@ -78,6 +87,19 @@ impl<'a> PreparedSweep<'a> {
         plan.scheduling = Some(scheduling);
         let reservations = plan.resource_costs(sweep.resources)?;
         plan.resources = sweep.resources;
+        let results = parent.join(format!("{stem}-results"));
+        let backup = parent.join(format!("{stem}-history")).join(&plan.run_id);
+        let campaigns = if options.resume {
+            None
+        } else {
+            campaigns::prepare(
+                parent,
+                &results,
+                &backup.join(format!("{stem}-results")),
+                &mut plan,
+                options,
+            )?
+        };
         if options.resume {
             let results = parent.join(format!("{stem}-results"));
             if !std::fs::symlink_metadata(&results).is_ok_and(|metadata| metadata.is_dir()) {
@@ -86,6 +108,9 @@ impl<'a> PreparedSweep<'a> {
             let saved = plan::SweepPlan::load(&results, parent, &sweep)?.ok_or_else(|| {
                 Error::Input("cannot resume: the original sweep plan is missing".into())
             })?;
+            if saved.execution.is_some() {
+                return Err(Error::Input("campaign continuation requires saved-slot validation; existing results were not changed".into()));
+            }
             if saved.execution_mode != plan.execution_mode
                 || saved.respect_record_timings != plan.respect_record_timings
                 || saved.scheduling != plan.scheduling
@@ -160,6 +185,7 @@ impl<'a> PreparedSweep<'a> {
             PreparedMode::Fresh
         };
         Ok(Self {
+            campaigns,
             source: source.into(),
             parent: parent.into(),
             stem: stem.into(),
@@ -181,35 +207,42 @@ impl<'a> PreparedSweep<'a> {
         })
     }
     pub fn activate(self) -> Result<ActivatedSweep<'a>, Error> {
+        let mut campaigns = None;
         let (mode, reused, initial_warning) = match self.mode {
             PreparedMode::Resumed { checkpoint, reused } => {
                 (ActiveMode::Resumed(*checkpoint), reused, None)
             }
             PreparedMode::Fresh => {
                 plan::fresh_results(&self.parent, &self.stem, &self.plan)?;
-                #[cfg(all(test, unix))]
-                tests::before_initial_seal(&self.results);
-                match checkpoint::Inputs::begin(
-                    &self.parent,
-                    &self.results,
-                    &self.plan,
-                    self.options.mode,
-                    &self.replay_sources,
-                ) {
-                    Ok(checkpoint) => (
-                        ActiveMode::Fresh(Some(checkpoint)),
-                        resume::State::default(),
-                        None,
-                    ),
-                    Err(error) => (
-                        ActiveMode::Fresh(None),
-                        resume::State::default(),
-                        Some(error),
-                    ),
+                if let Some(prepared) = self.campaigns {
+                    campaigns = Some(prepared.publish(&self.results)?);
+                    (ActiveMode::Campaigns, resume::State::default(), None)
+                } else {
+                    #[cfg(all(test, unix))]
+                    tests::before_initial_seal(&self.results);
+                    match checkpoint::Inputs::begin(
+                        &self.parent,
+                        &self.results,
+                        &self.plan,
+                        self.options.mode,
+                        &self.replay_sources,
+                    ) {
+                        Ok(checkpoint) => (
+                            ActiveMode::Fresh(Some(checkpoint)),
+                            resume::State::default(),
+                            None,
+                        ),
+                        Err(error) => (
+                            ActiveMode::Fresh(None),
+                            resume::State::default(),
+                            Some(error),
+                        ),
+                    }
                 }
             }
         };
         Ok(ActivatedSweep {
+            campaigns,
             source: self.source,
             parent: self.parent,
             plan: self.plan,
@@ -234,6 +267,7 @@ impl<'a> PreparedSweep<'a> {
 #[path = "../../tests/unit/sweep_phases.rs"]
 mod tests;
 pub(super) struct ActivatedSweep<'a> {
+    campaigns: Option<campaigns::Pool>,
     source: String,
     parent: PathBuf,
     plan: plan::SweepPlan,
@@ -285,6 +319,7 @@ impl<'a> ActivatedSweep<'a> {
             schedule_error = Some(crate::io_error(error));
         }
         let execution = execution::Execution {
+            campaigns: self.campaigns.as_ref(),
             source: &self.source,
             parent: &self.parent,
             plan: &self.plan,
@@ -324,6 +359,9 @@ impl<'a> ActivatedSweep<'a> {
                         failure = output.error();
                         break;
                     }
+                    if execution.stop_requested(index) {
+                        break;
+                    }
                 }
                 failure
             } else {
@@ -334,7 +372,7 @@ impl<'a> ActivatedSweep<'a> {
                     self.plan.resources,
                     &self.reservations,
                     |index| Ok(execution.run(index)),
-                    |report| report.output_error.is_some(),
+                    |report| report.output_error.is_some() || report.stop_admission,
                     |event| {
                         match event {
                             scheduler::Event::Started(index) => {
@@ -376,11 +414,7 @@ impl<'a> ActivatedSweep<'a> {
                                     return Err(error);
                                 }
                                 if !output.failed()
-                                    && let Err(error) = spool::drain(
-                                        &execution.output_path(index),
-                                        self.weights[index],
-                                        output,
-                                    )
+                                    && let Err(error) = execution.drain_output(index, output)
                                 {
                                     output.stop(&error);
                                     return Err(error);

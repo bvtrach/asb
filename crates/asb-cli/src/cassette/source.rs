@@ -35,6 +35,16 @@ pub struct Source {
 }
 
 impl Source {
+    /// Presence is not usability: invalid present links/files must never select
+    /// another cassette implicitly. Validation follows on the selected source.
+    pub(crate) fn is_present(path: &Path) -> Result<bool, Error> {
+        match std::fs::symlink_metadata(path) {
+            Ok(_) => Ok(true),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(io_error(error)),
+        }
+    }
+
     /// Bounded format probe for CLI dispatch only, not archive validation. Missing
     /// bases return false so historical concurrent JSONL layouts keep their route.
     pub fn is_bundle(path: &Path) -> Result<bool, Error> {

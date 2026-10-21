@@ -392,6 +392,15 @@ fn write_html_report(stage: &Path, prepared: &PreparedReport) -> Result<(), Erro
         html.push_str(&format!("<p class=\"scheduling\">Sweep scheduling: up to {} distinct configurations; {} active attempt slots, including replicas. Concurrent tasks share host resources.</p>", scheduling.jobs, scheduling.max_active_attempts));
     }
     html.push_str("<header class=\"hero\"><p class=\"eyebrow\">ASB BENCHMARK REPORT</p><h1>Benchmark comparison</h1><p>Explore recorded benchmark results and measurements. Use the filters to focus the report without rerunning anything.</p></header>");
+    if let Some(intent) = prepared
+        .data
+        .request
+        .plan
+        .as_ref()
+        .and_then(|plan| plan.execution.as_ref())
+    {
+        html.push_str(&format!("<p>Each configuration selected {} sequential batches at its configured concurrency. Every planned execution remains a separate row. Shared replay seeds apply only to bundled inputs; legacy sampling stays unknown. Response replay does not measure current provider latency or live model quality.</p>", intent.repeat));
+    }
     let coverage = &prepared.evaluation;
     html.push_str("<p>Declared planning and controller caps are recorded separately in comparison.json, not plotted as measurements. Missing policy metadata remains unknown.</p>");
     html.push_str(&format!("<section class=\"explain\"><strong>Evaluation coverage</strong><p>Execution mode: {}.</p><p>{}/{} eligible selected attempts evaluated; {} have no completed evaluation. {} attempts are unscored. {}</p><p>Partial results are not a complete-population benchmark score. See population_coverage in comparison.json for dataset selection, unique tasks and complete one-attempt-per-task scores.</p></section>",
@@ -465,6 +474,10 @@ fn write_html_report(stage: &Path, prepared: &PreparedReport) -> Result<(), Erro
                 )
             },
         );
+        let execution_details = benchmark.execution.as_ref().map_or_else(String::new, |execution| {
+            let text = serde_json::to_string_pretty(execution).unwrap_or_else(|_| "{}".into());
+            format!("<details><summary>Execution / replay identity</summary><pre class=\"json-details\">{}</pre></details>", escape(&text))
+        });
         let artifacts = if benchmark.artifacts.is_empty() {
             String::new()
         } else {
@@ -523,7 +536,7 @@ fn write_html_report(stage: &Path, prepared: &PreparedReport) -> Result<(), Erro
             format_args!("{}{}<p>{}</p>", evaluation_details, if benchmark.reconciled { "<p>Reconciled retained local outcome: current artifact consistency checked; no agent rerun or historical attestation.</p>" } else { "" }, benchmark.execution_cohort.as_ref().map_or_else(
                 || "Dispatch context unknown (legacy or missing measurement).".into(),
                 |cohort| format!("Dispatch group {}: {} of {} selected replicas admitted; slots {}. Dispatch membership is not proof of simultaneous execution. Resumed measurements may belong to different cohorts.", dispatch_groups[cohort.id.as_str()], cohort.admitted_slots.len(), cohort.selected_replicas, cohort.admitted_slots.iter().map(usize::to_string).collect::<Vec<_>>().join(", ")))),
-            component_details,
+            format_args!("{execution_details}{component_details}"),
             host_details,
             metrics_details,
             artifacts,

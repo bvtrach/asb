@@ -15,6 +15,8 @@ pub(crate) const MAX_PLAN_BYTES: usize = 64 * 1024 * 1024;
 #[serde(deny_unknown_fields)]
 pub(crate) struct SweepPlan {
     schema_version: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution: Option<ExecutionIntent>,
     pub run_id: String,
     #[serde(default)]
     pub execution_mode: SavedExecutionMode,
@@ -29,9 +31,44 @@ pub(crate) struct SweepPlan {
 
 pub(crate) use crate::planning::ExecutionMode as SavedExecutionMode;
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ExecutionIntent {
+    pub repeat: u64,
+    /// Shared seed applies to bundled configurations only; legacy stays unknown.
+    pub seed: Option<u64>,
+    #[serde(default)]
+    pub user_seed: bool,
+    pub selector: Option<crate::cassette::Selector>,
+}
+
+impl ExecutionIntent {
+    pub(crate) fn matches_replay(&self, plan: &crate::runner::campaign::Plan) -> bool {
+        if plan.mode != SavedExecutionMode::Replay {
+            return true;
+        }
+        if let Some(selection) = &plan.replay_selection {
+            Some(selection.seed) == self.seed && selection.selector == self.selector
+        } else if self.user_seed {
+            false
+        } else {
+            match self.selector {
+                None => plan.replay_inputs.iter().all(|input| input.track.is_none()),
+                Some(crate::cassette::Selector::Id(id)) => plan
+                    .replay_inputs
+                    .iter()
+                    .all(|input| input.track == Some(id)),
+                _ => false,
+            }
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PlannedBenchmark {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub campaign: Option<crate::runner::campaign::Reference>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub policy: Option<crate::planning::ResolvedPlan>,
     pub reference: String,
@@ -98,6 +135,7 @@ fn build_with_catalog(
             .and_then(|catalog| catalog.requirements.get(&selection.task_id))
             .cloned();
         entries.push(PlannedBenchmark {
+            campaign: None,
             policy: Some(policy),
             reference: reference.clone(),
             configuration: config,
@@ -106,6 +144,7 @@ fn build_with_catalog(
     }
     Ok(SweepPlan {
         schema_version: 1,
+        execution: None,
         run_id: workloads::TaskIdentity::local("sweep", None).attempt_id,
         execution_mode: SavedExecutionMode::Live,
         respect_record_timings: false,
@@ -116,6 +155,44 @@ fn build_with_catalog(
 }
 
 impl SweepPlan {
+    pub(super) fn bind_execution(&mut self, intent: ExecutionIntent) -> Result<(), Error> {
+        self.execution = Some(intent);
+        self.schema_version = 2;
+        self.validate_campaign_references()
+    }
+
+    /// Read a historical source index against its OWN retained configurations,
+    /// not today's potentially different replay concurrency/collector choices.
+    pub(super) fn source_snapshot(directory: &Path, parent: &Path) -> Result<Option<Self>, Error> {
+        let path = directory.join("plan.json");
+        match std::fs::symlink_metadata(&path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(crate::io_error(error)),
+            Ok(_) => (),
+        }
+        let bytes = crate::runner::campaign::reading::bounded(&path, MAX_PLAN_BYTES as u64)?;
+        let snapshot: Self = serde_json::from_slice(&bytes)
+            .map_err(|_| Error::Input("invalid historical sweep source index".into()))?;
+        let manifest = SweepFile {
+            configs: snapshot
+                .entries
+                .iter()
+                .map(|entry| entry.reference.clone())
+                .collect(),
+            resources: snapshot.resources,
+        };
+        let configurations = snapshot
+            .entries
+            .into_iter()
+            .map(|entry| (parent.join(entry.reference), entry.configuration))
+            .collect::<BTreeMap<_, _>>();
+        Self::decode(&path, &bytes, parent, &manifest, |path| {
+            configurations.get(path).cloned().ok_or_else(|| {
+                Error::Input("historical sweep source configuration is missing".into())
+            })
+        })
+        .map(Some)
+    }
     pub(crate) fn resource_costs(
         &self,
         capacity: Option<crate::planning::Resources>,
@@ -220,7 +297,7 @@ impl SweepPlan {
         let plan: Self = serde_json::from_slice(bytes).map_err(|error| {
             Error::Input(format!("invalid sweep plan {}: {error}", path.display()))
         })?;
-        if plan.schema_version != 1
+        if !matches!(plan.schema_version, 1 | 2)
             || (plan.respect_record_timings && plan.execution_mode != SavedExecutionMode::Replay)
             || plan.run_id.is_empty()
             || plan.run_id.len() > 128
@@ -235,6 +312,7 @@ impl SweepPlan {
                 "sweep plan does not match the selected manifest".into(),
             ));
         }
+        plan.validate_campaign_references()?;
         for (entry, reference) in plan.entries.iter().zip(&manifest.configs) {
             let path = parent.join(reference);
             let config = configuration(&path)?;
@@ -275,6 +353,71 @@ impl SweepPlan {
             )?;
         }
         Ok(plan)
+    }
+
+    /// Validate the whole index before any referenced plan or outcome is read.
+    fn validate_campaign_references(&self) -> Result<(), Error> {
+        let invalid =
+            || Error::Input("invalid sweep campaign execution intent or references".into());
+        let Some(intent) = &self.execution else {
+            return if self.schema_version == 1
+                && self.entries.iter().all(|entry| entry.campaign.is_none())
+            {
+                Ok(())
+            } else {
+                Err(invalid())
+            };
+        };
+        if self.schema_version != 2
+            || intent.repeat == 0
+            || (intent.user_seed && intent.seed.is_none())
+            || self.execution_mode == SavedExecutionMode::Unknown
+            || (self.execution_mode != SavedExecutionMode::Replay
+                && (intent.seed.is_some() || intent.selector.is_some()))
+        {
+            return Err(invalid());
+        }
+        let mut ids = std::collections::BTreeSet::new();
+        let mut slots = 0u64;
+        let mut bytes = 0u64;
+        for (index, entry) in self.entries.iter().enumerate() {
+            let reference = entry.campaign.as_ref().ok_or_else(invalid)?;
+            let name = reference
+                .root
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or_else(invalid)?;
+            let expected = PathBuf::from(super::execution::result_name(
+                index,
+                Path::new(&entry.reference),
+            ))
+            .join("campaigns")
+            .join(name);
+            if reference.root.as_os_str() != expected.as_os_str()
+                || name.is_empty()
+                || name.len() > 128
+                || !name
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || b"-_".contains(&byte))
+                || !ids.insert(name.to_owned())
+                || reference.bytes == 0
+                || reference.bytes > 16 * 1024 * 1024
+                || !crate::cassette::valid_digest(&reference.sha256)
+            {
+                return Err(invalid());
+            }
+            slots = intent
+                .repeat
+                .checked_mul(entry.configuration.concurrency as u64)
+                .and_then(|count| slots.checked_add(count))
+                .filter(|count| *count <= 65_533)
+                .ok_or_else(invalid)?;
+            bytes = bytes
+                .checked_add(reference.bytes)
+                .filter(|count| *count <= MAX_PLAN_BYTES as u64)
+                .ok_or_else(invalid)?;
+        }
+        Ok(())
     }
 }
 
@@ -338,7 +481,7 @@ pub(crate) fn fresh_results(parent: &Path, stem: &str, plan: &SweepPlan) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
+    use serde_json::{Value, json};
 
     #[test]
     #[ignore = "requires explicit installed original catalogs; no agent, provider or Docker execution"]
@@ -507,6 +650,89 @@ mod tests {
                 .to_string()
                 .contains("no longer matches")
         );
+    }
+
+    #[test]
+    fn campaign_index_rejects_every_invalid_reference_before_configuration_or_artifact_reads() {
+        let project = Project::new();
+        let manifest = project.manifest();
+        let mut plan = project.plan(&manifest);
+        for (index, entry) in plan.entries.iter_mut().enumerate() {
+            entry.campaign = Some(crate::runner::campaign::Reference {
+                root: PathBuf::from(super::super::execution::result_name(
+                    index,
+                    Path::new(&entry.reference),
+                ))
+                .join("campaigns")
+                .join(format!("campaign-{index}")),
+                bytes: 123,
+                sha256: "a".repeat(64),
+            });
+        }
+        plan.bind_execution(ExecutionIntent {
+            repeat: 3,
+            seed: None,
+            user_seed: false,
+            selector: None,
+        })
+        .unwrap();
+        let original = serde_json::to_value(&plan).unwrap();
+        let path = project.0.join("plan.json");
+        let bytes = serde_json::to_vec(&original).unwrap();
+        assert!(
+            SweepPlan::decode(&path, &bytes, &project.0, &manifest, |path| {
+                toml::from_str(&read_config(path)?)
+                    .map_err(|failure| Error::Input(failure.to_string()))
+            })
+            .is_ok()
+        );
+        for mutation in [
+            "schema",
+            "missing-intent",
+            "missing-reference",
+            "parent",
+            "prefix",
+            "duplicate-id",
+            "zero-bytes",
+            "large-bytes",
+            "digest",
+            "zero-repeat",
+            "overflow",
+            "seed",
+            "selector",
+            "seed-origin",
+        ] {
+            let mut value = original.clone();
+            match mutation {
+                "schema" => value["schema_version"] = json!(1),
+                "missing-intent" => value["execution"] = Value::Null,
+                "missing-reference" => value["entries"][1]["campaign"] = Value::Null,
+                "parent" => {
+                    value["entries"][0]["campaign"]["root"] =
+                        json!("000-one/campaigns/../campaign-0")
+                }
+                "prefix" => {
+                    value["entries"][0]["campaign"]["root"] = json!("001-two/campaigns/campaign-0")
+                }
+                "duplicate-id" => {
+                    value["entries"][1]["campaign"]["root"] = json!("001-two/campaigns/campaign-0")
+                }
+                "zero-bytes" => value["entries"][0]["campaign"]["bytes"] = json!(0),
+                "large-bytes" => {
+                    value["entries"][0]["campaign"]["bytes"] = json!(16 * 1024 * 1024 + 1)
+                }
+                "digest" => value["entries"][0]["campaign"]["sha256"] = json!("Z".repeat(64)),
+                "zero-repeat" => value["execution"]["repeat"] = json!(0),
+                "overflow" => value["execution"]["repeat"] = json!(u64::MAX),
+                "seed" => value["execution"]["seed"] = json!(1),
+                "seed-origin" => value["execution"]["user_seed"] = json!(true),
+                _ => value["execution"]["selector"] = json!({"id":1}),
+            }
+            let bytes = serde_json::to_vec(&value).unwrap();
+            assert!(SweepPlan::decode(&path, &bytes, &project.0, &manifest, |_| {
+                panic!("{mutation} reached configuration/artifact lookup before global index rejection")
+            }).is_err(), "{mutation}");
+        }
     }
 
     #[test]
