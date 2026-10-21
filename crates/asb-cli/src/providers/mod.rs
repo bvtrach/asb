@@ -47,7 +47,8 @@ pub(crate) fn finish_session(
         .map_or(Ok(()), |mut session| session.finish())
 }
 
-/// Settle an early operation without replacing its primary typed failure.
+/// Settle an early operation, retaining its primary Input/Io/Run variant.
+/// Usage's static message becomes Run when a dynamic cleanup suffix is needed.
 pub(crate) fn finish_result<T>(
     result: Result<T, crate::Error>,
     session: &mut Option<Box<dyn ProviderSession>>,

@@ -495,9 +495,16 @@ output without a newline). Only the key/readiness result enters a single-slot
 channel; subsequent output is continuously drained and discarded. No startup
 output or key is included in diagnostics. Non-Unix local startup fails before
 spawning and can still use an explicitly configured external endpoint.
-Failure, unwinding and session destruction kill only the directly owned
-children and poll against one five-second cleanup deadline shared by both
-children and readers. Unconfirmed children transfer to the existing reaper;
+Admission rechecks every owned child after compatibility-hop readiness, so a
+bridge that exited after its initial key cannot admit a ready local session.
+This observes the boundary, not future process liveness.
+Failure, unwinding and session destruction share one five-second cleanup deadline
+across both children and readers. Closing the embedded hop's stdin lifetime
+pipe gives it at most two seconds within that budget to close its listener,
+cancel outbound work and observe its own curl subprocesses' close events.
+The hop uses the network client's existing bounded TERM/KILL escalation for
+those declared children. Failed cooperative acknowledgement is diagnostic;
+remaining direct children receive KILL. Unconfirmed children transfer to the existing reaper;
 cooperatively stopped readers retain their own transports until exit. Only
 already-finished threads are joined; after the shared deadline an unfinished
 handle is released and the nonblocking worker exits when scheduled to observe

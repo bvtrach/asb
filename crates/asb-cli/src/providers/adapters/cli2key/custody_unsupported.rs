@@ -17,4 +17,7 @@ impl Local {
     pub(super) fn finish(self) -> Result<(), String> {
         Ok(())
     }
+    pub(super) fn confirm_ready(&mut self) -> Result<(), String> {
+        Err("local cli2key bridge requires Unix".into())
+    }
 }

@@ -3,6 +3,7 @@
 use super::*;
 use std::cell::{Cell, RefCell};
 use std::fs::File;
+use std::io::Write;
 use std::os::fd::{AsRawFd, FromRawFd};
 
 thread_local! {
@@ -190,6 +191,194 @@ fn ready_marker_cannot_admit_an_already_exited_child() {
         readers_finished();
         IDENTITIES.with_borrow_mut(Vec::clear);
     }
+}
+
+#[test]
+fn final_admission_rechecks_bridge_after_independent_proxy_readiness() {
+    let scope = crate::process_cleanup::test_support::Scope::new();
+    let mut sentinel = command("import time;time.sleep(30)")
+        .stdout(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut local = Local::new().unwrap();
+    let mut bridge = command(
+        "import sys;print('Codex Bridge API key: fixture-secret',flush=True);sys.stdin.buffer.read(1)",
+    );
+    bridge.stdin(Stdio::piped());
+    local.spawn(&mut bridge, true).unwrap();
+    let first_pid = local.children[0].id();
+    // SAFETY: pin the owned bridge before permitting its controlled exit.
+    let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, first_pid, 0) } as i32;
+    assert!(fd >= 0);
+    let pinned = unsafe { File::from_raw_fd(fd) };
+    local.children[0]
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"x")
+        .unwrap();
+    let mut exited = libc::pollfd {
+        fd: pinned.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    // SAFETY: deterministically observe exit without reaping or PID guesses.
+    assert_eq!(unsafe { libc::poll(&mut exited, 1, 2000) }, 1);
+    local
+        .spawn(
+            &mut command("import time;print('ASB cli2key proxy ready',flush=True);time.sleep(30)"),
+            false,
+        )
+        .unwrap();
+    let second_pid = local.children[1].id();
+    let error = local.confirm_ready().unwrap_err();
+    assert!(
+        error.starts_with("cli2key bridge exited before session admission"),
+        "{error}"
+    );
+    assert!(!error.contains("fixture-secret"));
+    assert_eq!(local.failure(error.clone()), error);
+    scope.wait_finished();
+    readers_finished();
+    for pid in [first_pid, second_pid] {
+        assert_eq!(
+            unsafe { libc::waitpid(pid as i32, std::ptr::null_mut(), libc::WNOHANG) },
+            -1
+        );
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::ECHILD)
+        );
+    }
+    assert!(sentinel.try_wait().unwrap().is_none());
+    sentinel.kill().unwrap();
+    sentinel.wait().unwrap();
+}
+
+#[test]
+fn ignored_lifetime_eof_uses_grace_inside_the_shared_cleanup_budget() {
+    let mut local = Local::new().unwrap();
+    let mut proxy =
+        command("import time;print('ASB cli2key proxy ready',flush=True);time.sleep(30)");
+    proxy.stdin(Stdio::piped());
+    local.spawn(&mut proxy, false).unwrap();
+    let pid = local.children[0].id();
+    let started = Instant::now();
+    let error = local.finish().unwrap_err();
+    assert!(
+        error.contains("cooperative shutdown before its grace deadline"),
+        "{error}"
+    );
+    assert!(started.elapsed() >= Duration::from_millis(1800));
+    assert!(started.elapsed() < Duration::from_millis(4500));
+    assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists());
+    readers_finished();
+}
+
+#[test]
+fn embedded_proxy_finish_cancels_and_reaps_its_owned_curl_before_exit() {
+    use std::net::{TcpListener, TcpStream};
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/cli2key-custody-fixtures")
+        .join(crate::workloads::TaskIdentity::local("proxy", None).attempt_id);
+    std::fs::create_dir_all(&root).unwrap();
+    let root = root.canonicalize().unwrap();
+    std::fs::write(root.join("proxy.mjs"), super::super::BUILTIN_COMPAT_PROXY).unwrap();
+    std::fs::write(root.join("network-fetch.mjs"), super::super::NETWORK_FETCH).unwrap();
+    std::fs::write(root.join("observe.mjs"), "import {writeFileSync} from 'node:fs';process.on('exit',code=>writeFileSync('exit-status',String(code)));\n").unwrap();
+    let node = crate::tools::host_executable(std::path::Path::new("node")).unwrap();
+    let curl = crate::tools::host_executable(std::path::Path::new("curl")).unwrap();
+    let held = TcpListener::bind("127.0.0.1:0").unwrap();
+    held.set_nonblocking(true).unwrap();
+    let port = super::super::free_port().unwrap();
+    let mut proxy = Command::new(node);
+    proxy
+        .env_clear()
+        .current_dir(&root)
+        .env("PATH", curl.parent().unwrap())
+        .env(
+            "http_proxy",
+            format!("http://{}", held.local_addr().unwrap()),
+        )
+        .env("NO_PROXY", "")
+        .args([
+            "--import",
+            "./observe.mjs",
+            "proxy.mjs",
+            "--port",
+            &port.to_string(),
+            "--upstream",
+            "http://127.0.0.1:1/v1",
+        ])
+        .stdin(Stdio::piped())
+        .stderr(Stdio::null());
+    let mut local = Local::new().unwrap();
+    local.spawn(&mut proxy, false).unwrap();
+    let proxy_pid = local.children[0].id();
+    let mut request = TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port)).unwrap();
+    request
+        .set_write_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    request.write_all(b"GET /v1/held HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer fixture-only-key\r\nConnection: close\r\n\r\n").unwrap();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let mut upstream = loop {
+        match held.accept() {
+            Ok((stream, _)) => break stream,
+            Err(error)
+                if error.kind() == std::io::ErrorKind::WouldBlock && Instant::now() < deadline =>
+            {
+                std::thread::sleep(POLL)
+            }
+            Err(error) => panic!("owned curl did not reach loopback fixture: {error}"),
+        }
+    };
+    upstream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    let mut header = Vec::new();
+    let mut chunk = [0; 1024];
+    while !header.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
+        let count = upstream.read(&mut chunk).unwrap();
+        assert!(count > 0 && header.len() + count < 8192);
+        header.extend_from_slice(&chunk[..count]);
+    }
+    let children =
+        std::fs::read_to_string(format!("/proc/{proxy_pid}/task/{proxy_pid}/children")).unwrap();
+    let pids = children
+        .split_whitespace()
+        .map(|pid| pid.parse::<u32>().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(pids.len(), 1, "expected the hop's one directly owned curl");
+    let curl_pid = pids[0];
+    // SAFETY: pin only the observed direct child of the fixture-owned proxy.
+    let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, curl_pid, 0) } as i32;
+    assert!(fd >= 0);
+    let pinned = unsafe { File::from_raw_fd(fd) };
+    local.finish().unwrap();
+    readers_finished();
+    assert_eq!(
+        std::fs::read_to_string(root.join("exit-status")).unwrap(),
+        "0",
+        "the proxy must confirm cooperative shutdown, not be killed"
+    );
+    assert_eq!(
+        upstream.read(&mut chunk).unwrap(),
+        0,
+        "owned outbound transport remained open"
+    );
+    let mut exited = libc::pollfd {
+        fd: pinned.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    assert_eq!(unsafe { libc::poll(&mut exited, 1, 0) }, 1);
+    for pid in [proxy_pid, curl_pid] {
+        assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists());
+    }
+    drop(request);
+    drop(upstream);
+    drop(held);
+    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[test]

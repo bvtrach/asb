@@ -148,6 +148,26 @@ impl Local {
         }
     }
 
+    /// Observe every required child at the final session admission boundary.
+    /// This does not promise that a process cannot exit immediately afterward.
+    pub(super) fn confirm_ready(&mut self) -> Result<(), String> {
+        for (index, child) in self.children.iter_mut().enumerate() {
+            let label = if index == 0 {
+                "bridge"
+            } else {
+                "compatibility proxy"
+            };
+            if let Some(status) = child.try_wait().map_err(|error| {
+                format!("cannot inspect cli2key {label} before session admission: {error}")
+            })? {
+                return Err(format!(
+                    "cli2key {label} exited before session admission with {status}"
+                ));
+            }
+        }
+        Ok(())
+    }
+
     pub(super) fn finish(mut self) -> Result<(), String> {
         self.cleanup()
     }
@@ -157,23 +177,34 @@ impl Local {
         #[cfg(all(test, target_os = "linux"))]
         let timeout = tests::cleanup_timeout().unwrap_or(timeout);
         let deadline = Instant::now() + timeout;
-        for child in &mut self.children {
-            let _ = child.kill();
-        }
         let mut reasons = Vec::new();
         for mut child in self.children.drain(..).rev() {
-            loop {
-                match poll(&mut child) {
-                    Ok(Some(_)) => break,
-                    Ok(None) if Instant::now() < deadline => std::thread::sleep(POLL),
-                    result => {
-                        reasons.push(match result {
-                            Err(error) => format!("cannot confirm child exit: {error}"),
-                            _ => "child did not exit before the shared cleanup deadline".into(),
-                        });
+            // The embedded compatibility hop owns a stdin lifetime pipe.
+            // EOF lets it close its own outbound transports before escalation.
+            if child.stdin.take().is_some() {
+                let grace = (Instant::now() + Duration::from_secs(2)).min(deadline);
+                match wait_until(&mut child, grace) {
+                    Ok(Some(status)) => {
+                        if !status.success() { reasons.push("compatibility proxy exited without confirming cooperative cleanup".into()); }
+                        continue;
+                    },
+                    Ok(None) => reasons.push("compatibility proxy did not confirm cooperative shutdown before its grace deadline".into()),
+                    Err(error) => {
+                        reasons.push(format!("cannot confirm cooperative child exit: {error}"));
                         self.reaper.adopt(child);
-                        break;
+                        continue;
                     }
+                }
+            }
+            let _ = child.kill();
+            match wait_until(&mut child, deadline) {
+                Ok(Some(_)) => {}
+                result => {
+                    reasons.push(match result {
+                        Err(error) => format!("cannot confirm child exit: {error}"),
+                        _ => "child did not exit before the shared cleanup deadline".into(),
+                    });
+                    self.reaper.adopt(child);
                 }
             }
         }
@@ -199,7 +230,7 @@ impl Local {
         self.readers.clear();
         if !reasons.is_empty() {
             Err(format!(
-                "cli2key cleanup was not confirmed: {}; an owned reaper retains unconfirmed children and stopped readers retain their transports",
+                "cli2key cleanup was not confirmed: {}; an owned reaper retains any unconfirmed direct children and stopped readers retain their transports",
                 reasons.join("; ")
             ))
         } else {
@@ -295,6 +326,19 @@ fn poll(child: &mut Child) -> std::io::Result<Option<std::process::ExitStatus>> 
         return result;
     }
     child.try_wait()
+}
+
+fn wait_until(
+    child: &mut Child,
+    deadline: Instant,
+) -> std::io::Result<Option<std::process::ExitStatus>> {
+    loop {
+        match poll(child)? {
+            Some(status) => return Ok(Some(status)),
+            None if Instant::now() < deadline => std::thread::sleep(POLL),
+            None => return Ok(None),
+        }
+    }
 }
 
 impl Drop for Local {

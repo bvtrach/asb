@@ -7,7 +7,7 @@
 
 import http from "node:http";
 import { Readable } from "node:stream";
-import { cancelNetworkRequests, networkFetch } from "./network-fetch.mjs";
+import { cancelNetworkRequests, networkFetch, quiesceNetworkRequests } from "./network-fetch.mjs";
 
 function usage(message) {
   if (message) console.error(`asb cli2key proxy: ${message}`);
@@ -86,6 +86,26 @@ server.on("error", (error) => {
 server.listen(port, "127.0.0.1", () => {
   console.log("ASB cli2key proxy ready");
 });
-const shutdown = () => { cancelNetworkRequests(); server.close(() => process.exit(0)); };
+let closing = false;
+const shutdown = async () => {
+  if (closing) return;
+  closing = true;
+  const closed = new Promise((resolve) => server.close(resolve));
+  cancelNetworkRequests();
+  try {
+    // Observe owned subprocess close before exiting; a resistant curl receives
+    // the existing bounded TERM/KILL escalation in the network client.
+    await quiesceNetworkRequests();
+    server.closeAllConnections();
+    await closed;
+    process.exit(0);
+  } catch {
+    server.closeAllConnections();
+    process.exit(1);
+  }
+};
 process.once("SIGINT", shutdown);
 process.once("SIGTERM", shutdown);
+process.stdin.once("end", shutdown);
+process.stdin.once("error", shutdown);
+process.stdin.resume();

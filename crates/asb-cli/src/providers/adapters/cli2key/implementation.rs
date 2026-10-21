@@ -175,9 +175,10 @@ impl Bridge {
             command
                 .arg(&proxy_script)
                 .args(["--port", &proxy_port.to_string(), "--upstream", &upstream])
-                .stdin(Stdio::null())
+                .stdin(Stdio::piped())
                 .stderr(Stdio::null());
             owner.spawn(&mut command, false).map_err(Error::Run)?;
+            owner.confirm_ready().map_err(Error::Run)?;
             Ok((api_key, format!("http://127.0.0.1:{proxy_port}/v1")))
         })();
         match result {

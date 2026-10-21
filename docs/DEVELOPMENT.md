@@ -159,6 +159,14 @@ Loopback catalog fixtures cover successful parsing, invalid JSON and HTTP failur
 combined with finish failure. Both use only fixture credentials. Output-worker
 exit receipts confirm cooperative exit even after the caller releases an
 unfinished thread handle at its deadline; no unconditional join is used.
+Final admission also rechecks both children after proxy readiness. A pinned
+two-child fixture makes the bridge exit after its key and before the proxy's
+marker, then requires rejection, complete direct-child reaping and sentinel
+survival. An actual embedded Node compatibility hop routes through a held
+loopback HTTP fixture using its real owned curl child. Explicit finish must
+close the outbound connection, reap curl and exit cooperatively with status
+zero. An ignored-EOF fixture verifies escalation after the two-second grace
+inside the same five-second caller budget, with an uncertainty diagnostic.
 The agent-process sampler regression launches a bounded local Node fixture,
 changes its process title and checks two seconds of continued sampling, an
 unrelated Node process and the original process's exit. It uses no provider,

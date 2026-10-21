@@ -161,6 +161,15 @@ fixtures and loopback catalog fixtures verify success, independent true/false
 grades, client/preparation/fetch/parse failures and finish uncertainty without
 duplicate cleanup or retry. Worker receipts distinguish cooperative reader exit
 from releasing an unfinished handle after the caller's shared deadline.
+Independent review rejected the initial candidate's last-child-only readiness
+observation: the required bridge could exit while the compatibility hop was
+starting. Final admission now checks every owned child, with a deterministic
+two-child/pinned-identity regression. Self-review also retained the embedded
+hop's cooperative outbound cleanup: stdin lifetime EOF starts shutdown, which
+observes declared curl close events before success. Its at-most-two-second
+grace consumes the existing shared five-second budget before direct-child
+escalation. Real embedded-hop/held-loopback/curl and ignored-EOF fixtures verify
+both paths; forced or unsuccessful cooperative exit reports uncertainty.
 
 ## 6. Shared implementation and lifecycle policies
 
