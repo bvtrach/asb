@@ -328,6 +328,7 @@ pub fn tool_with_progress(
         dir,
         dry_run,
     } = options;
+    crate::selection_names::validate(&id, "tool").map_err(Error::Input)?;
     if !valid_name(&id) {
         return Err(Error::Input(format!("invalid tool name `{id}`")));
     }
@@ -595,6 +596,7 @@ pub fn workload_with_progress(
     } = options;
     let (source, default_name, project_root, project_config) = workload_source(&requested)?;
     let name = requested_name.unwrap_or(default_name);
+    crate::selection_names::validate(&name, "workload").map_err(Error::Input)?;
     if !valid_name(&name) {
         return Err(Error::Input(
             "workload name must contain only letters, numbers, '.', '_' or '-'".into(),
@@ -814,6 +816,9 @@ pub fn workload_list(
         })
         .collect::<Vec<_>>();
     names.sort();
+    for name in &names {
+        crate::selection_names::validate(name, "workload").map_err(Error::Input)?;
+    }
     let mut trial_sets = fs::read_dir(&directory)
         .map_err(|error| Error::Io(format!("cannot read {}: {error}", directory.display())))?
         .filter_map(Result::ok)
@@ -823,6 +828,9 @@ pub fn workload_list(
             name.strip_suffix(".workload.toml").map(str::to_owned)
         })
         .collect::<Vec<_>>();
+    for name in &trial_sets {
+        crate::selection_names::validate(name, "trial set").map_err(Error::Input)?;
+    }
     trial_sets.sort();
     writeln!(output, "Available workloads in {}:", directory.display()).map_err(super::io_error)?;
     if names.is_empty() {

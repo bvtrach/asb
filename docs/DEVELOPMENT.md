@@ -46,6 +46,13 @@ prevent the fast-forward, and no stash is automatically discarded.
 
 These checks are offline: replay tests start the embedded tape proxy and test
 clients on loopback, but CI never starts a real agent, bridge, or live provider.
+`cargo test --locked --offline --test compare_setup` checks repeated CLI setup
+selections, scoped models/trials, dependency expansion, non-overwriting sweep
+publication, standalone measured/unmeasured reports and an injected browser
+opener. Browser tests do not launch a real GUI or contact a provider.
+Reserved-`all` tests cover complete registry expansion, enabled/original trial
+populations, catalog-name collisions and provider-scoped model discovery using
+only a bounded loopback HTTP fixture with no real provider credentials.
 The cli2key concurrency regression uses two mock bridge listeners and mock
 clients, with fixture-only credentials. Both authenticated local requests must
 overlap and reach different owned servers; both servers must be reaped afterward.

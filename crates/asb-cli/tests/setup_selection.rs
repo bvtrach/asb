@@ -195,7 +195,6 @@ fn enabled_trial_sets_round_trip_and_invalid_selections_preserve_existing_config
         ],
         vec!["--trial", "one", "--trial-set", "../outside.toml"],
         vec!["--trial"],
-        vec!["--trial-set", "selected.workload.toml"],
     ] {
         assert!(!project.setup("agentbench", &arguments).status.success());
         assert_eq!(

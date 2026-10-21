@@ -105,7 +105,14 @@ pub(crate) fn run(args: &[OsString], stdout: &mut dyn Write, stderr: &mut dyn Wr
                 stdout,
             )
         }
-        Some(CommandLine::Compare(options)) => super::compare::run(&options.path, stdout),
+        Some(CommandLine::Compare(options)) => super::compare::generate(&options.path, stdout)
+            .and_then(|report| {
+                if options.report {
+                    super::compare::open_report(&report)
+                } else {
+                    Ok(())
+                }
+            }),
         Some(CommandLine::Provider(options)) => match options.command {
             ProviderCommand::Models(args) => models::list(args.into(), stdout),
         },
@@ -215,27 +222,38 @@ enum SetupMode {
 }
 
 #[derive(Debug, Args)]
+#[command(
+    after_help = "Selection options accept the reserved keyword 'all'. Models/trials also accept PROVIDER=all or WORKLOAD=all. --model all queries the selected providers; other selectors use local catalogs. Paths and concurrency do not accept 'all'."
+)]
 struct SetupArgs {
     #[arg(value_enum)]
     mode: Option<SetupMode>,
+    /// Agent ID; repeat for a sweep.
     #[arg(long)]
-    agent: Option<String>,
+    agent: Vec<String>,
+    /// Workload ID; repeat for a sweep.
     #[arg(long)]
-    workload: Option<String>,
-    /// Installed workload instance ID, or enabled trial from --trial-set.
+    workload: Vec<String>,
+    /// Repeatable instance ID; optionally WORKLOAD=INSTANCE for scoped trials.
     #[arg(long, value_name = "INSTANCE")]
-    trial: Option<String>,
-    /// Project-local workload trial selection TOML.
-    #[arg(long, value_name = "FILE", requires = "trial")]
-    trial_set: Option<String>,
+    trial: Vec<String>,
+    /// Repeatable trial-set TOML; includes all enabled trials unless --trial is given.
+    #[arg(long, value_name = "FILE")]
+    trial_set: Vec<String>,
+    /// Provider ID; repeat for a sweep.
     #[arg(long)]
-    provider: Option<String>,
+    provider: Vec<String>,
+    /// Repeat to select models; use PROVIDER=MODEL to scope a model to one provider.
     #[arg(long)]
-    model: Option<String>,
+    model: Vec<String>,
+    /// Repeat to select collectors (alias: --collector). Dependencies are included.
+    #[arg(long, alias = "collector")]
+    measure: Vec<String>,
     #[arg(long, value_name = "N")]
     concurrency: Option<usize>,
     #[arg(long)]
     workspace: Option<String>,
+    /// Benchmark TOML for one selection; sweep TOML for repeated selections.
     #[arg(long)]
     output: Option<String>,
 }
@@ -249,6 +267,7 @@ impl From<SetupArgs> for config::SetupOptions {
             trial_set: value.trial_set,
             provider: value.provider,
             model: value.model,
+            measure: value.measure,
             concurrency: value.concurrency,
             workspace: value.workspace,
             output: value.output,
@@ -321,8 +340,11 @@ struct SweepArgs {
 
 #[derive(Debug, Args)]
 struct CompareArgs {
-    #[arg(value_name = "SWEEP")]
+    #[arg(value_name = "BENCHMARK_OR_SWEEP")]
     path: String,
+    /// Open the generated HTML report in the default web browser.
+    #[arg(long)]
+    report: bool,
 }
 #[derive(Debug, Args)]
 struct ProviderArgs {

@@ -507,21 +507,31 @@ fn add_failure(failures: &mut Vec<(String, Vec<String>)>, config: String, messag
 /// Shared bounded format for setup, execution and offline comparison. A full
 /// dataset/agent matrix must not silently hit a prompt-sized file limit.
 pub(crate) fn read_manifest(path: &Path) -> Result<SweepFile, Error> {
-    let file = std::fs::File::open(path)
-        .map_err(|error| Error::Input(format!("cannot read sweep {}: {error}", path.display())))?;
-    let mut text = String::new();
-    file.take(MAX_SWEEP_BYTES + 1)
-        .read_to_string(&mut text)
-        .map_err(|error| Error::Input(format!("cannot read sweep {}: {error}", path.display())))?;
-    if text.len() as u64 > MAX_SWEEP_BYTES {
-        return Err(Error::Input(format!(
-            "sweep {} exceeds 16 MiB",
-            path.display()
-        )));
-    }
+    let text = read_manifest_text(path)?;
     let label = path.display().to_string();
     let value: toml::Value = toml::from_str(&text)
         .map_err(|error| Error::Input(format!("cannot parse sweep {label}: {error}")))?;
+    parse_manifest(path, value)
+}
+
+pub(crate) fn read_manifest_text(path: &Path) -> Result<String, Error> {
+    let file = std::fs::File::open(path)
+        .map_err(|error| Error::Input(format!("cannot read TOML {}: {error}", path.display())))?;
+    let mut text = String::new();
+    file.take(MAX_SWEEP_BYTES + 1)
+        .read_to_string(&mut text)
+        .map_err(|error| Error::Input(format!("cannot read TOML {}: {error}", path.display())))?;
+    if text.len() as u64 > MAX_SWEEP_BYTES {
+        return Err(Error::Input(format!(
+            "TOML {} exceeds 16 MiB",
+            path.display()
+        )));
+    }
+    Ok(text)
+}
+
+fn parse_manifest(path: &Path, value: toml::Value) -> Result<SweepFile, Error> {
+    let label = path.display().to_string();
     if !value
         .as_table()
         .is_some_and(|table| table.contains_key("configs"))

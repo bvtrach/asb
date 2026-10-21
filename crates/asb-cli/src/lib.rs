@@ -18,6 +18,7 @@ mod proxy;
 mod python_runtime;
 mod runner;
 mod runtime_inputs;
+mod selection_names;
 mod suggestions;
 mod sweep;
 mod tape;

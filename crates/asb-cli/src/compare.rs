@@ -1,4 +1,4 @@
-//! Offline comparison and SVG chart generation for completed sweeps.
+//! Offline HTML/SVG reports for benchmark configurations and sweeps.
 
 use crate::{Error, read_config};
 use serde::Serialize;
@@ -47,17 +47,43 @@ struct TimeSeries {
     timestamps_ms: Option<Vec<f64>>,
 }
 
-/// Compare all completed benchmark measurements referenced by a sweep.
+/// Report a benchmark's recorded results or compare the members of a sweep.
 pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
+    generate(path, output).map(|_| ())
+}
+
+/// Generate an offline report for either a benchmark or a sweep manifest.
+pub(crate) fn generate(path: &str, output: &mut dyn Write) -> Result<PathBuf, Error> {
     let sweep_path = Path::new(path);
-    let sweep = crate::sweep::read_manifest(sweep_path)?;
+    let input: toml::Value = toml::from_str(&crate::sweep::read_manifest_text(sweep_path)?)
+        .map_err(|error| Error::Input(format!("cannot parse {path}: {error}")))?;
+    let single = !input
+        .as_table()
+        .is_some_and(|table| table.contains_key("configs"));
+    let sweep = if single {
+        crate::sweep::SweepFile {
+            configs: vec![
+                sweep_path
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned(),
+            ],
+        }
+    } else {
+        crate::sweep::read_manifest(sweep_path)?
+    };
     let parent = sweep_path.parent().unwrap_or_else(|| Path::new("."));
     let stem = sweep_path
         .file_stem()
         .and_then(|value| value.to_str())
         .unwrap_or("sweep");
     let sweep_results = parent.join(format!("{stem}-results"));
-    let plan = crate::sweep::plan::SweepPlan::load(&sweep_results, parent, &sweep)?;
+    let plan = if single {
+        None
+    } else {
+        crate::sweep::plan::SweepPlan::load(&sweep_results, parent, &sweep)?
+    };
     let comparison_dir = parent.join("results").join(format!("{stem}-comparison"));
     fs::create_dir_all(&comparison_dir).map_err(|error| {
         Error::Run(format!(
@@ -70,12 +96,35 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
     let mut actual_attempts = BTreeSet::new();
     for (index, reference) in sweep.configs.iter().enumerate() {
         let config = checked_reference(parent, reference, path)?;
-        let result_dir = sweep_results.join(format!("{index:03}-{}", safe_name(&config)));
+        let mut result_dir = sweep_results.join(format!("{index:03}-{}", safe_name(&config)));
         let (agent, workload, provider, model, concurrency) = benchmark_identity(&config)?;
+        let standalone = if single {
+            Some(
+                toml::from_str::<crate::benchmark::BenchmarkConfig>(&read_config(&config)?)
+                    .map_err(|error| {
+                        Error::Input(format!(
+                            "cannot parse benchmark {}: {error}",
+                            config.display()
+                        ))
+                    })?,
+            )
+        } else {
+            None
+        };
+        if let Some(configuration) = &standalone {
+            result_dir = crate::runner::resolve_log_path(&config, &configuration.log_file)
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .to_path_buf();
+        }
         let selection = plan
             .as_ref()
             .map(|plan| plan.entries[index].selection.clone());
-        let mut outcomes = outcomes::load(&result_dir, concurrency)?;
+        let mut outcomes = if let Some(configuration) = &standalone {
+            outcomes::load_run(&config, configuration)?
+        } else {
+            outcomes::load(&result_dir, concurrency)?
+        };
         if let Some(plan) = &plan {
             let mut imports = crate::sweep::recovered::load(
                 &sweep_results.join(".checkpoint"),
@@ -104,8 +153,9 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
             }
             outcomes::add_imports(&mut outcomes, imports)?;
             outcomes::add_closed(&mut outcomes, closed)?;
-        } else if result_dir.join(".asb-imported-grades").exists()
-            || sweep_results.join(".checkpoint/closed-slots").exists()
+        } else if !single
+            && (result_dir.join(".asb-imported-grades").exists()
+                || sweep_results.join(".checkpoint/closed-slots").exists())
         {
             return Err(Error::Input(
                 "retained grades require their original saved sweep plan".into(),
@@ -117,17 +167,50 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
             } else {
                 format!("{index:03}-{}-concurrency-{replica}", safe_name(&config))
             };
-            let measurement_dir = result_dir.join(if concurrency == 1 {
-                "measurements".to_owned()
+            let measurement_dir = if let Some(configuration) = &standalone {
+                let selected = crate::runner::replica::configuration(
+                    configuration,
+                    crate::runner::replica::Identity {
+                        index: replica,
+                        total: concurrency,
+                    },
+                )?;
+                let (root, _) = crate::project::load(&config)?;
+                selected
+                    .measurements
+                    .as_ref()
+                    .filter(|value| value.enabled)
+                    .map(|value| crate::project::resolve(&root, &value.directory))
             } else {
-                format!("measurements-concurrency-{replica}")
-            });
+                Some(result_dir.join(if concurrency == 1 {
+                    "measurements".to_owned()
+                } else {
+                    format!("measurements-concurrency-{replica}")
+                }))
+            };
+            let measurement_dir = if single {
+                outcomes
+                    .get(&replica)
+                    .and_then(|record| record.summary.get("measurement_directory"))
+                    .and_then(Value::as_str)
+                    .map(PathBuf::from)
+                    .or(measurement_dir)
+            } else {
+                measurement_dir
+            };
+            let capture_enabled = measurement_dir.is_some();
+            let measurement_dir =
+                measurement_dir.unwrap_or_else(|| result_dir.join(".disabled-measurements"));
             let mut run_path = measurement_dir.join("run.json");
-            let artifacts = artifact_links(parent, &measurement_dir);
+            let artifacts = if capture_enabled {
+                artifact_links(parent, &measurement_dir)
+            } else {
+                Vec::new()
+            };
             let outcome = outcomes.get(&replica);
             let grade_only_closed =
                 outcome.is_some_and(|record| record.source == "recovered-official-grade");
-            let measured = run_path.is_file() && !grade_only_closed;
+            let measured = capture_enabled && run_path.is_file() && !grade_only_closed;
             if !measured && outcome.is_none() {
                 let workload_evaluation = selection.as_ref().map_or_else(
                     || crate::workloads::evaluation_kind(&workload, Path::new("")).into(),
@@ -171,7 +254,7 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
                 run_path = outcome.path.clone();
                 outcome.summary.clone()
             };
-            if plan.is_some() || outcome.is_some() {
+            if single || plan.is_some() || outcome.is_some() {
                 for (field, expected) in [
                     ("agent", &agent),
                     ("workload", &workload),
@@ -234,6 +317,20 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
                         run_path.display()
                     ))
                 })?;
+            if let Some(configuration) = &standalone
+                && task.as_ref().is_some_and(|task| {
+                    task.workload != workload
+                        || configuration
+                            .trial
+                            .as_ref()
+                            .is_some_and(|trial| trial != &task.task_id)
+                })
+            {
+                return Err(Error::Input(format!(
+                    "result {} does not match the benchmark's selected task",
+                    run_path.display()
+                )));
+            }
             if let (Some(selection), Some(task)) = (&selection, &task)
                 && !selection.matches(task)
             {
@@ -242,7 +339,7 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
                     run_path.display()
                 )));
             }
-            if (plan.is_some() || outcome.is_some())
+            if (single || plan.is_some() || outcome.is_some())
                 && let Some(task) = &task
                 && (task.attempt_id.is_empty()
                     || task.attempt_id.len() > 256
@@ -416,7 +513,8 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
                 },
                 reconciled: if grade_only_closed {
                     true
-                } else if outcome.is_some_and(|outcome| outcome.source == "imported-official-grade")
+                } else if single
+                    || outcome.is_some_and(|outcome| outcome.source == "imported-official-grade")
                 {
                     false
                 } else {
@@ -537,8 +635,10 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
         "selection_plan": plan.as_ref().map(|plan| json!({"run_id":plan.run_id,"configuration_match":true,"execution_mode":plan.execution_mode,"respect_record_timings":plan.respect_record_timings,"scheduling":plan.scheduling})),
         "evaluation_coverage":evaluation_coverage,
         "population_coverage":population_coverage,
-        "sweep": sweep_path,
-        "results_directory": sweep_results,
+        "input": sweep_path,
+        "input_kind": if single { "benchmark" } else { "sweep" },
+        "sweep": if single { Value::Null } else { json!(sweep_path) },
+        "results_directory": if single { json!(parent) } else { json!(sweep_results) },
         "comparison_directory": comparison_dir,
         "report": "report.html",
         "benchmarks": benchmark_data.iter().map(|benchmark| json!({
@@ -587,7 +687,32 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
         graphs.len(),
         comparison_dir.display()
     )
-    .map_err(|error| Error::Io(error.to_string()))
+    .map_err(|error| Error::Io(error.to_string()))?;
+    Ok(comparison_dir.join("report.html"))
+}
+
+/// Invoke the platform opener without a shell; report paths are never commands.
+pub(crate) fn open_report(path: &Path) -> Result<(), Error> {
+    let path = path.canonicalize().map_err(crate::io_error)?;
+    #[cfg(target_os = "macos")]
+    let mut command = std::process::Command::new("open");
+    #[cfg(target_os = "windows")]
+    let mut command = {
+        let mut command = std::process::Command::new("rundll32.exe");
+        command.arg("url.dll,FileProtocolHandler");
+        command
+    };
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let mut command = std::process::Command::new("xdg-open");
+    let status = command.arg(&path).status().map_err(|error| Error::Run(format!(
+        "report created at {}, but the default browser could not be opened: {error}; open this HTML file in your browser", path.display())))?;
+    if !status.success() {
+        return Err(Error::Run(format!(
+            "report created at {}, but the browser opener failed ({status}); open this HTML file in your browser",
+            path.display()
+        )));
+    }
+    Ok(())
 }
 
 fn benchmark_identity(path: &Path) -> Result<(String, String, String, String, usize), Error> {
@@ -663,9 +788,35 @@ fn artifact_links(sweep_parent: &Path, measurement_dir: &Path) -> Vec<String> {
     files
         .into_iter()
         .filter(|path| path.file_name().and_then(|name| name.to_str()) != Some("run.json"))
-        .filter_map(|path| path.strip_prefix(sweep_parent).ok().map(PathBuf::from))
+        .filter_map(|path| relative_artifact(sweep_parent, &path))
         .map(|path| format!("../../{}", path.to_string_lossy().replace('\\', "/")))
         .collect()
+}
+
+fn relative_artifact(base: &Path, path: &Path) -> Option<PathBuf> {
+    // A standalone config and its project-scoped captures may be in sibling
+    // directories. Keep those links portable, including absolute capture paths.
+    let base = if base.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        base
+    };
+    let base = base.canonicalize().ok()?;
+    let path = path.canonicalize().ok()?;
+    let base: Vec<_> = base.components().collect();
+    let path: Vec<_> = path.components().collect();
+    let shared = base.iter().zip(&path).take_while(|(a, b)| a == b).count();
+    if shared == 0 {
+        return None;
+    }
+    let mut relative = PathBuf::new();
+    for _ in shared..base.len() {
+        relative.push("..");
+    }
+    for component in &path[shared..] {
+        relative.push(component.as_os_str());
+    }
+    Some(relative)
 }
 
 fn collect_artifacts(path: &Path, depth: usize, output: &mut Vec<PathBuf>) {
@@ -837,7 +988,7 @@ fn write_html_report(
     if let Some(scheduling) = scheduling {
         html.push_str(&format!("<p class=\"scheduling\">Sweep scheduling: up to {} distinct configurations; {} active attempt slots, including replicas. Concurrent tasks share host resources.</p>", scheduling.jobs, scheduling.max_active_attempts));
     }
-    html.push_str("<header class=\"hero\"><p class=\"eyebrow\">ASB BENCHMARK REPORT</p><h1>Sweep comparison</h1><p>Explore benchmark results and measurements from this sweep. Use the filters to focus the report without rerunning anything.</p></header>");
+    html.push_str("<header class=\"hero\"><p class=\"eyebrow\">ASB BENCHMARK REPORT</p><h1>Benchmark comparison</h1><p>Explore recorded benchmark results and measurements. Use the filters to focus the report without rerunning anything.</p></header>");
     let coverage = coverage::evaluation_summary(benchmarks);
     html.push_str(&format!("<section class=\"explain\"><strong>Evaluation coverage</strong><p>Execution mode: {}.</p><p>{}/{} eligible selected attempts evaluated; {} have no completed evaluation. {} attempts are unscored. {}</p><p>Partial results are not a complete-population benchmark score. See population_coverage in comparison.json for dataset selection, unique tasks and complete one-attempt-per-task scores.</p></section>",
         escape(selection_mode.unwrap_or("unknown")),

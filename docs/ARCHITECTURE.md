@@ -955,7 +955,33 @@ New default record attempts do not write those links. Live/record/replay mode
 and replay timing choice are saved in the selection snapshot and surfaced by
 comparison; old records without this information remain mode-unknown.
 
-`asb compare SWEEP.toml` reads the isolated `<sweep>-results/` directories
+CLI and TUI setup share a bounded sweep publisher. Repeated CLI selections
+expand into the same agent/provider-scoped-model/workload/trial cross product;
+`--output` names the sweep for a matrix and a benchmark for a scalar selection.
+All CLI selections are validated before publication. New sibling configuration
+directories and create-new manifests avoid replacing existing sweeps; generated
+benchmarks have distinct logs and measurement directories. Trial catalogs are
+loaded once per workload. Explicit model IDs require no provider discovery;
+`--model all` (including provider-scoped `=all`) deliberately uses the owning
+provider's live discovery and fails on unavailable/empty catalogs before
+publishing files. Other `all` selectors expand from the owning registries,
+local workload definitions and enabled/original trial catalogs. Expansion is
+deduplicated and retains the normal bounded sweep contract. `all` is reserved
+and cannot be a selectable identifier; dynamic catalogs reject collisions,
+the TUI excludes colliding entries and CI checks every static registry.
+
+`asb compare BENCHMARK_OR_SWEEP.toml` dispatches by TOML shape, not filename.
+Standalone reports reuse the normal replica-path helper, read the most recent
+bounded JSONL record per configured log, and resolve project-scoped measurement
+directories. Current run logs also record actual measurement overrides, so
+comparison does not guess capture locations. Logs' transcripts never enter the
+report. Identity and measurement/outcome consistency checks apply to standalone
+rows too; old measurements cannot silently replace a newer logged attempt.
+`--report` invokes the platform browser opener only after successful generation,
+without shell interpolation. Failure to open leaves the generated report intact.
+Automatic sweep comparison never invokes an opener.
+
+Sweep comparison reads the isolated `<sweep>-results/` directories
 created by `asb sweep`. It writes bounded `comparison.json` data, an offline
 `report.html`, and SVG charts to `results/<sweep>-comparison/`; no provider or
 agent is contacted. The generic outcome reader additionally loads recorded

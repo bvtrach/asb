@@ -187,7 +187,7 @@ fn tui_selection_installs_locally_before_enabling_agent_or_workload() {
                     .join(".asb-tools/flamegraph/bin/flamegraph")
                     .is_file()
             );
-            let config = std::fs::read_dir(&project.0)
+            let manifest = std::fs::read_dir(&project.0)
                 .unwrap()
                 .filter_map(Result::ok)
                 .map(|entry| entry.path())
@@ -195,10 +195,13 @@ fn tui_selection_installs_locally_before_enabling_agent_or_workload() {
                     path.file_name()
                         .and_then(|name| name.to_str())
                         .is_some_and(|name| {
-                            name.starts_with("asb-test-") && name.ends_with(".toml")
+                            name.starts_with("asb-sweep-") && name.ends_with(".toml")
                         })
                 })
-                .expect("generated benchmark");
+                .expect("generated sweep");
+            let sweep: toml::Value =
+                toml::from_str(&std::fs::read_to_string(manifest).unwrap()).unwrap();
+            let config = project.0.join(sweep["configs"][0].as_str().unwrap());
             let text = std::fs::read_to_string(config).unwrap();
             let config: toml::Value = toml::from_str(&text).unwrap();
             let collectors = config["measurements"]["collectors"].as_array().unwrap();
@@ -1886,6 +1889,47 @@ fn replay_returns_json_and_writes_completed_log_offline() {
             .contains("fixture-agent-output")
     );
     assert_tape_scratch_cleaned(&project);
+}
+
+#[test]
+fn standalone_compare_reports_actual_replay_logs_and_capture_overrides() {
+    for concurrency in [1, 2] {
+        for measured in [false, true] {
+            let project = replay_project(concurrency);
+            let options: &[&str] = if measured {
+                &["--json", "--measurements", "custom capture"]
+            } else {
+                &["--json"]
+            };
+            expect_success(&replay(&project, "success", options));
+            expect_success(&project.command(&["compare", "benchmark.toml"]));
+            let directory = project.0.join("results/benchmark-comparison");
+            let report: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(directory.join("comparison.json")).unwrap())
+                    .unwrap();
+            let rows = report["benchmarks"].as_array().unwrap();
+            assert_eq!(rows.len(), concurrency);
+            for row in rows {
+                assert_eq!(
+                    row["result_source"],
+                    if measured { "measurements" } else { "run-log" }
+                );
+                assert_eq!(row["metrics"]["success_rate"], 1.0);
+                assert!(row["metrics"]["elapsed_ms"].as_f64().unwrap() >= 0.0);
+                if measured {
+                    assert!(
+                        row["artifacts"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .any(|value| value.as_str().unwrap().contains("lifecycle.json"))
+                    );
+                }
+            }
+            assert!(directory.join("metric-success_rate.svg").is_file());
+            assert!(directory.join("report.html").is_file());
+        }
+    }
 }
 
 #[cfg(unix)]

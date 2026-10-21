@@ -1,6 +1,6 @@
 //! The setup command and its small file format.
 
-use super::{Error, io_error};
+use super::Error;
 use crate::agents;
 use crate::benchmark::{BenchmarkConfig, MeasurementConfig};
 use crate::measurements;
@@ -10,12 +10,13 @@ use crate::suggestions;
 use std::io::Write;
 
 pub struct SetupOptions {
-    pub agent: Option<String>,
-    pub workload: Option<String>,
-    pub trial: Option<String>,
-    pub trial_set: Option<String>,
-    pub provider: Option<String>,
-    pub model: Option<String>,
+    pub agent: Vec<String>,
+    pub workload: Vec<String>,
+    pub trial: Vec<String>,
+    pub trial_set: Vec<String>,
+    pub provider: Vec<String>,
+    pub model: Vec<String>,
+    pub measure: Vec<String>,
     pub concurrency: Option<usize>,
     pub workspace: Option<String>,
     pub output: Option<String>,
@@ -23,6 +24,11 @@ pub struct SetupOptions {
 
 /// Write a TOML benchmark configuration from parsed setup options.
 pub fn setup(options: SetupOptions, output: &mut dyn Write) -> Result<(), Error> {
+    matrix::setup(options, output)
+}
+
+/// Validate one selection before publishing any configuration in a matrix.
+fn configuration(options: SetupOptions) -> Result<BenchmarkConfig, Error> {
     let SetupOptions {
         agent,
         workload,
@@ -30,15 +36,13 @@ pub fn setup(options: SetupOptions, output: &mut dyn Write) -> Result<(), Error>
         trial_set,
         provider,
         model,
+        measure,
         concurrency,
         workspace,
         output: destination,
     } = options;
-    let (root, project_config) = project::load(std::path::Path::new("."))?;
-    let workload_directory = std::env::var_os("ASB_WORKLOAD_DIR")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| project::resolve(&root, &project_config.workloads_dir));
-    let agent = required(agent)?;
+    let (_, project_config) = project::load(std::path::Path::new("."))?;
+    let agent = required(agent.into_iter().next())?;
     let known_agents = agents::all()
         .iter()
         .map(|adapter| adapter.id())
@@ -48,13 +52,20 @@ pub fn setup(options: SetupOptions, output: &mut dyn Write) -> Result<(), Error>
             "unknown agent `{agent}`; did you mean `{candidate}`?"
         )));
     }
-    let provider = required(provider)?;
+    let provider = required(provider.into_iter().next())?;
     if let Some(candidate) = suggestions::closest(&provider, providers::names()) {
         return Err(Error::Input(format!(
             "unknown provider `{provider}`; did you mean `{candidate}`?"
         )));
     }
-    let model = required(model)?;
+    let model = required(model.into_iter().next())?;
+    for (name, kind) in [
+        (&agent, "agent"),
+        (&provider, "provider"),
+        (&model, "model"),
+    ] {
+        crate::selection_names::validate(name, kind).map_err(Error::Input)?;
+    }
     let concurrency = concurrency.unwrap_or(1);
     if concurrency == 0 {
         return Err(Error::Input("concurrency must be at least 1".into()));
@@ -67,12 +78,12 @@ pub fn setup(options: SetupOptions, output: &mut dyn Write) -> Result<(), Error>
     }
     let config = BenchmarkConfig {
         agent,
-        workload: required(workload)?,
+        workload: required(workload.into_iter().next())?,
         provider,
         model,
         concurrency,
-        trial_set,
-        trial,
+        trial_set: trial_set.into_iter().next(),
+        trial: trial.into_iter().next(),
         workspace: workspace.unwrap_or(project_config.workspace_dir),
         log_file: destination
             .as_deref()
@@ -81,11 +92,22 @@ pub fn setup(options: SetupOptions, output: &mut dyn Write) -> Result<(), Error>
         measurements: Some(MeasurementConfig {
             enabled: true,
             directory: "measurements".into(),
-            collectors: measurements::available_collectors(),
+            collectors: if measure.is_empty() {
+                measurements::available_collectors()
+            } else {
+                crate::collectors::expand_dependencies(&measure)
+            },
         }),
     };
-    let catalog = crate::workloads::planning_catalog(&config.workload, &workload_directory)
-        .map_err(Error::Input)?;
+    Ok(config)
+}
+
+fn validate_selection(
+    config: &BenchmarkConfig,
+    directory: &std::path::Path,
+    catalog: Option<&crate::workloads::PlanningCatalog>,
+    enabled_trials: Option<&std::collections::BTreeSet<String>>,
+) -> Result<(), Error> {
     if config.trial_set.is_some() && config.trial.is_none() {
         return Err(Error::Input(
             "--trial-set requires --trial; use `asb setup tui` to select multiple instances".into(),
@@ -100,20 +122,32 @@ pub fn setup(options: SetupOptions, output: &mut dyn Write) -> Result<(), Error>
     if catalog.is_none() && config.trial.is_some() && config.trial_set.is_none() {
         return Err(Error::Input("--trial requires --trial-set for a workload without an installed instance catalog; select trials with `asb workload tui` first".into()));
     }
-    crate::workloads::describe_selection(&config, &workload_directory, catalog.as_ref())
-        .map_err(Error::Input)?;
-    let text = toml::to_string_pretty(&config)
-        .map_err(|error| Error::Input(format!("cannot render configuration: {error}")))?;
-    if let Some(path) = destination {
-        std::fs::write(&path, text.as_bytes())
-            .map_err(|error| Error::Io(format!("cannot write {path}: {error}")))?;
-        writeln!(output, "Wrote {path}").map_err(io_error)?;
-        writeln!(output, "{}", run_command_message(&path)).map_err(io_error)?;
-    } else {
-        output.write_all(text.as_bytes()).map_err(io_error)?;
+    if let Some(enabled) = enabled_trials
+        && config
+            .trial
+            .as_ref()
+            .is_none_or(|trial| !enabled.contains(trial))
+    {
+        return Err(Error::Input(format!(
+            "trial `{}` is not enabled in {}",
+            config.trial.as_deref().unwrap_or(""),
+            config
+                .trial_set
+                .as_deref()
+                .unwrap_or("the selected trial set")
+        )));
     }
+    let mut validated = config.clone();
+    // The owning set and membership were loaded/checked once for this matrix.
+    // Do not parse an entire population file again for every agent/model pair.
+    if enabled_trials.is_some() {
+        validated.trial_set = None;
+    }
+    crate::workloads::describe_selection(&validated, directory, catalog).map_err(Error::Input)?;
     Ok(())
 }
+
+pub(crate) mod matrix;
 
 fn default_log_name(destination: &str) -> String {
     std::path::Path::new(destination)
@@ -180,12 +214,13 @@ mod tests {
 
     fn options(agent: &str, provider: &str, model: &str) -> SetupOptions {
         SetupOptions {
-            agent: Some(agent.into()),
-            workload: Some("bug-fix".into()),
-            trial: None,
-            trial_set: None,
-            provider: Some(provider.into()),
-            model: Some(model.into()),
+            agent: vec![agent.into()],
+            workload: vec!["bug-fix".into()],
+            trial: vec![],
+            trial_set: vec![],
+            provider: vec![provider.into()],
+            model: vec![model.into()],
+            measure: vec![],
             concurrency: None,
             workspace: None,
             output: None,
