@@ -41,8 +41,13 @@ typed-disposition **0.2.27** integration `0d7cf8a3`; its own fresh full offline
 qualification at ledger-aligned `e3c39f6e` passed 1,172 tests with no failures
 and 21 explicit optional skips across 22 targets. Strict Clippy, formatting and
 sequential build/private docs/pinned AutoUML/flows/interactive views/completions
-passed. Exact-head hosted/package CI, merge, post-merge checks and release
-remain pending for both candidates.
+passed. For **0.2.26**, exact-head hosted/package CI passed in run
+`39650217102`; PR #291 merged as
+`c3498d273c0793ab21225da8b2117b50b3348ac8`. Post-merge run `39651552412`
+and its release remain pending. For **0.2.27**, exact-head hosted/package CI,
+merge, post-merge checks and release remain pending. That parent **0.2.27**
+current-main ancestry merge changes no production, test or Cargo bytes from
+qualified `6553da9c`.
 
 Integrated repair, released patch **0.2.21**: the independently reviewed
 launch-descriptor/one-shot admission repair (`b1a54fde`) is combined with the
