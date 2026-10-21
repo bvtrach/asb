@@ -16,38 +16,32 @@ pub(super) struct PreparedReport {
     pub evaluation: coverage::EvaluationCoverage,
     pub populations: BTreeMap<String, coverage::PopulationCoverage>,
     pub resolution: BTreeMap<String, crate::workloads::ResolutionSummary>,
-    pub previews: BTreeMap<String, String>,
+    pub dimensions: BTreeMap<&'static str, Vec<String>>,
+    pub dispatch_groups: BTreeMap<String, usize>,
 }
 impl PreparedReport {
     pub(super) fn prepare(data: ValidatedReport) -> Result<Self, Error> {
         let evaluation = coverage::evaluation_summary(&data.rows);
         let populations = coverage::populations(&data.rows)?;
-        let mut previews = BTreeMap::new();
-        for row in &data.rows {
-            if row.result_source == ResultSource::RecoveredOfficialGrade {
-                continue;
-            }
-            for artifact in &row.artifacts {
-                let name = artifact.rsplit('/').next().unwrap_or(artifact);
-                if matches!(
-                    crate::collectors::display_artifact(name),
-                    Some(crate::collectors::ArtifactDisplay::Svg { .. })
-                ) && !previews.contains_key(artifact)
-                {
-                    previews.insert(
-                        artifact.clone(),
-                        source::read_svg(
-                            &source::artifact_path(&data.request.comparison_dir, artifact)?,
-                            artifact,
-                        )?,
-                    );
-                }
-            }
-        }
         let mut metrics: BTreeMap<String, Vec<usize>> = BTreeMap::new();
         let mut series: BTreeMap<String, Vec<usize>> = BTreeMap::new();
         let mut resolution: BTreeMap<String, crate::workloads::ResolutionSummary> = BTreeMap::new();
+        let mut dimensions: BTreeMap<&'static str, Vec<String>> = BTreeMap::new();
+        let mut dispatch_groups = BTreeMap::new();
         for (index, row) in data.rows.iter().enumerate() {
+            for (dimension, value) in [
+                ("benchmark", &row.label),
+                ("agent", &row.agent),
+                ("provider", &row.provider),
+                ("model", &row.model),
+                ("workload", &row.workload),
+            ] {
+                dimensions.entry(dimension).or_default().push(value.clone());
+            }
+            if let Some(cohort) = &row.execution_cohort {
+                let next = dispatch_groups.len() + 1;
+                dispatch_groups.entry(cohort.id.clone()).or_insert(next);
+            }
             for name in row.metrics.keys() {
                 metrics.entry(name.clone()).or_default().push(index);
             }
@@ -77,6 +71,10 @@ impl PreparedReport {
                     .is_some_and(|value| *value == 1.0),
             );
         }
+        for values in dimensions.values_mut() {
+            values.sort();
+            values.dedup();
+        }
         let mut names = GraphNames::default();
         let mut graphs = Vec::new();
         for (name, rows) in metrics {
@@ -87,11 +85,24 @@ impl PreparedReport {
             });
         }
         for (name, rows) in series {
-            graphs.push(GraphSpec {
-                filename: names.allocate("series", &name),
-                kind: GraphKind::Series(name),
-                rows,
-            });
+            let (timed, indexed): (Vec<_>, Vec<_>) = rows
+                .into_iter()
+                .partition(|index| data.rows[*index].series[&name].timestamps_ms.is_some());
+            let mixed = !timed.is_empty() && !indexed.is_empty();
+            if !timed.is_empty() {
+                graphs.push(GraphSpec {
+                    filename: names.allocate("series", &name),
+                    kind: GraphKind::Series(name.clone()),
+                    rows: timed,
+                });
+            }
+            if !indexed.is_empty() {
+                graphs.push(GraphSpec {
+                    filename: names.allocate(if mixed { "series-index" } else { "series" }, &name),
+                    kind: GraphKind::Series(name),
+                    rows: indexed,
+                });
+            }
         }
         if !composition_rows(&data.rows).is_empty() {
             graphs.push(GraphSpec {
@@ -106,7 +117,8 @@ impl PreparedReport {
             evaluation,
             populations,
             resolution,
-            previews,
+            dimensions,
+            dispatch_groups,
         })
     }
     pub(super) fn graph_names(&self) -> Vec<String> {

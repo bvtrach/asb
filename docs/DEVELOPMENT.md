@@ -79,6 +79,19 @@ report JavaScript under Node with an injected DOM fixture: every filter
 dimension, combined intersections, replica identities, select/clear all,
 empty charts, hover cleanup and selection restoration. SVG-generation tests
 also check that bars, series/legends and composition rows carry benchmark groups.
+`cargo test --locked --offline --lib compare::pipeline_tests` exercises actual
+report generation without benchmarks or providers: cross-row/population
+validation before writes, bounded growing/replaced/FIFO inputs, symlink-parent
+path semantics, aligned nullable observations, full-source JSON with bounded
+graphs, gap preservation, atomic regeneration, persistent writer exclusion,
+recoverable previous generations and truthful post-publication failures.
+It runs the actual generated SVG and embedded interaction script under Node's
+synthetic DOM, including observed-sample hover, zoom, pan and modal controls;
+this is not browser-layout qualification. The ignored
+`real_headless_browser_qualifies_generated_report_interactions` test can use an
+existing local browser selected explicitly with `ASB_TEST_CHROMIUM`; it never
+downloads one or modifies host/Snap permissions. A host confinement failure is
+not a passing browser qualification. Existing state/event SVGs remain intact.
 Reserved-`all` tests cover complete registry expansion, enabled/original trial
 populations, catalog-name collisions and provider-scoped model discovery using
 only a bounded loopback HTTP fixture with no real provider credentials.

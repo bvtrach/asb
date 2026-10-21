@@ -113,6 +113,23 @@ module names in those owning boundaries. Pending.
 Audit correction: current `perfetto_instance_config` is seven lines, not the
 reported 630. Comparison's filter JavaScript is already a separate asset.
 Do not perform redundant extraction based on stale line counts.
+Comparison candidate: explicit loaded/validated/prepared/rendered/published
+states replace intertwined loading, grading coverage, graph planning and output
+publication. Stable identities, typed result provenance and one-time population
+aggregation preserve existing evidence semantics. Confirmed fixes retain null
+positions with original timestamps (no shifted samples), disclose bounded
+original-index extrema-preserving line rendering instead of silent truncation,
+and provide nearest observed-sample hover text. Opened-once bounded source reads
+reject nonregular files and growth; retained physical SVG paths prevent
+symlink-parent components from being misread as logical output links.
+Generation-specific private staging and a separate persistent report lock
+publish whole generations with Linux atomic exchange and preserve the old tree
+as a recoverable backup. Pre-commit failures leave old bytes unchanged;
+post-commit sync/output errors truthfully report published-but-unconfirmed.
+Offline source/DOM/publication regressions require no provider or privileged
+collector. Real browser qualification remains opt-in and host-dependent. This
+candidate still requires exact-head independent review and ordinary hosted
+verification; it is not a release or a universal non-Linux atomicity claim.
 The custom BPF scope validator is also a small function (about sixty lines),
 not the reported 533; its confirmed correctness defect is tracked below.
 

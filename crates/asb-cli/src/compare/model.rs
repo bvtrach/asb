@@ -31,6 +31,7 @@ impl ResultSource {
 pub(super) struct ValidatedReport {
     pub request: source::Request,
     pub rows: Vec<BenchmarkData>,
+    pub previews: BTreeMap<String, String>,
 }
 impl ValidatedReport {
     pub(super) fn validate(loaded: source::LoadedReport) -> Result<Self, Error> {
@@ -60,6 +61,7 @@ impl ValidatedReport {
         Ok(Self {
             request: loaded.request,
             rows: loaded.rows,
+            previews: loaded.previews,
         })
     }
 }

@@ -5,6 +5,9 @@ use std::io::Read;
 /// Open once, reject nonregular sources, and bound the actual read even if the
 /// file grows after metadata inspection. Nonblocking open avoids FIFO hangs.
 pub(super) fn read_text(path: &Path, kind: &str) -> Result<String, Error> {
+    read_text_limit(path, kind, MAX_BYTES)
+}
+fn read_text_limit(path: &Path, kind: &str, limit: u64) -> Result<String, Error> {
     let mut options = fs::OpenOptions::new();
     options.read(true);
     #[cfg(unix)]
@@ -24,24 +27,38 @@ pub(super) fn read_text(path: &Path, kind: &str) -> Result<String, Error> {
             path.display()
         )));
     }
-    if metadata.len() > MAX_BYTES {
+    if metadata.len() > limit {
         return Err(Error::Input(format!(
-            "{kind} {} exceeds 16 MiB",
-            path.display()
+            "{kind} {} exceeds {}",
+            path.display(),
+            limit_label(limit)
         )));
     }
+    #[cfg(test)]
+    super::pipeline_tests::after_open(&file, path);
     let mut bytes = Vec::new();
-    file.take(MAX_BYTES + 1)
+    file.take(limit + 1)
         .read_to_end(&mut bytes)
         .map_err(|error| Error::Input(format!("cannot read {kind} {}: {error}", path.display())))?;
-    if bytes.len() as u64 > MAX_BYTES {
+    if bytes.len() as u64 > limit {
         return Err(Error::Input(format!(
-            "{kind} {} exceeds 16 MiB",
-            path.display()
+            "{kind} {} exceeds {}",
+            path.display(),
+            limit_label(limit)
         )));
     }
     String::from_utf8(bytes)
         .map_err(|error| Error::Input(format!("cannot read {kind} {}: {error}", path.display())))
+}
+fn limit_label(limit: u64) -> String {
+    if limit.is_multiple_of(1024 * 1024) {
+        format!("{} MiB", limit / (1024 * 1024))
+    } else {
+        format!("{} KiB", limit / 1024)
+    }
+}
+pub(super) fn read_benchmark_text(path: &Path) -> Result<String, Error> {
+    read_text_limit(path, "benchmark configuration", 64 * 1024)
 }
 pub(super) fn read_json(path: &Path) -> Result<Value, Error> {
     serde_json::from_str(&read_text(path, "measurement file")?).map_err(|error| {
@@ -52,7 +69,11 @@ pub(super) fn read_json(path: &Path) -> Result<Value, Error> {
     })
 }
 pub(super) fn read_svg(path: &Path, artifact: &str) -> Result<String, Error> {
-    let svg = read_text(path, "embedded SVG artifact")?;
+    let svg = read_text(path, "embedded SVG artifact").map_err(|error| {
+        Error::Run(format!(
+            "cannot read embedded SVG artifact {artifact}: {error}"
+        ))
+    })?;
     let trimmed = svg.trim_start();
     if !trimmed.starts_with("<svg") && !trimmed.starts_with("<?xml") {
         return Err(Error::Run(format!(
@@ -60,18 +81,6 @@ pub(super) fn read_svg(path: &Path, artifact: &str) -> Result<String, Error> {
         )));
     }
     Ok(svg)
-}
-pub(super) fn artifact_path(logical_root: &Path, href: &str) -> Result<PathBuf, Error> {
-    let absolute = std::path::absolute(logical_root.join(href)).map_err(crate::io_error)?;
-    let mut path = PathBuf::new();
-    for component in absolute.components() {
-        if component == std::path::Component::ParentDir {
-            path.pop();
-        } else if component != std::path::Component::CurDir {
-            path.push(component.as_os_str());
-        }
-    }
-    Ok(path)
 }
 
 pub(super) struct Request {
@@ -82,16 +91,19 @@ pub(super) struct Request {
     pub sweep_results: PathBuf,
     pub comparison_dir: PathBuf,
     pub plan: Option<crate::sweep::plan::SweepPlan>,
+    configurations: BTreeMap<PathBuf, String>,
 }
 pub(super) struct LoadedReport {
     pub request: Request,
     pub rows: Vec<BenchmarkData>,
+    pub previews: BTreeMap<String, String>,
 }
 
 impl Request {
     fn read(path: &str) -> Result<Self, Error> {
         let sweep_path = Path::new(path);
-        let input: toml::Value = toml::from_str(&crate::sweep::read_manifest_text(sweep_path)?)
+        let input_text = read_text(sweep_path, "TOML")?;
+        let input: toml::Value = toml::from_str(&input_text)
             .map_err(|error| Error::Input(format!("cannot parse {path}: {error}")))?;
         let single = !input
             .as_table()
@@ -107,7 +119,7 @@ impl Request {
                 ],
             }
         } else {
-            crate::sweep::read_manifest(sweep_path)?
+            crate::sweep::parse_manifest(sweep_path, input)?
         };
         let parent = sweep_path.parent().unwrap_or_else(|| Path::new("."));
         let stem = sweep_path
@@ -115,10 +127,64 @@ impl Request {
             .and_then(|value| value.to_str())
             .unwrap_or("sweep");
         let sweep_results = parent.join(format!("{stem}-results"));
+        let mut configurations = BTreeMap::new();
+        let mut configuration_bytes = 0usize;
+        for reference in &sweep.configs {
+            let config = checked_benchmark_reference(parent, reference, path)?;
+            if configurations.contains_key(&config) {
+                continue;
+            }
+            let text = if single {
+                if input_text.len() > 64 * 1024 {
+                    return Err(Error::Input(format!(
+                        "benchmark configuration {} exceeds 64 KiB",
+                        sweep_path.display()
+                    )));
+                }
+                input_text.clone()
+            } else {
+                read_benchmark_text(&config)?
+            };
+            configuration_bytes = configuration_bytes.saturating_add(text.len());
+            if configuration_bytes > 32 * 1024 * 1024 {
+                return Err(Error::Input("comparison configuration inputs exceed 32 MiB; select a smaller task/model batch".into()));
+            }
+            configurations.insert(config, text);
+        }
         let plan = if single {
             None
         } else {
-            crate::sweep::plan::SweepPlan::load(&sweep_results, parent, &sweep)?
+            let plan_path = sweep_results.join("plan.json");
+            match fs::symlink_metadata(&plan_path) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Err(error) => {
+                    return Err(Error::Input(format!(
+                        "cannot inspect sweep plan {}: {error}",
+                        plan_path.display()
+                    )));
+                }
+                Ok(_) => {
+                    let bytes = read_text_limit(
+                        &plan_path,
+                        "sweep plan",
+                        crate::sweep::plan::MAX_PLAN_BYTES as u64,
+                    )?;
+                    Some(crate::sweep::plan::SweepPlan::decode(
+                        &plan_path,
+                        bytes.as_bytes(),
+                        parent,
+                        &sweep,
+                        |path| {
+                            let text = configurations.get(path).ok_or_else(|| {
+                                Error::Input(
+                                    "sweep plan requested an uncaptured configuration".into(),
+                                )
+                            })?;
+                            toml::from_str(text).map_err(|error| Error::Input(error.to_string()))
+                        },
+                    )?)
+                }
+            }
         };
         let comparison_dir = parent.join("results").join(format!("{stem}-comparison"));
         Ok(Request {
@@ -129,6 +195,7 @@ impl Request {
             sweep_results,
             comparison_dir,
             plan,
+            configurations,
         })
     }
 }
@@ -142,7 +209,27 @@ pub(super) fn load(path: &str) -> Result<LoadedReport, Error> {
             rows.push(load_attempt(&request, &configuration, replica)?);
         }
     }
-    Ok(LoadedReport { request, rows })
+    let mut previews = BTreeMap::new();
+    for row in &rows {
+        if row.result_source == ResultSource::RecoveredOfficialGrade {
+            continue;
+        }
+        for (href, physical) in &row.artifact_sources {
+            let name = href.rsplit('/').next().unwrap_or(href);
+            if matches!(
+                crate::collectors::display_artifact(name),
+                Some(crate::collectors::ArtifactDisplay::Svg { .. })
+            ) && !previews.contains_key(href)
+            {
+                previews.insert(href.clone(), read_svg(physical, href)?);
+            }
+        }
+    }
+    Ok(LoadedReport {
+        request,
+        rows,
+        previews,
+    })
 }
 struct Configuration {
     index: usize,
@@ -169,17 +256,16 @@ fn load_configuration(
     let plan = &request.plan;
     let config = checked_benchmark_reference(parent, reference, path)?;
     let mut result_dir = sweep_results.join(format!("{index:03}-{}", benchmark_stem(&config)));
-    let (agent, workload, provider, model, concurrency) = benchmark_identity(&config)?;
+    let text = &request.configurations[&config];
+    let (agent, workload, provider, model, concurrency) = benchmark_identity_text(&config, text)?;
     let standalone = if single {
         Some(
-            toml::from_str::<crate::benchmark::BenchmarkConfig>(&read_config(&config)?).map_err(
-                |error| {
-                    Error::Input(format!(
-                        "cannot parse benchmark {}: {error}",
-                        config.display()
-                    ))
-                },
-            )?,
+            toml::from_str::<crate::benchmark::BenchmarkConfig>(text).map_err(|error| {
+                Error::Input(format!(
+                    "cannot parse benchmark {}: {error}",
+                    config.display()
+                ))
+            })?,
         )
     } else {
         None
@@ -270,11 +356,11 @@ fn load_attempt(
     let single = request.single;
     let sweep_results = &request.sweep_results;
     let label = if concurrency == 1 {
-        format!("{index:03}-{}", benchmark_stem(&config))
+        format!("{index:03}-{}", benchmark_stem(config))
     } else {
         format!(
             "{index:03}-{}-concurrency-{replica}",
-            benchmark_stem(&config)
+            benchmark_stem(config)
         )
     };
     let measurement_dir = if let Some(configuration) = &standalone {
@@ -285,7 +371,7 @@ fn load_attempt(
                 total: concurrency,
             },
         )?;
-        let (root, _) = crate::project::load(&config)?;
+        let (root, _) = crate::project::load(config)?;
         selected
             .measurements
             .as_ref()
@@ -312,11 +398,14 @@ fn load_attempt(
     let measurement_dir =
         measurement_dir.unwrap_or_else(|| result_dir.join(".disabled-measurements"));
     let mut run_path = measurement_dir.join("run.json");
-    let artifacts = if capture_enabled {
-        artifact_links(parent, &measurement_dir)
+    let artifact_sources: BTreeMap<_, _> = if capture_enabled {
+        artifact_inventory(parent, &measurement_dir)
+            .into_iter()
+            .collect()
     } else {
-        Vec::new()
+        BTreeMap::new()
     };
+    let artifacts = artifact_sources.keys().cloned().collect();
     let outcome = outcomes.get(&replica);
     let grade_only_closed =
         outcome.is_some_and(|record| record.source == "recovered-official-grade");
@@ -354,6 +443,7 @@ fn load_attempt(
                 run_path.display()
             )),
             artifacts,
+            artifact_sources,
         });
     }
     let run_value = if measured {
@@ -428,8 +518,8 @@ fn load_attempt(
             false
         } else {
             reconciliation::recorded(
-                &sweep_results,
-                &result_dir,
+                sweep_results,
+                result_dir,
                 index,
                 replica,
                 concurrency,
@@ -454,6 +544,7 @@ fn load_attempt(
         components,
         status: run_status,
         artifacts,
+        artifact_sources,
     })
 }
 struct AttemptContext<'a> {
@@ -623,7 +714,7 @@ fn decode_record(run_value: &Value, attempt: &AttemptContext<'_>) -> Result<Deco
         .to_owned();
     let workload_evaluation = crate::workloads::scored_kind(
         &workload_evaluation,
-        &crate::workloads::BaselineEvidence::from_record(&run_value),
+        &crate::workloads::BaselineEvidence::from_record(run_value),
     )
     .to_owned();
     if let Some(selection) = selection
@@ -656,7 +747,7 @@ fn load_collectors(
     let mut host_metadata = None;
     let mut components = None;
     let collector_files = if measured {
-        Some(fs::read_dir(&measurement_dir).map_err(|error| Error::Input(error.to_string()))?)
+        Some(fs::read_dir(measurement_dir).map_err(|error| Error::Input(error.to_string()))?)
     } else {
         None
     };
@@ -694,32 +785,30 @@ fn load_collectors(
             let collector_timestamps = collector.get("series_timestamps");
             let timestamp_map = collector_timestamps.and_then(Value::as_object);
             if let Some(series_map) = collector_series.as_object() {
+                if collector_timestamps.is_some_and(|value| !value.is_object()) {
+                    return Err(Error::Input(format!(
+                        "invalid series timestamps in {}: an object keyed by metric name is required for object-valued series",
+                        file.display()
+                    )));
+                }
                 for (metric, raw_values) in series_map {
-                    let points = series_values(raw_values);
-                    if points.len() < 2 {}
                     insert_unique(
                         &mut series,
                         metric.clone(),
-                        TimeSeries {
-                            values: points,
-                            timestamps_ms: timestamp_map
-                                .and_then(|map| map.get(metric))
-                                .map(series_values),
-                        },
+                        TimeSeries::parse(
+                            raw_values,
+                            timestamp_map.and_then(|map| map.get(metric)),
+                            &file,
+                            metric,
+                        )?,
                     )?;
                 }
             } else {
-                let points = series_values(collector_series);
-                if points.len() >= 2 {
-                    insert_unique(
-                        &mut series,
-                        name.to_owned(),
-                        TimeSeries {
-                            values: points,
-                            timestamps_ms: None,
-                        },
-                    )?;
-                }
+                insert_unique(
+                    &mut series,
+                    name.to_owned(),
+                    TimeSeries::parse(collector_series, collector_timestamps, &file, name)?,
+                )?;
             }
         }
     }

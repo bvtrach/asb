@@ -84,6 +84,73 @@ fn setup_args() -> Vec<&'static str> {
     ]
 }
 
+#[cfg(unix)]
+#[test]
+#[allow(unsafe_code)]
+fn compare_rejects_fifo_manifest_benchmark_and_plan_without_waiting_for_a_writer() {
+    use std::os::unix::ffi::OsStrExt;
+    use std::process::Stdio;
+    for (name, args) in [
+        ("input.toml", vec!["compare", "input.toml"]),
+        ("agent.toml", vec!["compare", "sweep.toml"]),
+        ("sweep-results/plan.json", vec!["compare", "sweep.toml"]),
+    ] {
+        let project = Project::new();
+        if name != "input.toml" {
+            project.write("sweep.toml", "configs=['agent.toml']\n");
+        }
+        if name.ends_with("plan.json") {
+            project.write(
+                "agent.toml",
+                "agent='fixture'\nprovider='fixture'\nmodel='fixture'\nworkload='bug-fix'\n",
+            );
+            std::fs::create_dir(project.0.join("sweep-results")).unwrap();
+        }
+        let path = project.0.join(name);
+        let c_path = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+        // SAFETY: new exact FIFO owned exclusively by this fixture.
+        assert_eq!(unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) }, 0);
+        let mut child = Command::new(env!("CARGO_BIN_EXE_asb"))
+            .current_dir(&project.0)
+            .isolated_env()
+            .env("HOME", &project.0)
+            .args(args)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        loop {
+            if child.try_wait().unwrap().is_some() {
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("compare blocked opening FIFO {name}");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let output = child.wait_with_output().unwrap();
+        assert!(!output.status.success());
+        let diagnostics = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(diagnostics.contains(name), "{diagnostics}");
+        assert!(
+            diagnostics.contains(if name != "agent.toml" {
+                "must be a regular file"
+            } else {
+                "references missing benchmark"
+            }),
+            "{diagnostics}"
+        );
+        assert!(!project.0.join("results").exists());
+    }
+}
+
 #[test]
 fn repeated_selections_generate_scoped_matrix_and_dependencies_without_downloads() {
     let project = Project::new();

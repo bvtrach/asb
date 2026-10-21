@@ -1,7 +1,7 @@
 //! Offline HTML/SVG reports for benchmark configurations and sweeps.
 
+use crate::Error;
 use crate::benchmark_paths::{benchmark_stem, checked_benchmark_reference};
-use crate::{Error, read_config};
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
@@ -19,9 +19,11 @@ mod planning;
 mod publication;
 mod reconciliation;
 mod rendering;
+mod series;
 mod source;
 use model::{ResultSource, RowId, ValidatedReport};
 use planning::PreparedReport;
+use series::TimeSeries;
 use source::read_json;
 const PLOT_TOP: f64 = 70.0;
 const PLOT_BOTTOM: f64 = 390.0;
@@ -51,12 +53,7 @@ struct BenchmarkData {
     components: Option<Value>,
     status: Option<String>,
     artifacts: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct TimeSeries {
-    values: Vec<f64>,
-    timestamps_ms: Option<Vec<f64>>,
+    artifact_sources: BTreeMap<String, PathBuf>,
 }
 
 /// Report a benchmark's recorded results or compare the members of a sweep.
@@ -112,9 +109,15 @@ pub(crate) fn open_report(path: &Path) -> Result<(), Error> {
     Ok(())
 }
 
+#[cfg(test)]
 fn benchmark_identity(path: &Path) -> Result<(String, String, String, String, usize), Error> {
-    let text = read_config(path)?;
-    let value: toml::Value = toml::from_str(&text).map_err(|error| {
+    benchmark_identity_text(path, &source::read_benchmark_text(path)?)
+}
+fn benchmark_identity_text(
+    path: &Path,
+    text: &str,
+) -> Result<(String, String, String, String, usize), Error> {
+    let value: toml::Value = toml::from_str(text).map_err(|error| {
         Error::Input(format!(
             "cannot parse benchmark {}: {error}",
             path.display()
@@ -158,7 +161,7 @@ fn benchmark_identity(path: &Path) -> Result<(String, String, String, String, us
     ))
 }
 
-fn artifact_links(sweep_parent: &Path, measurement_dir: &Path) -> Vec<String> {
+fn artifact_inventory(sweep_parent: &Path, measurement_dir: &Path) -> Vec<(String, PathBuf)> {
     let mut files = Vec::new();
     // Measurement artifacts are the primary evidence for a comparison. Add
     // them before the bounded recursive inventory so a large external
@@ -185,8 +188,14 @@ fn artifact_links(sweep_parent: &Path, measurement_dir: &Path) -> Vec<String> {
     files
         .into_iter()
         .filter(|path| path.file_name().and_then(|name| name.to_str()) != Some("run.json"))
-        .filter_map(|path| relative_artifact(sweep_parent, &path))
-        .map(|path| format!("../../{}", path.to_string_lossy().replace('\\', "/")))
+        .filter_map(|path| {
+            let physical = path.canonicalize().ok()?;
+            let relative = relative_artifact(sweep_parent, &physical)?;
+            Some((
+                format!("../../{}", relative.to_string_lossy().replace('\\', "/")),
+                physical,
+            ))
+        })
         .collect()
 }
 
@@ -348,44 +357,8 @@ fn write_html_report(stage: &Path, prepared: &PreparedReport) -> Result<(), Erro
         .plan
         .as_ref()
         .and_then(|plan| plan.scheduling);
-    let mut dimensions: BTreeMap<&str, Vec<String>> = BTreeMap::new();
-    let mut dispatch_groups = BTreeMap::new();
-    for benchmark in benchmarks {
-        if let Some(cohort) = &benchmark.execution_cohort {
-            let next = dispatch_groups.len() + 1;
-            dispatch_groups.entry(cohort.id.as_str()).or_insert(next);
-        }
-    }
-    dimensions.insert(
-        "benchmark",
-        benchmarks.iter().map(|item| item.label.clone()).collect(),
-    );
-    dimensions.insert(
-        "agent",
-        benchmarks.iter().map(|item| item.agent.clone()).collect(),
-    );
-    dimensions.insert(
-        "provider",
-        benchmarks
-            .iter()
-            .map(|item| item.provider.clone())
-            .collect(),
-    );
-    dimensions.insert(
-        "model",
-        benchmarks.iter().map(|item| item.model.clone()).collect(),
-    );
-    dimensions.insert(
-        "workload",
-        benchmarks
-            .iter()
-            .map(|item| item.workload.clone())
-            .collect(),
-    );
-    for values in dimensions.values_mut() {
-        values.sort();
-        values.dedup();
-    }
+    let dimensions = &prepared.dimensions;
+    let dispatch_groups = &prepared.dispatch_groups;
 
     let mut html = String::from(HTML_HEAD);
     html = html.replacen(
@@ -409,7 +382,7 @@ fn write_html_report(stage: &Path, prepared: &PreparedReport) -> Result<(), Erro
     html.push_str(&coverage::html_table(&prepared.populations));
     html.push_str("<section class=\"explain\"><strong>How to read this report</strong><p>Each row is one selected task attempt for an agent/provider/model/workload combination. Runtime, success rate, token usage, host metadata, component timings, and structured collector measurements are summarized in the table and charts. Network wait remains null unless directly observed. The complete machine-readable evidence inventory is available in comparison.json.</p></section>");
     html.push_str("<section class=\"filters\"><div class=\"section-title\"><h2>Filter results</h2><div><button type=\"button\" data-action=\"all\">Select all</button><button type=\"button\" data-action=\"none\">Clear all</button></div></div><div class=\"filter-grid\">");
-    for (group, values) in &dimensions {
+    for (group, values) in dimensions {
         html.push_str(&format!("<fieldset><legend>{}</legend>", title_case(group)));
         for value in values {
             let escaped = escape(value);
@@ -496,10 +469,10 @@ fn write_html_report(stage: &Path, prepared: &PreparedReport) -> Result<(), Erro
                 let name = artifact.rsplit('/').next().unwrap_or(artifact);
                 match crate::collectors::display_artifact(name) {
                     Some(crate::collectors::ArtifactDisplay::Svg { class, label }) => {
-                        let svg = prepared
-                            .previews
-                            .get(artifact)
-                            .ok_or_else(|| Error::Run("validated SVG preview is missing".into()))?;
+                        let svg =
+                            prepared.data.previews.get(artifact).ok_or_else(|| {
+                                Error::Run("validated SVG preview is missing".into())
+                            })?;
                         previews.push_str(&inline_svg_markup(svg, class, label));
                     }
                     Some(crate::collectors::ArtifactDisplay::Status {
@@ -586,7 +559,7 @@ fn inline_svg_artifact(
     class: &str,
     fallback: &str,
 ) -> Result<String, Error> {
-    let svg = source::read_svg(&source::artifact_path(comparison_dir, artifact)?, artifact)?;
+    let svg = source::read_svg(&comparison_dir.join(artifact), artifact)?;
     Ok(inline_svg_markup(&svg, class, fallback))
 }
 fn inline_svg_markup(svg: &str, class: &str, fallback: &str) -> String {
@@ -614,95 +587,17 @@ const INLINE_SVG_STYLE: &str = r#".embedded-svg{display:block;overflow:auto;bord
 
 const JSON_DETAILS_STYLE: &str = ".json-details{max-height:360px;overflow:auto;background:#f4f7fa;border:1px solid var(--line);border-radius:7px;padding:10px;font:12px/1.4 ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap}";
 
-const INTERACTIVE_SCRIPT: &str = r#"<script>
-document.querySelectorAll('.interactive-chart').forEach(chart=>{
-  const stage=chart.querySelector('.chart-stage');
-  const svg=stage.querySelector('svg');
-  const tooltip=chart.querySelector('.chart-tooltip');
-  const reset=chart.querySelector('.chart-reset');
-  const expand=chart.querySelector('.chart-expand');
-  const close=chart.querySelector('.chart-close');
-  const backdrop=chart.querySelector('.chart-backdrop');
-  const original=svg.getAttribute('viewBox').split(/\s+/).map(Number);
-  let view={x:original[0],y:original[1],w:original[2],h:original[3]};
-  let drag=null;
-  const interactive=[...svg.querySelectorAll('.bar,.series,.series-point')];
-  const clearHover=()=>interactive.forEach(item=>item.classList.remove('hovered'));
-  const positionTooltip=(event)=>{
-    const bounds=stage.getBoundingClientRect();
-    const left=Math.min(Math.max(8,event.clientX-bounds.left+12),Math.max(8,bounds.width-tooltip.offsetWidth-8));
-    const top=Math.min(Math.max(8,event.clientY-bounds.top-42),Math.max(8,bounds.height-tooltip.offsetHeight-8));
-    tooltip.style.left=`${left}px`;tooltip.style.top=`${top}px`;
-  };
-  const show=(item,event)=>{
-    clearHover();
-    item.classList.add('hovered');
-    if(item.classList.contains('series-point')){
-      const series=svg.querySelector(`.series[data-series-index="${item.dataset.seriesIndex}"]`);
-      if(series)series.classList.add('hovered');
-    }
-    tooltip.textContent=item.dataset.timestamp?`${item.dataset.label}: ${item.dataset.value} @ ${item.dataset.timestamp} ms`:`${item.dataset.label}: ${item.dataset.value}`;
-    tooltip.classList.add('visible');
-    positionTooltip(event);
-  };
-  interactive.forEach(item=>item.addEventListener('pointerenter',event=>show(item,event)));
-  stage.addEventListener('pointermove',event=>{if(!drag)positionTooltip(event)});
-  stage.addEventListener('pointerleave',()=>{clearHover();tooltip.classList.remove('visible')});
-  const applyView=()=>svg.setAttribute('viewBox',`${view.x} ${view.y} ${view.w} ${view.h}`);
-  const setExpanded=expanded=>{
-    chart.classList.toggle('expanded',expanded);
-    document.body.classList.toggle('chart-open',expanded);
-    expand.hidden=expanded;close.hidden=!expanded;
-    if(expanded)close.focus();else expand.focus();
-  };
-  svg.addEventListener('wheel',event=>{
-    event.preventDefault();
-    const bounds=svg.getBoundingClientRect();
-    const factor=event.deltaY<0?.85:1.15;
-    const mx=view.x+(event.clientX-bounds.left)/bounds.width*view.w;
-    const my=view.y+(event.clientY-bounds.top)/bounds.height*view.h;
-    const w=Math.min(original[2],Math.max(original[2]/8,view.w*factor));
-    const h=Math.min(original[3],Math.max(original[3]/8,view.h*factor));
-    view.x=Math.max(0,Math.min(original[2]-w,mx-(mx-view.x)*w/view.w));
-    view.y=Math.max(0,Math.min(original[3]-h,my-(my-view.y)*h/view.h));
-    view.w=w;view.h=h;applyView();
-  },{passive:false});
-  svg.addEventListener('pointerdown',event=>{
-    if(event.target.closest('.bar,.series-point'))return;
-    drag={x:event.clientX,y:event.clientY,view:{...view}};svg.classList.add('is-panning');svg.setPointerCapture(event.pointerId);
-  });
-  svg.addEventListener('pointermove',event=>{
-    if(!drag)return;
-    const bounds=svg.getBoundingClientRect();
-    view.x=Math.max(0,Math.min(original[2]-view.w,drag.view.x-(event.clientX-drag.x)/bounds.width*view.w));
-    view.y=Math.max(0,Math.min(original[3]-view.h,drag.view.y-(event.clientY-drag.y)/bounds.height*view.h));
-    applyView();
-  });
-  const stopDrag=event=>{if(!drag)return;drag=null;svg.classList.remove('is-panning');if(svg.hasPointerCapture(event.pointerId))svg.releasePointerCapture(event.pointerId)};
-  svg.addEventListener('pointerup',stopDrag);svg.addEventListener('pointercancel',stopDrag);
-  reset.addEventListener('click',()=>{view={x:original[0],y:original[1],w:original[2],h:original[3]};applyView()});
-  expand.addEventListener('click',()=>setExpanded(true));
-  close.addEventListener('click',()=>setExpanded(false));
-  backdrop.addEventListener('click',()=>setExpanded(false));
-  document.addEventListener('keydown',event=>{if(event.key==='Escape'&&chart.classList.contains('expanded'))setExpanded(false)});
-});
-</script>"#;
+const INTERACTIVE_SCRIPT: &str = concat!(
+    "<script>\n",
+    include_str!("compare/report_interactions.js"),
+    "\n</script>"
+);
 
 const HTML_SCRIPT: &str = concat!(
     "<script>\n",
     include_str!("compare/report_filters.js"),
     "\n</script></body></html>"
 );
-
-fn series_values(value: &Value) -> Vec<f64> {
-    value
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(Value::as_f64)
-        .take(2_048)
-        .collect()
-}
 
 fn write_bar_svg(
     path: &Path,
@@ -721,7 +616,15 @@ fn write_bar_svg(
     let bottom = PLOT_BOTTOM;
     let bar_width = (width - left - 20.0) / values.len().max(1) as f64;
     let mut svg = svg_header(width, height, title);
-    append_y_axis(&mut svg, left, PLOT_TOP, bottom, PLOT_RIGHT, max, title);
+    append_y_axis(
+        &mut svg,
+        left,
+        PLOT_TOP,
+        bottom,
+        PLOT_RIGHT,
+        (0.0, max),
+        title,
+    );
     for (index, (label, value)) in values.iter().enumerate() {
         svg.push_str(&format!("<g data-benchmark=\"{}\">", escape(label)));
         let display = labels.get(label).unwrap_or(label);
@@ -757,11 +660,15 @@ fn write_bar_svg(
         .map_err(|error| Error::Run(format!("cannot write {}: {error}", path.display())))
 }
 
-fn write_line_svg(path: &Path, title: &str, values: &[(String, TimeSeries)]) -> Result<(), Error> {
+fn write_series_svg(
+    path: &Path,
+    title: &str,
+    values: &[(String, &TimeSeries)],
+) -> Result<(), Error> {
     const WIDTH: f64 = 1_200.0;
     const LEFT: f64 = 100.0;
     const RIGHT: f64 = 1_160.0;
-    const LEGEND_TOP: f64 = 50.0;
+    const LEGEND_TOP: f64 = 68.0;
     const LEGEND_COLUMNS: usize = 2;
     const LEGEND_MAX_CHARS: usize = 46;
     const LEGEND_LINE_HEIGHT: f64 = 16.0;
@@ -769,9 +676,18 @@ fn write_line_svg(path: &Path, title: &str, values: &[(String, TimeSeries)]) -> 
     const PLOT_HEIGHT: f64 = 320.0;
     let max = values
         .iter()
-        .flat_map(|(_, points)| points.values.iter().copied())
+        .flat_map(|(_, points)| points.values.iter().flatten().copied())
         .fold(0.0_f64, f64::max)
         .max(1.0);
+    let min = values
+        .iter()
+        .flat_map(|(_, points)| points.values.iter().flatten().copied())
+        .fold(0.0_f64, f64::min);
+    let index_length = values
+        .iter()
+        .map(|(_, points)| points.values.len())
+        .max()
+        .unwrap_or(0);
     let timestamp_bounds = values
         .iter()
         .filter_map(|(_, points)| points.timestamps_ms.as_ref())
@@ -804,20 +720,17 @@ fn write_line_svg(path: &Path, title: &str, values: &[(String, TimeSeries)]) -> 
     let bottom = plot_top + PLOT_HEIGHT;
     let height = bottom + 72.0;
     let mut svg = svg_header(WIDTH, height, title);
+    svg.push_str("<text x=\"24\" y=\"44\" font-size=\"11\">Bounded display: at most 2048 original observations per series, preserving endpoints/extrema and null gaps. Full aligned observations: comparison.json.</text>");
     svg.push_str(&format!(
         "<rect class=\"legend-panel\" x=\"{LEFT:.1}\" y=\"{:.1}\" width=\"{:.1}\" height=\"{legend_height:.1}\" rx=\"8\" fill=\"#f4f8fb\" stroke=\"#dce4ec\"/>",
         LEGEND_TOP - 12.0,
         RIGHT - LEFT
     ));
-    append_y_axis(&mut svg, LEFT, plot_top, bottom, RIGHT, max, title);
+    append_y_axis(&mut svg, LEFT, plot_top, bottom, RIGHT, (min, max), title);
     append_series_x_axis(
         &mut svg,
         timestamp_bounds,
-        values
-            .iter()
-            .map(|(_, points)| points.values.len())
-            .max()
-            .unwrap_or(0),
+        index_length,
         LEFT,
         bottom,
         RIGHT,
@@ -825,49 +738,53 @@ fn write_line_svg(path: &Path, title: &str, values: &[(String, TimeSeries)]) -> 
     for (series_index, (label, points)) in values.iter().enumerate() {
         svg.push_str(&format!("<g data-benchmark=\"{}\">", escape(label)));
         let color = ["#4472c4", "#ed7d31", "#70ad47", "#a5a5a5", "#ffc000"][series_index % 5];
-        let coordinates = points
-            .values
-            .iter()
-            .enumerate()
-            .map(|(index, value)| {
+        let indices = points.render_indices();
+        if let Some(indices) = indices {
+            if indices.is_empty() {
+                svg.push_str(&format!("<text x=\"{LEFT}\" y=\"{}\" class=\"series-unavailable\">{}: no observed samples; null gaps retained in comparison.json</text>",plot_top+18.0,escape(label)));
+            }
+            let mut segment = Vec::new();
+            let mut previous = None;
+            for index in indices {
+                let Some(value) = points.values[index] else {
+                    continue;
+                };
+                if previous
+                    .is_some_and(|old| points.values[old + 1..index].iter().any(Option::is_none))
+                    && !segment.is_empty()
+                {
+                    append_polyline(&mut svg, &segment, series_index, label, color);
+                    segment.clear();
+                }
                 let x = line_x(
                     index,
                     points.timestamps_ms.as_deref(),
                     timestamp_bounds,
-                    points.values.len(),
+                    index_length,
                     LEFT,
                     RIGHT,
                 );
-                let y = bottom - value.max(0.0) / max * (bottom - plot_top);
-                format!("{x:.1},{y:.1}")
-            })
-            .collect::<Vec<_>>()
-            .join(" ");
-        svg.push_str(&format!(
-            "<polyline class=\"series\" data-series-index=\"{series_index}\" data-label=\"{}\" points=\"{coordinates}\" fill=\"none\" stroke=\"{color}\" stroke-width=\"2\"/>",
-            escape(label)
-        ));
-        for (index, value) in points.values.iter().enumerate() {
-            let x = line_x(
-                index,
-                points.timestamps_ms.as_deref(),
-                timestamp_bounds,
-                points.values.len(),
-                LEFT,
-                RIGHT,
-            );
-            let y = bottom - value.max(0.0) / max * (bottom - plot_top);
-            let timestamp = points
-                .timestamps_ms
-                .as_ref()
-                .and_then(|timestamps| timestamps.get(index))
-                .map_or_else(String::new, |timestamp| {
-                    format!(" data-timestamp=\"{timestamp}\"")
-                });
-            svg.push_str(&format!(
-                "<circle class=\"series-point\" data-series-index=\"{series_index}\" data-label=\"{}\" data-value=\"{value}\"{timestamp} cx=\"{x:.1}\" cy=\"{y:.1}\" r=\"6\" fill=\"transparent\" stroke=\"none\"/>",
-                escape(label)
-            ));
+                let fraction = if (max - min).is_finite() {
+                    (value - min) / (max - min)
+                } else {
+                    (value * 0.5 - min * 0.5) / (max * 0.5 - min * 0.5)
+                };
+                let y = bottom - fraction * (bottom - plot_top);
+                segment.push(format!("{x:.1},{y:.1}"));
+                let timestamp = points
+                    .timestamps_ms
+                    .as_ref()
+                    .map_or_else(String::new, |times| {
+                        format!(" data-timestamp=\"{}\"", times[index])
+                    });
+                svg.push_str(&format!("<circle class=\"series-point\" data-series-index=\"{series_index}\" data-label=\"{}\" data-value=\"{value}\" data-sample-index=\"{index}\"{timestamp} cx=\"{x:.1}\" cy=\"{y:.1}\" r=\"6\" fill=\"transparent\" stroke=\"none\"/>",escape(label)));
+                previous = Some(index);
+            }
+            if !segment.is_empty() {
+                append_polyline(&mut svg, &segment, series_index, label, color);
+            }
+        } else {
+            svg.push_str(&format!("<text x=\"{LEFT}\" y=\"{}\" class=\"series-unavailable\">{}: graph unavailable—too many missing-data segments; full observations retained in comparison.json</text>",plot_top+18.0,escape(label)));
         }
         let column = series_index % legend_columns;
         let row = series_index / legend_columns;
@@ -909,6 +826,23 @@ fn write_line_svg(path: &Path, title: &str, values: &[(String, TimeSeries)]) -> 
     fs::write(path, svg)
         .map_err(|error| Error::Run(format!("cannot write {}: {error}", path.display())))
 }
+fn append_polyline(
+    svg: &mut String,
+    coordinates: &[String],
+    series_index: usize,
+    label: &str,
+    color: &str,
+) {
+    svg.push_str(&format!("<polyline class=\"series\" data-series-index=\"{series_index}\" data-label=\"{}\" points=\"{}\" fill=\"none\" stroke=\"{color}\" stroke-width=\"2\"/>",escape(label),coordinates.join(" ")));
+}
+#[cfg(test)]
+fn write_line_svg(path: &Path, title: &str, values: &[(String, TimeSeries)]) -> Result<(), Error> {
+    let borrowed = values
+        .iter()
+        .map(|(label, series)| (label.clone(), series))
+        .collect::<Vec<_>>();
+    write_series_svg(path, title, &borrowed)
+}
 
 fn line_x(
     index: usize,
@@ -927,7 +861,7 @@ fn line_x(
                 if max > min {
                     (*timestamp - min) / (max - min)
                 } else {
-                    index as f64 / length.saturating_sub(1).max(1) as f64
+                    0.0
                 }
             },
         );
@@ -1000,7 +934,7 @@ fn append_y_axis(
     top: f64,
     bottom: f64,
     right: f64,
-    max: f64,
+    domain: (f64, f64),
     title: &str,
 ) {
     svg.push_str(&format!(
@@ -1009,7 +943,7 @@ fn append_y_axis(
     for tick in 0..=Y_TICKS {
         let fraction = tick as f64 / Y_TICKS as f64;
         let y = bottom - fraction * (bottom - top);
-        let value = max * fraction;
+        let value = domain.0 * (1.0 - fraction) + domain.1 * fraction;
         svg.push_str(&format!(
             "<line x1=\"{left}\" y1=\"{y:.1}\" x2=\"{right}\" y2=\"{y:.1}\" stroke=\"#dddddd\"/><text x=\"{:.1}\" y=\"{:.1}\" text-anchor=\"end\" font-size=\"11\">{}</text>",
             left - 6.0,
@@ -1084,6 +1018,9 @@ fn escape(value: &str) -> String {
 #[cfg(test)]
 #[path = "../tests/unit/compare_boundaries.rs"]
 mod boundary_tests;
+#[cfg(test)]
+#[path = "../tests/unit/report_pipeline.rs"]
+mod pipeline_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1405,7 +1342,7 @@ mod tests {
             &[(
                 "agent-with-a-deliberately-long-series-name-for-the-legend".into(),
                 super::TimeSeries {
-                    values: vec![0.0, 100.0],
+                    values: vec![Some(0.0), Some(100.0)],
                     timestamps_ms: Some(vec![10.0, 20.0]),
                 },
             )],
@@ -1446,7 +1383,7 @@ mod tests {
                         index + 1
                     ),
                     super::TimeSeries {
-                        values: vec![1.0, 2.0, 3.0],
+                        values: vec![Some(1.0), Some(2.0), Some(3.0)],
                         timestamps_ms: None,
                     },
                 )

@@ -37,10 +37,10 @@ pub(super) fn render(stage: &Path, prepared: &PreparedReport) -> Result<(), Erro
                     .iter()
                     .map(|index| {
                         let row = &benchmark_data[*index];
-                        (row.label.clone(), row.series[name].clone())
+                        (row.label.clone(), &row.series[name])
                     })
                     .collect::<Vec<_>>();
-                write_line_svg(&path, name, &values)?;
+                write_series_svg(&path, name, &values)?;
             }
             GraphKind::Composition => {
                 write_execution_timeline_svg(&path, benchmark_data)?;
@@ -80,6 +80,7 @@ pub(super) fn render(stage: &Path, prepared: &PreparedReport) -> Result<(), Erro
             "components": benchmark.components,
             "series": benchmark.series.iter().map(|(name, series)| (name, &series.values)).collect::<BTreeMap<_, _>>(),
             "series_timestamps": benchmark.series.iter().filter_map(|(name, series)| series.timestamps_ms.as_ref().map(|timestamps| (name, timestamps))).collect::<BTreeMap<_, _>>(),
+            "series_rendering": benchmark.series.iter().map(|(name,series)|(name,series.rendering_metadata())).collect::<BTreeMap<_,_>>(),
             "status": benchmark.status,
             "artifacts": benchmark.artifacts,
         })).collect::<Vec<_>>(),

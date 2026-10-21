@@ -42,6 +42,18 @@ fn check_destination(path: &Path) -> Result<bool, Error> {
 impl Publisher {
     /// Called only after all source validation, aggregation and preview reads.
     pub(super) fn begin(destination: &Path, files: Vec<String>) -> Result<Self, Error> {
+        let mut names = BTreeSet::new();
+        for name in &files {
+            let mut components = Path::new(name).components();
+            if !matches!(components.next(), Some(std::path::Component::Normal(_)))
+                || components.next().is_some()
+                || !names.insert(name)
+            {
+                return Err(Error::Input(
+                    "generated report artifact names must be unique single filenames".into(),
+                ));
+            }
+        }
         check_destination(destination)?;
         let parent = destination
             .parent()
@@ -102,7 +114,7 @@ impl Publisher {
             backup: previous.then(|| self.stage.clone()),
         };
         let parent = self.destination.parent().expect("validated report parent");
-        if let Err(error) = fs::File::open(parent).and_then(|file| file.sync_all()) {
+        if let Err(error) = synchronize_published_parent(parent) {
             return Err(Error::Io(format!(
                 "Report was published at {}, but directory durability is unconfirmed: {error}. Previous report remains at {}",
                 published.report.display(),
@@ -125,6 +137,15 @@ impl Drop for Publisher {
         }
         let _ = fs::remove_dir(&self.stage);
     }
+}
+fn synchronize_published_parent(parent: &Path) -> std::io::Result<()> {
+    #[cfg(test)]
+    if super::pipeline_tests::fail_post_commit_sync() {
+        return Err(std::io::Error::other(
+            "fixture parent synchronization failed",
+        ));
+    }
+    fs::File::open(parent).and_then(|file| file.sync_all())
 }
 #[cfg(target_os = "linux")]
 #[allow(unsafe_code)]
