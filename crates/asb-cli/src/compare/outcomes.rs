@@ -18,6 +18,12 @@ pub(crate) struct Recorded {
 
 impl Recorded {
     pub fn check_measurement(&self, measured: &Value) -> Result<(), Error> {
+        if self.source == "imported-official-grade" {
+            return Err(invalid(
+                &self.path,
+                "an imported grade and a measurement claim the same slot; preserve both and inspect the conflict",
+            ));
+        }
         for field in [
             "schema_version",
             "replica_index",

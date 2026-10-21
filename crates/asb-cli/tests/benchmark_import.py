@@ -172,6 +172,23 @@ class GradeImportTests(unittest.TestCase):
         self.assertNotEqual(compared.returncode, 0)
         self.assertEqual(len(fixture.imports()), 5)
 
+    def test_compare_rejects_even_matching_measurements_for_imported_slots(self):
+        fixture = SweepFixture()
+        self.addCleanup(fixture.temporary.cleanup)
+        output = fixture.run("sweep", "sweep.toml", "--import-grades")
+        self.assertEqual(output.returncode, 0, output.stderr.decode())
+        record = json.loads(fixture.imports()[0].read_text())
+        summary = dict(record["report"], schema_version=2, agent="pi", workload="swe-bench",
+                       provider="openrouter", model="fixture-model")
+        path = fixture.results / "000-config-0/measurements/run.json"
+        path.parent.mkdir()
+        path.write_text(json.dumps(summary))
+        original = path.read_bytes()
+        compared = fixture.run("compare", "sweep.toml")
+        self.assertNotEqual(compared.returncode, 0)
+        self.assertIn(b"same slot", compared.stderr)
+        self.assertEqual(path.read_bytes(), original)
+
     def test_import_rejects_execution_flags_before_starting_any_work(self):
         fixture = SweepFixture()
         self.addCleanup(fixture.temporary.cleanup)

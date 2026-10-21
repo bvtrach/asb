@@ -229,6 +229,25 @@ is bound into the new receipt. False task grades and failed process exits stay
 false/failed. This operation does not recover genuinely unfinished evaluation
 or authorize rerunning already-graded failures.
 
+### Grade-only recovery when execution summaries are missing
+
+`asb sweep SWEEP.toml --import-grades` can import an already completed official
+grade from its retained artifacts, bound to the original saved selection,
+configuration, replica start and workload allocation. It never starts an agent,
+provider, container or evaluator, and cannot grade an unfinished submission.
+All candidates are checked before publication. Existing outcomes/measurements
+are not replaced, and repeated identical imports are unchanged.
+
+Run `asb compare SWEEP.toml` afterwards. Imported rows identify their source as
+`imported-official-grade`. Their validated true/false outcomes contribute to
+task-resolution/coverage, but process success, timing, tokens, steps and
+execution cohort remain unknown. The original slot is reporting identity, not
+proof of simultaneous execution. Compare rechecks retained grader evidence and
+exact inspected artifact bytes; changed bindings/grades or a conflicting normal
+outcome/measurement fail instead of being silently merged. This is current
+local consistency, not historical attestation or a completion/resume receipt.
+It does not authorize replaying the agent or retrying an unresolved task.
+
 ## Steps and tokens
 
 The old step collector searched JSON keys/text for words such as `step`,

@@ -2167,3 +2167,13 @@ client requests. Its own archived execution files and reports were restored;
 the import-only report/evidence remains in `grade-import-qualification`.
 These are representative known repairs, not full-population or AI-solving
 qualification. Package and exact-head hosted checks follow this increment.
+
+The source package verified successfully, and separately compiled packaged
+tests passed the same complete offline suites. Real retained grade inspection
+for all five originals passed in 0.913 seconds at
+`retained-grade-inspection-b2aqini_`, including unchanged source/copy/SDK bytes
+with the new evidence manifests. Review additionally tightened comparison:
+an imported grade can never be combined with a normal measurement for its
+slot, even if every overlapping value matches. A public CLI regression covers
+this conflict and preservation of both records. The import commit `ff560436`
+is signed and pushed; exact-head hosted qualification follows the final guard.
