@@ -14,7 +14,7 @@ informational, not a substitute for meaningful offline regressions. Required
 functional CI, independent review, exact-head validation and patch releases
 still apply to each repair class.
 
-Publication integration, staged patch **0.2.34**, source-only: the qualified
+Publication integration, staged patch **0.2.34**: the qualified
 historical publication stack `5516c4e9` is combined with current-main bounded
 controller integration `af0eb258`. Incoming peer main `cabaa576` supplies bundled
 recording/replay, immutable capture/track proofs and recording-failure disposition;
@@ -23,9 +23,10 @@ transport stages 0.2.33. This new tree must preserve both parents' grade, resour
 capture, publication and continuation obligations. Both recording and publication
 test families are retained, with no restored coverage threshold. Earlier local
 qualifications below remain historical; they do not qualify this combined source.
-Independent semantic review, added cross-feature offline regressions, fresh
-focused/full qualification, hosted/package CI, merge, post-merge checks and
-release remain pending. No artifact/runtime/collector repair is folded in.
+Independent semantic review, added cross-feature offline regressions and fresh
+focused/full qualification are complete as recorded below. Hosted/package CI,
+merge, post-merge checks and release remain pending. No artifact/runtime/collector
+repair is folded in.
 
 Cross-feature tests-only follow-up to frozen `3359bfb2`: the actual bundled
 record/replay plus publication-fault matrix now covers nine combined cases
@@ -56,8 +57,8 @@ Strict offline locked all-target/all-feature Clippy (`-D warnings`), formatting
 and diff whitespace checks passed; Clippy transcript is
 `target/publication34-cross-clippy.log`. Independent review, fresh full offline
 qualification and hosted/package/post-merge delivery remain separate gates. The requested
-recording raw-cleanup replacement-window finding is source-only in the residual
-audit; its separate repair/reproduction is not implemented by these tests.
+recording raw-cleanup replacement-window finding has a separate observed-red
+reproduction in the residual audit; its repair is not implemented by these tests.
 
 Fresh publication34 qualification at frozen, independently approved `5a2f05ad`:
 the locked/offline/all-target/all-feature suite passed **1,288 tests**, zero
@@ -82,6 +83,15 @@ explicit opt-ins remain unqualified. Independent final review, actual parent33
 delivery ancestry, hosted/package CI, PR merge, both post-merge jobs and release
 remain pending. No collector, runtime, artifact or separate recording raw-
 consumption repair is folded into this qualified publication tree.
+
+Independent final source/evidence review accepted `66f98207`: its only changes
+after tested source `5a2f05ad` are qualification and residual-audit documentation.
+Signed ancestry merge `2b09da48` includes actual delivered controller main
+`b1e01614` (PR #297) and preserves all qualified production/test/Cargo/workflow
+bytes; only the combined historical ledger needed conflict resolution. Patch
+0.2.32 is released with both post-merge jobs green. Controller patch 0.2.33
+post-merge validation is still running at this checkpoint. Publication 0.2.34
+requires its own exact-head CI and both post-merge jobs before release.
 
 Historical publication integration:
 
