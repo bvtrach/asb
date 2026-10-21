@@ -47,6 +47,18 @@ pub(crate) struct OutcomeReference {
     pub task: serde_json::Value,
 }
 
+/// A pre-allocation start declaration, never proof that an agent was launched.
+/// Historical records omit the cohort; that absence is not resume authority.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct StartIntent {
+    pub schema_version: u32,
+    pub scope: String,
+    pub execution: ExecutionIdentity,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_cohort: Option<crate::measurements::ExecutionCohort>,
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Slot {

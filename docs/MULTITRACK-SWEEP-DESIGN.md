@@ -433,6 +433,37 @@ are retried. Strict Clippy and binary build pass. This is reservation evidence
 only: modern continuation must still consume typed validated admission and
 check original starts, cohorts, allocations, outputs and completed receipts.
 
+Campaign start intent now retains the actual dispatch cohort before project,
+provider or workload startup. The observer requires an admitting cohort and
+the original selected replica population before publishing. A partial cohort
+such as original replicas 2 and 4 of 4 keeps those IDs and total, not 1 and 2
+of 2. Historical start records without cohort data remain inspectable as
+unknown provenance, never automatic continuation permission. A unit regression
+checks missing/contradictory cohorts, partial membership and no-overwrite;
+the actual three-batch comparison fixture binds all six starts to their emitted
+execution/cohort and checks distinct generation IDs between batches. Intent
+does not prove a client launched, and does not replace reservations or cleanup.
+
+The combined reservation/cohort source passed the complete offline test suite
+(1,226 library tests passed, 13 explicit opt-in ignores, all integration targets
+and doctests passed), all 43 actual repeated-run/sweep cases, formatting,
+strict all-target/all-feature Clippy, build, private Rust docs and UML generation.
+The actual executable hash stayed unchanged across the full suite. Independent
+read-only review approved both checkpoints. Package/install/hosted qualification
+and the remaining modern continuation implementation are still open.
+
+The next strict slot consumer must derive its declaration from validated layout
+and saved selection: shared outcome context, exact original execution/replica,
+start/cohort, outcome reference, expected output and measurement paths. Compose
+the existing grade/capture/cleanup validator with these bindings; do not invent
+a legacy entry. Native workload sessions legitimately have no remote allocation;
+saved module environment capabilities determine when original remote allocation
+is required. Any unexpected allocation must also validate. Seal settled false
+grades, verify recording proofs in a batch and exclude growing raw/ZIP outputs
+from immutable roots. Only after all configurations validate may a consuming
+continuation admit positively reserved untouched slots. Any started slot without
+strict settlement must take explicit owned-resource recovery, never a retry.
+
 Independent continuation review identified a required distinction before modern
 resume can be enabled. A published campaign plan is intended work, not positive
 proof that a missing slot was never attempted. Initial publication must retain

@@ -862,13 +862,28 @@ impl replica::CompletionObserver for Observer {
     fn starting(
         &self,
         replica: replica::Identity,
-        _: Option<&crate::measurements::ExecutionCohort>,
+        cohort: Option<&crate::measurements::ExecutionCohort>,
     ) -> Result<(), Error> {
+        if !replica.valid() || replica.total != self.identity.concurrency {
+            return Err(Error::Input(
+                "campaign start differs from its original replica population".into(),
+            ));
+        }
+        let cohort = cohort
+            .filter(|cohort| cohort.admits(replica.index, replica.total))
+            .ok_or_else(|| {
+                Error::Input("campaign start requires its actual dispatch cohort".into())
+            })?;
         publish(
             &self
                 .directory
                 .join(format!("starts/{}.json", replica.index)),
-            &json!({"schema_version":1,"scope":"execution-start-intent-not-actual-attempt","execution":self.identity.execution(replica)}),
+            &super::campaign::StartIntent {
+                schema_version: 1,
+                scope: "execution-start-intent-not-actual-attempt".into(),
+                execution: self.identity.execution(replica),
+                execution_cohort: Some(cohort.clone()),
+            },
         )
     }
     fn completed(&self, replica: replica::Identity, record: &Path) -> Result<(), Error> {
@@ -1323,6 +1338,61 @@ mod tests {
             cleanup_confirmed: AtomicBool::new(true),
         };
         (root, observer, replica::Identity::default())
+    }
+
+    #[test]
+    fn start_intent_binds_actual_partial_cohort_without_renumbering_original_replicas() {
+        let (root, mut observer, _) = outcome_observer();
+        private_directory(&root.join("starts"), false).unwrap();
+        observer.identity.concurrency = 4;
+        let replica = replica::Identity { index: 2, total: 4 };
+        let cohort = crate::measurements::ExecutionCohort {
+            id: "abc-123".into(),
+            selected_replicas: 4,
+            admitted_slots: vec![2, 4],
+        };
+        let path = root.join("starts/2.json");
+        assert!(observer.starting(replica, None).is_err());
+        for changed in [
+            crate::measurements::ExecutionCohort {
+                admitted_slots: vec![1, 4],
+                ..cohort.clone()
+            },
+            crate::measurements::ExecutionCohort {
+                selected_replicas: 2,
+                ..cohort.clone()
+            },
+            crate::measurements::ExecutionCohort {
+                id: String::new(),
+                ..cohort.clone()
+            },
+        ] {
+            assert!(observer.starting(replica, Some(&changed)).is_err());
+        }
+        assert!(
+            observer
+                .starting(replica::Identity { index: 2, total: 2 }, Some(&cohort))
+                .is_err()
+        );
+        assert!(!path.exists());
+        observer.starting(replica, Some(&cohort)).unwrap();
+        let original = fs::read(&path).unwrap();
+        let intent: super::super::campaign::StartIntent =
+            serde_json::from_slice(&original).unwrap();
+        assert_eq!(intent.execution, observer.identity.execution(replica));
+        assert_eq!(intent.execution_cohort, Some(cohort.clone()));
+        assert!(observer.starting(replica, Some(&cohort)).is_err());
+        assert_eq!(fs::read(&path).unwrap(), original);
+        // Old start declarations remain inspectable with explicitly unknown
+        // cohort provenance; deserialization alone grants no continuation.
+        let mut historical: serde_json::Value = serde_json::from_slice(&original).unwrap();
+        historical
+            .as_object_mut()
+            .unwrap()
+            .remove("execution_cohort");
+        let old: super::super::campaign::StartIntent = serde_json::from_value(historical).unwrap();
+        assert!(old.execution_cohort.is_none());
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

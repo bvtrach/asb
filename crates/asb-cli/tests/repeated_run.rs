@@ -160,6 +160,40 @@ fn campaign_comparison_enumerates_every_batch_and_preserves_failed_attempt_grade
     let run = project.run("3");
     assert!(!run.status.success());
     let plan = campaign_plan(&run);
+    let mut cohorts = std::collections::BTreeMap::new();
+    for summary in records(&run.stdout)
+        .into_iter()
+        .filter(|row| row["workload_success"].is_boolean())
+    {
+        let execution = &summary["execution"];
+        let batch = execution["batch"].as_u64().unwrap();
+        let replica = execution["replica"].as_u64().unwrap();
+        let start: Value = serde_json::from_slice(
+            &fs::read(
+                plan.parent()
+                    .unwrap()
+                    .join(format!("batch-{batch}/starts/{replica}.json")),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(start["execution"], *execution);
+        assert_eq!(start["execution_cohort"], summary["execution_cohort"]);
+        assert_eq!(start["execution_cohort"]["selected_replicas"], 2);
+        assert_eq!(start["execution_cohort"]["admitted_slots"], json!([1, 2]));
+        let id = start["execution_cohort"]["id"].as_str().unwrap().to_owned();
+        if let Some(previous) = cohorts.insert(batch, id.clone()) {
+            assert_eq!(previous, id);
+        }
+    }
+    assert_eq!(cohorts.len(), 3);
+    assert_eq!(
+        cohorts
+            .values()
+            .collect::<std::collections::BTreeSet<_>>()
+            .len(),
+        3
+    );
     let output = compare_campaign(&project, &plan);
     assert!(
         output.status.success(),
