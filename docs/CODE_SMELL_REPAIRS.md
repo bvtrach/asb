@@ -15,9 +15,12 @@ functional CI, independent review, exact-head validation and patch releases
 still apply to each repair class.
 
 Current consuming sweep-phase integration is staged as **0.2.28**, on qualified
-typed-disposition checkpoint `6553da9c`. Its new integration source review,
-fresh full qualification and hosted delivery remain pending; the earlier
-1,077-test sweep evidence is not qualification of this combined tree.
+typed-disposition checkpoint `6553da9c`. Independent integration source review
+approved `b1459a9f`; its fresh all-target/all-feature offline qualification
+passed 1,178 tests with zero failures and 21 explicit optional skips across
+22 targets. Strict Clippy, formatting and sequential build/private docs/pinned
+AutoUML/flows/interactive views/completions passed. Hosted delivery remains
+pending; the earlier 1,077-test sweep evidence is not substituted for these checks.
 
 The parent typed run-disposition integration is staged as **0.2.27**, on the
 independently source-reviewed selection-identity integration **0.2.26**, after
@@ -334,8 +337,16 @@ skips: 74 sweep, 90 runner, 69 comparison, one shared-isolation test and 86 test
 across nine actual CLI/protocol targets, including repeated-run, guest driver,
 official protocol, planning admission and measured/unmeasured sweep paths.
 The actual binary was built first and its hash stayed unchanged; strict
-all-target/all-feature Clippy and formatting passed. Fresh independent source
-review and full qualification remain pending for that combined tree.
+all-target/all-feature Clippy and formatting passed. Independent integration
+source review approved `b1459a9f`, including the docs-only current-main ancestry
+merge. Its fresh full offline all-target/all-feature suite passed 1,178 tests,
+zero failures and 21 explicit optional skips across 22 targets, followed by
+strict Clippy, formatting and sequential build/private Rust docs/pinned AutoUML
+0.7.2/flows/interactive views/completions. Actual executable SHA-256 stayed
+unchanged before/after tests and final build:
+`397f8ff5e13c5792dbd01598841ddef686e662bf3d1a6f100d939676d92a2652`.
+Exact-head hosted/package CI, merge, post-merge verification and release remain
+pending. This does not close the remaining audit or runtime-discovery repair.
 
 Checkpoint repair, released patch **0.2.22**: completion group/replica sealing, partial continuation
 and retained-outcome reconciliation now consume a private validated outcome
