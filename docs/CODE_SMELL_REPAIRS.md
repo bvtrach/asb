@@ -14,18 +14,24 @@ informational, not a substitute for meaningful offline regressions. Required
 functional CI, independent review, exact-head validation and patch releases
 still apply to each repair class.
 
-Integrated candidate, staged patch **0.2.20**: the independently reviewed
+Integrated candidate, staged patch **0.2.21**: the independently reviewed
 launch-descriptor/one-shot admission repair (`b1a54fde`) is combined with the
 reviewed workload-wizard stack (`6af7939b`), retaining shared benchmark paths,
 bounded flamegraph cleanup, host prerequisite consent and adapter-owned
 executable readiness. Adapter package preferences and source readiness coexist
 with the raw-OS launch descriptor; native command configuration and exclusive
 gate admission remain intact. The new planning execution budget and recorded
-report-metadata boundaries remain intact as well. Independent integration
-source review approved `3259da7e`; its fresh full offline suite passed 1,008
-tests, followed by strict Clippy, formatting and build/docs/diagrams checks.
-Exact-head hosted/package CI, PR merge, post-merge verification and a patch
-release remain pending. This staging entry
+report-metadata boundaries remain intact as well. The typed comparison pipeline
+retains bounded source snapshots, nullable series, signed bars and complete
+generation publication. Planning, controller caps and module revisions stay
+metadata rather than measurements. Independent integration source review
+approved parent `3259da7e`; its full offline suite passed 1,008 tests followed by
+strict Clippy, formatting and build/docs/diagrams checks. The independently
+approved report integration `1fb9bdf1` passed 1,036 full offline tests with
+21 optional skips, strict Clippy, formatting and build/docs/diagrams checks.
+Actual main ancestry through launch repair PR #286 changes only this ledger,
+not that qualified production/test tree. Exact-head hosted/package CI, PR merge,
+post-merge verification and patch release remain pending. This staging entry
 does not claim delivery or close the other audit repair classes.
 
 ## 1. Endpoint preparation invariants
@@ -61,7 +67,7 @@ without changing established result/workspace identities unintentionally.
 Also review duplicated manifest reference validation and executable resolution;
 same names alone do not prove equivalent semantics. Pending.
 
-Executable-policy candidate, staged patch **0.2.18**: project-local source
+Executable-policy repair, released patch **0.2.18**: project-local source
 installation, readiness and launch share one registry-neutral executable lookup.
 Explicit source overrides precede adapter-owned package preferences; unusable
 present candidates cannot silently fall through to stale fallback code. Codex
@@ -74,8 +80,9 @@ entries and host-only discovery. Existing installer regressions now call the
 same shared executable predicate rather than a removed duplicate. Current-main
 integration `b395617e` is independently source-approved; its full offline suite
 passed 996 tests, followed by strict Clippy, formatting and build/docs checks.
-Exact-head hosted/package CI, PR merge, post-merge verification and the patch
-release remain pending.
+PR #263 merged as `c9beafb6dfb52562dac59dc6de7bcbc7f7421204`.
+Exact-head hosted/package CI and both post-merge jobs passed in run
+`39635610656`; the released signed tag is GitHub-verified at that exact commit.
 
 Shared benchmark-path repair, released patch **0.2.13**: all five equivalent legacy normalizers now
 use one component/stem policy, and both sweep execution and comparison use the
@@ -213,6 +220,38 @@ released from that exact commit with a GitHub-verified signed tag.
 Audit correction: current `perfetto_instance_config` is seven lines, not the
 reported 630. Comparison's filter JavaScript is already a separate asset.
 Do not perform redundant extraction based on stale line counts.
+Comparison candidate, staged patch **0.2.21**: explicit loaded/validated/prepared/rendered/published
+states replace intertwined loading, grading coverage, graph planning and output
+publication. Stable identities, typed result provenance and one-time population
+aggregation preserve existing evidence semantics. Confirmed fixes retain null
+positions with original timestamps (no shifted samples), disclose bounded
+original-index extrema-preserving line rendering instead of silent truncation,
+and provide nearest observed-sample hover text. Opened-once bounded source reads
+reject nonregular files and growth; retained physical SVG paths prevent
+symlink-parent components from being misread as logical output links.
+Generation-specific private staging and a separate persistent report lock
+publish whole generations with Linux/macOS native atomic exchange and preserve the old tree
+as a recoverable backup. Pre-commit failures leave old bytes unchanged;
+post-commit sync/output errors truthfully report published-but-unconfirmed.
+Offline source/DOM/publication regressions require no provider or privileged
+collector. Real browser qualification remains opt-in and host-dependent. This
+candidate passed independent source review and a separate execution of all 25
+pipeline regressions (one explicit real-browser opt-in remains ignored). Signed
+scalar bars preserve negative observations, finite zero-based geometry even at
+opposite-sign floating-point extremes, and exact original values in embedded
+HTML hover. Worker full qualification passed 990 tests with 21 explicit skips
+at `4cb19e48`. Integrated version/package and ordinary hosted verification remain
+pending; this is not a release or a universal non-Linux atomicity claim.
+When the filesystem lacks exchange, a private no-replace probe precedes the
+recoverable backup/commit/rollback fallback. This path honestly discloses a
+temporary absent-destination/crash window, retains the old backup on failed
+restore and never overwrites a racing foreign destination. Missing safe native
+no-replace support fails closed without first moving user data. MacOS native
+calls are selected explicitly; Linux fixtures do not qualify a macOS runtime.
+Separate confirmed follow-up: bar charts still clamp signed values to zero.
+The signed-domain repair above covers line-series axes only; bar baselines,
+rectangles, signed ticks and labels need their own offline coordinate tests
+and repair before claiming all chart families faithfully display negatives.
 The custom BPF scope validator is also a small function (about sixty lines),
 not the reported 533; its confirmed correctness defect is tracked below.
 
@@ -245,7 +284,9 @@ intent, although no current production caller uses that method; do not claim
 an observed credential leak. Tests must preserve explicit environment removal,
 clearing, non-UTF8 arguments/environment, I/O, owner death and descendant cleanup.
 
-Separate launch-descriptor candidate (not yet merged/released): the adapter
+Separate launch-descriptor repair: PR #286 merged as
+`f2e805824c0815c31269b586ebca677c9a71218f`; post-merge verification and the
+**0.2.20** release remain pending. The adapter
 returns an OS-string client executable/prefix/explicit argv[0] descriptor;
 native preparation constructs the gate command once before all configuration.
 The same actual `Command` retains standard-library environment clearing,
@@ -292,7 +333,7 @@ merged as `ac80fcb4201cc679afd280b79775b46cfe20ef5b`. Exact-head
 ordinary/package CI and both post-merge jobs passed (run `39622744776`);
 the signed release points to that exact commit.
 
-Workload-wizard candidate, staged patch **0.2.19**: explicit browsing, editing
+Workload-wizard repair, released patch **0.2.19**: explicit browsing, editing
 and saved states repair the advertised Enter-to-finish action. Saved subsets
 are restored when editing, replaced rather than appended, retained across
 deselection, and published only for selected workloads. Every selected subset
@@ -304,8 +345,10 @@ integration tests, including ten actual PTY workflow scenarios and terminal
 restoration. Worker full offline qualification passed 956 tests with 20 explicit
 optional skips. Current-main integration `6af7939b` is independently
 source-approved; a fresh full offline suite passed 998 tests, followed by
-strict Clippy, formatting and build/docs checks. Exact-head hosted/package CI,
-merge and post-merge release verification remain pending. Detached installation-worker custody and
+strict Clippy, formatting and build/docs checks. PR #284 merged as
+`d33064f04abd84e89aad7b451efdf369c0cb7400`; exact-head hosted/package CI and
+both post-merge jobs passed in run `39637435805`. The released signed tag is
+GitHub-verified at that exact commit. Detached installation-worker custody and
 other TUI structural issues remain separate repair classes.
 
 ## 7. Limits, diagnostics and CLI consistency

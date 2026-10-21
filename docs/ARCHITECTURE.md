@@ -43,8 +43,42 @@ ASB is deliberately split into a small CLI and a file-backed workload directory:
   every command resolves relative paths from this project root;
 - `runner`: configuration loading, bounded agent-output logging, and live agent
   process execution;
-- `compare`: offline sweep-result loading, numeric aggregation, and dependency-free
-  SVG bar/line chart generation;
+- `compare`: offline reports use explicit loaded, globally validated, prepared,
+  rendered and published phases. Stable row identities and typed result sources
+  bind original evaluation evidence; preparation computes population coverage
+  and unique chart identities once. Structured outcomes, recorded modules,
+  execution-plan fingerprints and retained-grade provenance are validated at
+  the source boundary. Preparation computes metric-policy and binary-resolution
+  cohorts once, including conservative missing-slot coverage; JSON and HTML
+  render those same summaries without consulting the live workload registry.
+  Native rewards retain nullable resolution and independent execution status.
+  Recorded planning objects, controller caps and module revisions remain
+  provenance metadata; they never become observed metric charts.
+  See [benchmark outcomes](BENCHMARK_OUTCOMES.md) for policy semantics.
+  Sources are opened once as bounded regular
+  files (64 KiB per benchmark, 32 MiB retained configurations, 16 MiB per
+  manifest/collector/preview and 64 MiB per saved plan). Manifest, configuration
+  and saved-plan validation consume retained snapshots, never a refreshed second
+  identity read. Collector previews retain physical paths separately from published
+  logical links. Nullable time-series observations keep aligned timestamps in
+  full JSON; SVGs disclose a 2048-observation bound preserving segment endpoints
+  and extrema, never bridge unknown gaps, and distinguish sample indices from
+  measured milliseconds. Raw state/event timelines are not downsampled.
+  Scalar charts retain accepted negative metrics around an explicit zero
+  baseline, with signed labels and original observations in hover metadata.
+  Signed scalar and series coordinates share overflow-safe normalization;
+  nonnegative scalar scales retain their existing zero-to-maximum geometry.
+  A separate persistent report lock guards private same-filesystem staging;
+  Linux and macOS native rename/exchange publish a whole generation after rendering
+  and synchronization. Replaced generations, including user-added files, remain
+  recoverable backups. If exchange is unsupported, a no-replace capability probe
+  runs only in the private stage before moving the old report. A documented
+  recoverable backup/commit/rollback path then has a brief destination-absence
+  and crash window; it never overwrites a foreign destination. Failed rollback
+  retains the old backup and prints a restore command. Missing safe no-replace
+  support fails closed before moving user data. No native macOS runtime
+  qualification is implied by Linux tests. Post-commit
+  durability or confirmation errors explicitly report that publication occurred;
 - `measurements`: opt-in process-scoped runtime collection. It writes bounded JSON
   records for host facts, elapsed time, success rate, and normalized input,
   output, cached, and total token usage, and

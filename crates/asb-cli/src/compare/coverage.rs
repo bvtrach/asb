@@ -36,7 +36,7 @@ pub(super) fn fingerprints(
     benchmark: &BenchmarkData,
     benchmarks: &[BenchmarkData],
 ) -> Result<BTreeSet<Option<String>>, Error> {
-    if benchmark.result_source != "missing" {
+    if benchmark.result_source != super::ResultSource::Missing {
         return Ok(BTreeSet::from([benchmark
             .execution_plan_fingerprint
             .clone()]));
@@ -46,7 +46,7 @@ pub(super) fn fingerprints(
     let mut compatible = BTreeSet::new();
     for peer in benchmarks
         .iter()
-        .filter(|row| row.result_source != "missing")
+        .filter(|row| row.result_source != super::ResultSource::Missing)
     {
         if metric_scope_with_fingerprint(peer, &None)? == scope {
             compatible.insert(peer.execution_plan_fingerprint.clone());
@@ -141,11 +141,13 @@ pub(super) fn metric_groups(
         .collect())
 }
 
-pub(super) fn metric_html(benchmarks: &[BenchmarkData]) -> Result<String, Error> {
+pub(super) fn metric_html(
+    groups: &BTreeMap<String, crate::workloads::outcome::MetricSummary>,
+) -> String {
     let mut html = String::from(
         "<section><h2>Benchmark metric policies</h2><p>Each policy declares whether missing rewards contribute zero or are excluded. Imputation does not change evaluator status; incomplete coverage is not an official population score. Uncertainty is the standard error over independent task means under that policy, unavailable with fewer than two tasks or unequal repetition counts for attempt means. Repetitions are not pass@k.</p><table><tr><th>Group</th><th>Policy / reward</th><th>Reward coverage</th><th>Tasks</th><th>Estimate</th><th>Task standard error</th></tr>",
     );
-    for (key, group) in metric_groups(benchmarks)? {
+    for (key, group) in groups {
         let missing = match (&group.policy.missing_rewards, &group.policy.aggregation) {
             (
                 crate::workloads::outcome::MissingRewardPolicy::Zero,
@@ -164,10 +166,10 @@ pub(super) fn metric_html(benchmarks: &[BenchmarkData]) -> Result<String, Error>
             .rewards
             .get(&group.policy.reward)
             .map_or("unknown", |spec| spec.unit.as_str());
-        html.push_str(&format!("<tr><td>{}</td><td>{} v{} / {} ({})<br>{}</td><td>{}/{}</td><td>{}</td><td>{}</td><td>{}</td></tr>", super::escape(&key), super::escape(&group.policy.id), group.policy.version, super::escape(&group.policy.reward), super::escape(unit), missing, group.rewarded_attempts, group.selected_attempts, group.unique_tasks, group.estimate.map_or_else(|| "Unavailable".into(), |v| format!("{v:.6}")), group.task_cluster_standard_error.map_or_else(|| "Unavailable".into(), |v| format!("{v:.6}"))));
+        html.push_str(&format!("<tr><td>{}</td><td>{} v{} / {} ({})<br>{}</td><td>{}/{}</td><td>{}</td><td>{}</td><td>{}</td></tr>", super::escape(key), super::escape(&group.policy.id), group.policy.version, super::escape(&group.policy.reward), super::escape(unit), missing, group.rewarded_attempts, group.selected_attempts, group.unique_tasks, group.estimate.map_or_else(|| "Unavailable".into(), |v| format!("{v:.6}")), group.task_cluster_standard_error.map_or_else(|| "Unavailable".into(), |v| format!("{v:.6}"))));
     }
     html.push_str("</table></section>");
-    Ok(html)
+    html
 }
 
 pub(super) fn group_kind(benchmark: &BenchmarkData) -> &str {
@@ -332,10 +334,9 @@ pub(super) fn populations(
     Ok(result)
 }
 
-pub(super) fn html_table(benchmarks: &[BenchmarkData]) -> Result<String, Error> {
-    let groups = populations(benchmarks)?;
+pub(super) fn html_table(groups: &BTreeMap<String, PopulationCoverage>) -> String {
     if groups.is_empty() {
-        return Ok(String::new());
+        return String::new();
     }
     let mut html = String::from(
         "<section><h2>Population coverage</h2><p>Counts describe the entire saved selection, independent of display filters.</p><div class=\"table-wrap\"><table><thead><tr><th>Agent / provider / model / workload</th><th>Selected tasks / population</th><th>Evaluated / selected attempts</th><th>Resolved unique tasks</th><th>Selected-attempt lower bound</th><th>Complete one-attempt population score</th></tr></thead><tbody>",
@@ -358,7 +359,7 @@ pub(super) fn html_table(benchmarks: &[BenchmarkData]) -> Result<String, Error> 
         ));
     }
     html.push_str("</tbody></table></div></section>");
-    Ok(html)
+    html
 }
 
 #[cfg(test)]
@@ -369,6 +370,11 @@ mod tests {
         use crate::workloads::outcome::*;
         let task = crate::workloads::TaskIdentity::local("bug-fix", Some("case"));
         BenchmarkData {
+            id: crate::compare::RowId {
+                configuration: 0,
+                replica: if missing { 2 } else { 1 },
+            },
+            artifact_sources: BTreeMap::new(),
             planning: None,
             effective_budgets: None,
             legacy_evaluation_provenance: None,
@@ -387,7 +393,11 @@ mod tests {
                     supersedes: None,
                 },
             }),
-            result_source: if missing { "missing" } else { "measurement" },
+            result_source: if missing {
+                crate::compare::ResultSource::Missing
+            } else {
+                crate::compare::ResultSource::Measurements
+            },
             reconciled: false,
             replica_index: None,
             execution_cohort: None,

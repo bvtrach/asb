@@ -239,6 +239,29 @@ report JavaScript under Node with an injected DOM fixture: every filter
 dimension, combined intersections, replica identities, select/clear all,
 empty charts, hover cleanup and selection restoration. SVG-generation tests
 also check that bars, series/legends and composition rows carry benchmark groups.
+`cargo test --locked --offline --lib compare::pipeline_tests` exercises actual
+report generation without benchmarks or providers: cross-row/population
+validation before writes, bounded growing/replaced/FIFO inputs, symlink-parent
+path semantics, aligned nullable observations, full-source JSON with bounded
+graphs, gap preservation, atomic regeneration, persistent writer exclusion,
+recoverable previous generations and truthful post-publication failures.
+It runs the actual generated SVG and embedded interaction script under Node's
+synthetic DOM, including observed-sample hover, zoom, pan and modal controls;
+signed scalar fixtures additionally check negative/mixed/extreme finite and
+subnormal geometry, unchanged JSON values, embedded HTML and signed-value hover.
+this is not browser-layout qualification. The ignored
+`real_headless_browser_qualifies_generated_report_interactions` test can use an
+existing local browser selected explicitly with `ASB_TEST_CHROMIUM`; it never
+downloads one or modifies host/Snap permissions. A host confinement failure is
+not a passing browser qualification. Existing state/event SVGs remain intact.
+Private-backend tests force unsupported exchange, failed no-replace capability,
+backup/commit/rollback and directory-sync errors on real owned directories. They
+prove old user-added files and unrelated sentinels survive and a racing foreign
+destination is never overwritten. The recoverable fallback explicitly permits
+a short missing-destination/crash window; after a crash, preserve the sibling
+`.asb-report-previous-*` backup before restoring it to an absent report path.
+Linux uses `renameat2`; macOS uses `renamex_np` with `RENAME_SWAP`/`RENAME_EXCL`.
+These are source contracts, not a claim of native macOS execution on Linux.
 Reserved-`all` tests cover complete registry expansion, enabled/original trial
 populations, catalog-name collisions and provider-scoped model discovery using
 only a bounded loopback HTTP fixture with no real provider credentials.
