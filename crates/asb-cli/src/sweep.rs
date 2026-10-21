@@ -29,7 +29,7 @@ pub(crate) fn closed_slot_reports(
     checkpoint::completed::retained::reporting(checkpoint, directory, index, entry)
 }
 
-const MAX_SWEEP_BYTES: u64 = 16 * 1024 * 1024;
+pub(crate) const MAX_SWEEP_BYTES: u64 = 16 * 1024 * 1024;
 pub(crate) const MAX_CONFIGS: usize = 65536;
 
 #[derive(Debug, Deserialize, Serialize)]

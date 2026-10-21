@@ -3,6 +3,8 @@
 use serde::{Deserialize, Serialize};
 
 pub(crate) const MAX_CONCURRENCY: usize = 64;
+/// Serialized configuration bound shared by setup and every configuration reader.
+pub(crate) const MAX_CONFIG_BYTES: usize = 64 * 1024;
 
 /// Small, extensible benchmark configuration written by `asb setup`.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
