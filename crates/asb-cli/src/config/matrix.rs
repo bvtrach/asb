@@ -284,10 +284,10 @@ pub(crate) fn publish_sweep(
     }
     create_parent(path, output)?;
     let directory = &prepared.directory;
-    fs::create_dir(&directory)
+    fs::create_dir(directory)
         .map_err(|error| Error::Io(format!("cannot create {}: {error}", directory.display())))?;
     for (filename, text) in &prepared.configurations {
-        let file = directory.join(&filename);
+        let file = directory.join(filename);
         fs::write(&file, text)
             .map_err(|error| Error::Io(format!("cannot write {}: {error}", file.display())))?;
     }
