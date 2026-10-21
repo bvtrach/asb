@@ -203,23 +203,7 @@ fn host_executable_in(
     };
     candidates
         .into_iter()
-        .find(|path| {
-            let Ok(metadata) = std::fs::metadata(path) else {
-                return false;
-            };
-            if !metadata.is_file() {
-                return false;
-            }
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                metadata.permissions().mode() & 0o111 != 0
-            }
-            #[cfg(not(unix))]
-            {
-                true
-            }
-        })
+        .find(|path| crate::executables::is_executable(path))
         .and_then(|path| std::path::absolute(path).ok())
 }
 
@@ -277,20 +261,20 @@ pub(crate) fn apply_runtime_path(
 }
 
 /// Resolve a tool executable through its registered project-local layout.
+pub(crate) fn local_lookup(id: &str, tools_root: &Path) -> crate::executables::Lookup {
+    let Some(tool) = find(id) else {
+        return crate::executables::Lookup::Missing;
+    };
+    let Some(executable) = tool.executable() else {
+        return crate::executables::Lookup::Missing;
+    };
+    crate::executables::project_lookup(tools_root, tool.id(), executable, std::iter::empty())
+}
+
 pub(crate) fn resolve(id: &str, project_root: &Path, tools_dir: &str) -> Option<String> {
-    let tool = find(id)?;
-    let executable = tool.executable()?;
-    let root = project::resolve(project_root, tools_dir).join(tool.id());
-    [
-        root.join("bin").join(executable),
-        root.join("node_modules/.bin").join(executable),
-        root.join("venv/bin").join(executable),
-        Path::new(".asb-tools/bin").join(executable),
-    ]
-    .into_iter()
-    .find(|candidate| candidate.is_file())
-    .and_then(|candidate| candidate.canonicalize().ok())
-    .map(|candidate| candidate.to_string_lossy().into_owned())
+    local_lookup(id, &project::resolve(project_root, tools_dir))
+        .path()
+        .map(|path| path.to_string_lossy().into_owned())
 }
 
 #[cfg(test)]

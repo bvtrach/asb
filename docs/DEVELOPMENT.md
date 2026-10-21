@@ -46,6 +46,13 @@ prevent the fast-forward, and no stash is automatically discarded.
 
 These checks are offline: replay tests start the embedded tape proxy and test
 clients on loopback, but CI never starts a real agent, bridge, or live provider.
+`cargo test --locked --offline --lib executables::tests` installs local shell
+fixtures through every registered agent/tool source-install route, then checks
+readiness and actually executes the selected fixture. Isolated subprocess
+cases cover external execution overrides, broken/non-executable/symlink
+candidates, host-tool policy and custom project roots. The Codex adapter also
+checks its native-package preference and explicit-source precedence. No package
+manager, provider, real agent or download is invoked by these path-policy tests.
 `cargo test --locked --offline --test compare_setup` checks repeated CLI setup
 selections, scoped models/trials, dependency expansion, non-overwriting sweep
 publication, standalone measured/unmeasured reports and an injected browser

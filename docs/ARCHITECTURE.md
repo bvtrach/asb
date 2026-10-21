@@ -547,6 +547,22 @@ owning agent adapter's final counter and reports unknown instead of guessing
 from text or streaming JSON keys. No runner or collector branches on agent
 identity to interpret that counter.
 
+Agent/tool launch and installer/TUI readiness share one project executable
+policy. An explicit `<tools>/<id>/bin/<executable>` source override wins over
+adapter-owned package preferences, then the npm/venv and configured shared-bin
+layouts are considered. Codex owns its native npm-package preference in its
+agent adapter; the generic resolver does not branch on agent identities. A
+present but broken, non-executable or non-file higher-priority candidate stops
+resolution instead of silently executing stale fallback code. Symlinks must
+resolve to executable regular files. These checks do not eliminate changes
+between preparation and execution. Relative/custom tool directories and legacy
+shared-bin candidates are rooted in the selected project, never an unrelated
+working directory. `ASB_TOOL_DIR` remains an execution-only override: a missing
+candidate falls back to the project, a present unusable candidate stops launch,
+and neither case changes project-local installed status. Only explicitly
+host-backed tool recipes retain their separate host-availability fallback;
+host agents and external overrides are not project installations.
+
 `asb tool install` installs a pinned package recipe into the configured tools
 directory for supported agents and support tools, or downloads/copies an
 executable supplied with `--source`. Record/replay instead uses ASB's embedded
