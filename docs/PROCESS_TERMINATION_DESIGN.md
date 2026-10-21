@@ -20,7 +20,8 @@ or bundled into this class.
   quiescence. Base Hello/Quiescent receipts and matching guardian exit retain
   their existing ownership and completion requirements.
 - Process execution, official grade, capture completeness, resource settlement,
-  optional observation completeness and publication are separate obligations.
+  optional termination observation and publication are separate facts. Optional
+  termination observation is not a new completion or continuation obligation.
 - Requested TERM/KILL, a timeout, Docker code 137 or a shell code 143 cannot
   establish that an agent died from signal 9 or 15.
 - Old records with numeric exit codes do not retroactively acquire exact
@@ -136,23 +137,24 @@ not silently turn collector failures into accepted metrics or stop requests
 into successful termination. Existing completion and adapter validation tests
 remain mandatory. No active-interruption semantics are weakened for agents.
 
-For an admitted agent, a requested observation fault becomes an ancillary
-execution-evidence issue: publish unknown `process_termination`, a safe fixed
-diagnostic and failed operational disposition, but keep actual carrier status,
-official true/false/pending grade, artifact handoff, and independent workload/
-provider/measurement settlement. Do not label scratch or optional-observation
-retention as workload-process quiescence failure. Never retry the agent.
+For an admitted agent, a requested observation fault publishes unknown
+`process_termination` and a safe fixed ancillary diagnostic. It must not create
+a run error, change operational disposition/process success, or alter official
+true/false/pending grade, artifact handoff, capture completeness, independently
+confirmed workload quiescence, resource settlement or provider/measurement
+publication. Route that diagnostic separately from status-changing AttemptIssues;
+its presentation failure follows the existing presentation policy, not a new
+termination-failure classification. Never retry the agent.
 
-An ordinary run error alone is not sufficient to withhold receipts: failed
-clients with completed grades are normally reusable. Therefore track requested
-observation completeness explicitly alongside transcript completeness when
-deciding continuation eligibility. A fault/missing requested observation must
-withhold the private completion outcome and downstream replica/group receipts,
-and stop another repeat batch through the same incomplete-evidence admission
-boundary, without suppressing grade-bearing log/measurement/report publication.
-Reporting-only log fallback remains non-resumable. Unrequested observation and
-legacy missing metadata remain unknown without inventing a new historical
-receipt requirement. Observation success is never an extra permission to seal.
+Missing, unrequested, malformed or failed optional observation creates/removes
+no existing completion, replica/group receipt or repeat-admission permission.
+With otherwise valid grade, capture, cleanup and publication, outcomes/receipts
+and subsequent repeat batches behave exactly as they do with legacy unknown
+termination. Existing actual capture failures, invalid protocol-owner/base
+receipts, pending grades and unsafe cleanup retain their established policies;
+the new sidecar can neither rescue those failures nor add a blanket withholding
+rule. Reporting-only log fallback remains non-resumable for its existing reason.
+Observation success is never an extra permission to seal.
 
 If owner cancellation or a failed exec yields no actual principal wait
 observation, record unknown. A cleanup signal request or guardian code 127 does
@@ -195,11 +197,14 @@ unknown/unavailable records. Any additive typed collector field is collector
 metadata, never the benchmark agent's termination or a numeric metric series.
 
 Completion summaries already serialize RunResult; carry the optional field
-without adding authority to the receipt format. Add semantic field agreement
-to measurement/outcome/checkpoint comparisons. Two known different exact facts,
-or a known-versus-unknown mismatch across publications claiming the same new
-attempt, reject report/seal updates before publication. Both legacy omissions
-remain unknown; malformed present data must not fall back to old measurements.
+under the existing integrity seals without adding receipt authority or a new
+checkpoint eligibility condition. Reporting checks semantic agreement only
+where both same-attempt publications have known exact facts: two different
+known facts reject report updates before publication. Unknown/missing optional
+observation is not a conflicting known fact or a new reason to reject an
+otherwise valid receipt/admission. It must remain honestly unknown rather than
+being filled from an older attempt. Malformed present report data rejects that
+report update, never execution/grade recovery or permission to rerun the client.
 Comparisons never compare principal termination against a legacy carrier code.
 Standalone logs, measured/unmeasured sweeps, repeat and report-only fallback all
 retain the typed per-attempt value without aggregating signals into a score.
@@ -220,11 +225,11 @@ and review focused source before authorizing a full combined-tree suite.
 | Optional observation | Fragmented READY/EXITED, wrong PID, duplicate/reordered/oversized/truncated/post-final frames, ACK without request, permanent read/write failure, EOF and missing EXITED. |
 | Independent cleanup | Every post-CONT observation fault paired with real valid base Quiescent+matching exit still confirms cleanup and yields unknown+diagnostic; principal success without base proof never does. Include trailing fragments with a held duplicate writer and no EOF. |
 | Real ownership | Double-forked TERM-resistant descendant, owner loss, observation failure, bounded custody, descriptor noninheritance, unrelated sentinel survival and no post-cleanup writes. No global/name/PID-parent kills. |
-| Native full entry | True/false and pending official-grade seams with exit137/143 versus signals9/15; exactly-once client/evaluate/workload/provider/publish actions. Include observation fault plus valid quiescence: preserve grade/log/measurements, withhold outcome/receipts and next batch. |
+| Native full entry | True/false and pending official-grade seams with exit137/143 versus signals9/15; exactly-once client/evaluate/workload/provider/publish actions. Pair observation faults with valid quiescence: unknown+diagnostic, unchanged grade/process/disposition/capture/cleanup/publications and exactly the legacy-unknown outcome/receipt/repeat behavior. Pending-grade restrictions remain unchanged. |
 | Actual guest entry | Quiescent and ThroughEvaluation routes, real code/signal children, direct metadata and immutable artifact handoff, synthetic helper return unchanged, pending/final publication faults and retained owner/READY obligations. |
 | Python/controller | Legacy/no field, new variants, malformed/conflicting metadata, early ENDED without exact fact, Docker137/reset/timeout unknown, full actual Rust-controller/Python-task-loop true/false/pending grading seams. |
 | Collector compatibility | Existing controlled interrupt/ACK/flush/quiescence tests and adapter acceptable-stop validation unchanged; control fault preserves confirmed cleanup but rejects incomplete capture/metrics. Ordinary uncontrolled helper routes still work. |
-| Publication/reuse/report | Exact agreement across log/measurement/outcome/standalone+repeated+sweep JSON/HTML; conflicting new facts preserve old reports and source bytes; malformed new metadata never borrows older facts; grade-only imports remain unknown; no extra continuation permission. |
+| Publication/reuse/report | Typed observations across log/measurement/outcome/standalone+repeated+sweep JSON/HTML; conflicting known facts preserve old reports and source bytes; unknown/fault adds/removes no receipt or repeat permission; malformed present report data rejects updates without borrowing older facts or rerunning agents; grade-only imports remain unknown. |
 | Portability | Pure shared conversion/validation tests; retain direct non-Unix healthy behavior and full std code width. Native Windows compile/runtime remains explicitly unqualified without an allocated environment. |
 
 Reuse owning tests under process_gate/control and managed, runner/capture,
