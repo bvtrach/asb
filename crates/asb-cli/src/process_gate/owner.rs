@@ -29,7 +29,7 @@ pub(super) struct Owner {
 }
 
 impl Owner {
-    pub(super) fn bind() -> io::Result<Self> {
+    pub(super) fn bind(receipt_fd: Option<i32>) -> io::Result<Self> {
         let parent = unsafe { libc::getppid() };
         let expected = match std::env::var("ASB_GATE_OWNER_PID") {
             Ok(value) => value
@@ -63,7 +63,7 @@ impl Owner {
                 return Err(io::Error::last_os_error());
             }
         }
-        owner.start_waker()?;
+        owner.start_waker(receipt_fd)?;
         Ok(owner)
     }
 
@@ -131,7 +131,7 @@ impl Owner {
         }
     }
 
-    fn start_waker(&self) -> io::Result<()> {
+    fn start_waker(&self, receipt_fd: Option<i32>) -> io::Result<()> {
         let gate = pin(std::process::id() as libc::pid_t)?;
         // A stopped process cannot run a watchdog thread. This tiny exclusive
         // child survives SIGSTOP of the gate, pins both process identities and
@@ -144,6 +144,11 @@ impl Owner {
         }
         if child == 0 {
             unsafe {
+                // fork does not honor CLOEXEC. Only the gate may author proofs;
+                // its wake-only child must not retain the protocol socket.
+                if let Some(fd) = receipt_fd {
+                    libc::close(fd);
+                }
                 for signal in [libc::SIGTERM, libc::SIGINT, libc::SIGHUP] {
                     // A terminal/owner-group signal must not kill the only
                     // process able to wake a stopped gate. Normal completion

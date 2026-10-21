@@ -443,6 +443,29 @@ The native resume path confirms the stopped state before sending CONT, and
 cancellation uses TERM plus CONT with a bounded cleanup wait instead of
 immediately killing the supervisor. All watchers and signals are scoped to
 the attempt; no shared runner signal handler or process-group kill is used.
+Native runner custody is represented by `ManagedGate`, not a raw `Child`
+whose exit could be mistaken for descendant quiescence. Before spawn,
+`Admission` fallibly establishes a wait-only fallback owner and a private,
+nonblocking, versioned socket. The gate emits its PID-bound `Hello` only after
+the owner watcher exists; the runner validates both that receipt and stopped
+readiness before admitting execution with CONT. A stale launcher without this
+ABI is never resumed: startup cleanup uses KILL only, without TERM that could
+indirectly wake an old launcher's watcher. The diagnostic asks the user to
+rebuild/use the current ASB runtime; this is compatibility, not authorization.
+The socket is immediately CLOEXEC in the gate and explicitly closed in its
+forked wake-only child. The client cannot inherit the gate's proof writer.
+Normal completion requires both direct-child exit and a matching, ordered
+`Quiescent` frame, emitted only after owned descendants are stopped and reaped;
+EOF, principal exit and a helper result are not equivalent proofs. Receipt
+reads and writes are bounded and do not wait for EOF from duplicate writers.
+If a teardown sweep cannot establish quiescence, the gate retains supervision
+and retries rather than exiting and orphaning its tree. Caller cancellation
+waits at most six seconds before reporting explicit uncertainty and handing
+the still-owned gate to the precreated wait-only reaper. That reaper never
+kills an admitted guardian. Parent exit still wakes the independently owned
+gate through its existing pinned watcher. This is not a promise that an
+unkillable kernel task disappears within the caller deadline, nor a repair of
+the separate pre-exec allocation and output-reader resource-limit classes.
 The native supervisor and its idle watcher are part of the measured process
 tree; process-tree totals include that instrumentation overhead. The watcher
 is created before cgroup attachment, so it remains outside the new accounting
