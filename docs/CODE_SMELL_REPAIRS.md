@@ -14,12 +14,6 @@ informational, not a substitute for meaningful offline regressions. Required
 functional CI, independent review, exact-head validation and patch releases
 still apply to each repair class.
 
-Subsequent policy change: main commit `398c36cc` removed the hosted coverage
-job and its branch-protection requirement. The current request in this thread
-still asks for a required 90% gate; clarification is pending. Local coverage
-measurements continue, but must not be described as a currently required hosted
-check while that requirement is absent.
-
 ## 1. Endpoint preparation invariants
 
 Eight production adapter branches used `unreachable!` for unsupported wire
