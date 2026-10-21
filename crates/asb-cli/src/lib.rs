@@ -11,6 +11,8 @@ mod config;
 mod endpoint;
 mod evidence;
 mod executables;
+#[cfg(unix)]
+mod helper_exchange;
 mod install;
 mod launch;
 mod measurements;

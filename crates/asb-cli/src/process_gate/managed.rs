@@ -130,11 +130,23 @@ impl ManagedGate {
     }
 
     pub(crate) fn resume(&mut self) -> io::Result<()> {
+        self.resume_when(|| true).map(|_| ())
+    }
+
+    /// Check an operation's cancellation/deadline after readiness, immediately
+    /// before CONT. A false condition retains the stopped guardian in custody.
+    pub(crate) fn resume_when(
+        &mut self,
+        continue_operation: impl FnOnce() -> bool,
+    ) -> io::Result<bool> {
         self.wait_stopped()?;
+        if !continue_operation() {
+            return Ok(false);
+        }
         if unsafe { libc::kill(self.id() as i32, libc::SIGCONT) } != 0 {
             return Err(io::Error::last_os_error());
         }
-        Ok(())
+        Ok(true)
     }
 
     /// Establish current-ABI custody without admitting the application. This
