@@ -71,6 +71,7 @@ fn manifest(count: u64) -> Manifest {
             dataset_sha256: None,
             prompt_sha256: digest(b"prompt"),
             material_sha256: digest(b"initial material"),
+            protocol_sha256: None,
         },
         concurrency: 1,
         tracks: (1..=count)
@@ -194,6 +195,7 @@ fn compatibility_covers_every_declared_identity_but_not_runtime_settings() {
         "dataset_sha256",
         "prompt_sha256",
         "material_sha256",
+        "protocol_sha256",
     ] {
         let original = json[field].clone();
         json[field] = serde_json::Value::String(if field.ends_with("sha256") {
@@ -205,6 +207,24 @@ fn compatibility_covers_every_declared_identity_but_not_runtime_settings() {
         assert!(identity.require_match(&changed).is_err(), "missed {field}");
         json[field] = original;
     }
+}
+
+#[test]
+fn protocol_identity_preserves_old_manifest_encoding_but_rejects_semantic_drift() {
+    let old = manifest(1).compatibility;
+    let encoded = serde_json::to_vec(&old).unwrap();
+    assert!(!String::from_utf8_lossy(&encoded).contains("protocol_sha256"));
+    let decoded: Compatibility = serde_json::from_slice(&encoded).unwrap();
+    assert_eq!(serde_json::to_vec(&decoded).unwrap(), encoded);
+    let mut current = old.clone();
+    current.protocol_sha256 = Some(digest(b"harness/protocol-v1"));
+    current.validate().unwrap();
+    assert!(current.require_match(&old).is_err());
+    let mut changed = current.clone();
+    changed.protocol_sha256 = Some(digest(b"harness/protocol-v2"));
+    assert!(current.require_match(&changed).is_err());
+    changed.protocol_sha256 = Some("invalid".into());
+    assert!(changed.validate().is_err());
 }
 
 #[test]

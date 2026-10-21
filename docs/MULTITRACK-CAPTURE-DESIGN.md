@@ -105,6 +105,12 @@ and sparse concurrent layouts without fabricating bundle completeness evidence.
 For recording, refuse a preexisting destination early and again at authoritative
 no-replace publication. Create journal intent only after actual compatible prompt,
 task and initial material are established; never use placeholder fingerprints.
+New compatibility identities include `protocol_sha256`, binding the module,
+harness, scoring policy and explicitly versioned agent-input/session, tape
+matching and material-scope contracts. Incompatible semantic changes require an
+intentional owning-contract revision, not a full binary hash. Earlier backend
+manifests retain their original serialized identity when this optional field is
+absent; absence is not silently equivalent to a new protocol-bound recording.
 Bind replay-relevant harness/module/protocol semantics separately from the whole
 execution-plan fingerprint, which also contains permitted repeat/concurrency and
 measurement differences. One coordinator serializes immutable track commits;

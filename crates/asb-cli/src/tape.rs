@@ -5,6 +5,10 @@ use std::any::Any;
 use std::collections::HashMap;
 use std::path::Path;
 
+/// Request normalization, ordered matching and full-consumption replay semantics.
+/// Bump for incompatible tape matching changes, not scheduling/measurement changes.
+pub(crate) const REPLAY_MATCHING_CONTRACT: &str = "asb-tape-request-matching-v1";
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Mode {
     Record,

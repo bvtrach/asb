@@ -438,6 +438,7 @@ fn native_launch_waits_for_siblings_and_refuses_an_unverifiable_sibling_gate() {
             dataset_sha256: None,
             prompt_sha256: "a".repeat(64),
             material_sha256: "b".repeat(64),
+            protocol_sha256: None,
         }
     }
     fn run(
@@ -1163,6 +1164,7 @@ fn early_provider_teardown_notifies_material_peers_before_waiting_for_cleanup() 
                 dataset_sha256: None,
                 prompt_sha256: "a".repeat(64),
                 material_sha256: "b".repeat(64),
+                protocol_sha256: None,
             };
             assert!(
                 peer.ready(identity)

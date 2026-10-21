@@ -687,6 +687,52 @@ pub(in crate::sweep) fn publish(path: &Path, receipt: &impl Serialize) -> Result
 #[cfg(test)]
 mod tests {
     #[test]
+    fn capture_metadata_is_optional_but_validated_before_outcome_reuse() {
+        let fixture = Fixture::new(true);
+        let original = fixture.read(0);
+        assert!(
+            super::ValidatedOutcome::validate(
+                serde_json::from_value(original.clone()).unwrap(),
+                &fixture.entry
+            )
+            .is_ok()
+        );
+        let output = fixture.directory.join("capture.jsonl");
+        let capture = serde_json::json!({"adapter":"llmtape","output":output,"complete":true,
+            "accepted":1,"completed":1,"failed":0,"recorded":1,"inference_requests":1,
+            "bytes":3,"sha256":"a".repeat(64)});
+        let mut record = original.clone();
+        record["capture_evidence"] = serde_json::json!([capture]);
+        let validate = |value: serde_json::Value| {
+            super::ValidatedOutcome::validate(
+                serde_json::from_value(value).unwrap(),
+                &fixture.entry,
+            )
+            .map(|_| ())
+        };
+        assert!(
+            validate(record.clone())
+                .unwrap_err()
+                .to_string()
+                .contains("absent from declared proxy evidence")
+        );
+        record["proxy_evidence"] = serde_json::json!([output]);
+        validate(record.clone()).unwrap();
+        for field in ["accepted", "completed", "recorded", "inference_requests"] {
+            let mut bad = record.clone();
+            bad["capture_evidence"][0][field] = serde_json::json!(99);
+            assert!(validate(bad).is_err(), "accepted contradictory {field}");
+        }
+        record["capture_evidence"] = serde_json::json!(vec![capture; 65]);
+        assert!(
+            validate(record)
+                .unwrap_err()
+                .to_string()
+                .contains("population exceeds")
+        );
+    }
+
+    #[test]
     fn settlement_presence_and_measurement_agreement_are_not_lost() {
         #[derive(serde::Deserialize)]
         struct Field {

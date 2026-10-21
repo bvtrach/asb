@@ -50,6 +50,10 @@ pub struct Compatibility {
     pub prompt_sha256: String,
     /// Adapter-owned canonical initial files/environment definition digest.
     pub material_sha256: String,
+    /// Replay-relevant module, harness and scoring protocol identity. Absent
+    /// only in earlier backend manifests; new run recordings must supply it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocol_sha256: Option<String>,
 }
 
 impl Compatibility {
@@ -71,6 +75,10 @@ impl Compatibility {
         if !valid_digest(&self.prompt_sha256)
             || !valid_digest(&self.material_sha256)
             || self
+                .protocol_sha256
+                .as_deref()
+                .is_some_and(|value| !valid_digest(value))
+            || self
                 .dataset_sha256
                 .as_deref()
                 .is_some_and(|value| !valid_digest(value))
@@ -85,7 +93,7 @@ impl Compatibility {
         self.validate()?;
         requested.validate()?;
         if self != requested {
-            return Err(Error("cassette compatibility mismatch: agent/provider/model/task, prompt or initial material differs".into()));
+            return Err(Error("cassette compatibility mismatch: agent/provider/model/task, prompt, initial material or harness/protocol differs".into()));
         }
         Ok(())
     }
