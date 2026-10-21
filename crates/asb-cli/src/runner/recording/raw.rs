@@ -75,8 +75,10 @@ mod unix {
         });
         #[cfg(test)]
         test_support::check(test_support::Point::Move).map_err(super::super::io_error)?;
-        move_entry(&parent, &name, &custody, source).map_err(|_| {
-            Error::Io("raw capture could not enter private custody; source was not consumed".into())
+        move_entry(&parent, &name, &custody, source).map_err(|error| {
+            Error::Io(format!(
+                "raw capture could not enter private custody; source was not consumed: {error}"
+            ))
         })?;
         #[cfg(test)]
         test_support::run_after_move();
@@ -372,6 +374,32 @@ mod tests {
             });
             fs::remove_dir_all(&self.0).unwrap();
         }
+    }
+
+    #[test]
+    fn missing_source_move_preserves_the_os_cause_and_never_consumes_original() {
+        let fixture = Fixture::new();
+        let original = fs::metadata(fixture.output()).unwrap();
+        let root = fixture.0.clone();
+        super::super::BEFORE_RAW_UNLINK.with_borrow_mut(|hook| {
+            *hook = Some(Box::new(move || {
+                fs::rename(
+                    root.join("producer/capture.jsonl"),
+                    root.join("saved-original"),
+                )
+                .unwrap();
+            }))
+        });
+        let error = cleanup(&fixture.output(), &fixture.track(), Some(&original))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("source was not consumed"), "{error}");
+        assert!(
+            error.contains(&std::io::Error::from_raw_os_error(libc::ENOENT).to_string()),
+            "{error}"
+        );
+        assert_eq!(fs::read(fixture.0.join("saved-original")).unwrap(), b"{}\n");
+        assert!(!fixture.custody("producer").join("source").exists());
     }
 
     #[test]
