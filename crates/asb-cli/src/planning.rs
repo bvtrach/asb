@@ -321,6 +321,85 @@ pub(crate) fn persist(
     Ok(path)
 }
 
+/// Deliberately stricter than Docker's context/host precedence: even an explicit
+/// local override does not excuse an unvalidated persisted remote context. The
+/// CLI and guest SDK must both remain on the built-in local default context.
+/// This is metadata-only and must not require a daemon or Docker executable.
+fn validate_local_docker() -> Result<(), Error> {
+    if std::env::var_os("DOCKER_HOST").is_some_and(|value| {
+        value
+            .to_str()
+            .is_none_or(|host| !host.starts_with("unix:///") || host.len() <= 8)
+    }) || std::env::var_os("DOCKER_CONTEXT")
+        .is_some_and(|value| value != "default" && !value.is_empty())
+    {
+        return Err(Error::Input(
+            "remote Docker endpoints/contexts are unsupported; select a local Unix daemon endpoint"
+                .into(),
+        ));
+    }
+    let directory = std::env::var_os("DOCKER_CONFIG")
+        .filter(|value| !value.is_empty())
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .filter(|value| !value.is_empty())
+                .map(|home| std::path::PathBuf::from(home).join(".docker"))
+        })
+        .ok_or_else(|| {
+            Error::Input("cannot resolve local Docker configuration directory".into())
+        })?;
+    validate_docker_config(&directory.join("config.json"))
+}
+
+fn validate_docker_config(path: &std::path::Path) -> Result<(), Error> {
+    use std::io::Read;
+    const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
+    let invalid = || {
+        Error::Input("cannot validate local Docker config.json; require a readable bounded regular JSON file with the default currentContext".into())
+    };
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        // Never block opening a FIFO, follow a file symlink, or spawn a process.
+        options.custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW);
+    }
+    let file = match options.open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(_) => return Err(invalid()),
+    };
+    let metadata = file.metadata().map_err(|_| invalid())?;
+    if !metadata.is_file() || metadata.len() > MAX_CONFIG_BYTES {
+        return Err(invalid());
+    }
+    let mut bytes = Vec::new();
+    file.take(MAX_CONFIG_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| invalid())?;
+    if bytes.len() as u64 > MAX_CONFIG_BYTES
+        || bytes.iter().find(|byte| !byte.is_ascii_whitespace()) != Some(&b'{')
+    {
+        return Err(invalid());
+    }
+    #[derive(Deserialize)]
+    struct DockerConfig {
+        #[serde(default, rename = "currentContext")]
+        current_context: String,
+    }
+    // Typed deserialization also rejects duplicate currentContext fields; never
+    // copy config content or credentials into an error or persisted policy.
+    let config: DockerConfig = serde_json::from_slice(&bytes).map_err(|_| invalid())?;
+    if !config.current_context.is_empty() && config.current_context != "default" {
+        return Err(Error::Input(
+            "remote Docker endpoints/contexts are unsupported; persisted currentContext must be default".into(),
+        ));
+    }
+    Ok(())
+}
+
 pub(crate) fn resolve_for_run(
     config: &BenchmarkConfig,
     measurements_requested: bool,
@@ -339,18 +418,8 @@ pub(crate) fn resolve_for_run(
     {
         return Err(Error::Input("local Docker guest execution requires a supported same-architecture Linux host (x86_64 or aarch64)".into()));
     }
-    if backend == "local-docker"
-        && (std::env::var_os("DOCKER_HOST").is_some_and(|value| {
-            value
-                .to_str()
-                .is_none_or(|host| !host.starts_with("unix:///") || host.len() <= 8)
-        }) || std::env::var_os("DOCKER_CONTEXT")
-            .is_some_and(|value| value != "default" && !value.is_empty()))
-    {
-        return Err(Error::Input(
-            "remote Docker endpoints/contexts are unsupported; select a local Unix daemon endpoint"
-                .into(),
-        ));
+    if backend == "local-docker" {
+        validate_local_docker()?;
     }
     // Current invocation and agent interfaces carry text only. A module adding
     // another modality must first supply a qualified input transport.

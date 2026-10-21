@@ -37,6 +37,7 @@ impl Project {
         let mut command = Command::new(env!("CARGO_BIN_EXE_asb"));
         let output = command
             .isolated_env()
+            .env("HOME", &self.0)
             .envs(environment.iter().copied())
             .current_dir(&self.0)
             .args(args)
@@ -180,6 +181,143 @@ fn measurement_override_negotiates_collectors_even_when_configuration_disables_c
             &[variable],
         );
     }
+}
+
+#[test]
+fn docker_persisted_context_is_checked_before_any_startup_without_a_docker_program() {
+    let project = Project::new();
+    let docker = project.0.join(".docker");
+    std::fs::create_dir_all(&docker).unwrap();
+    std::fs::write(project.0.join("benchmark.toml"), "agent='pi'\nworkload='terminal-bench-2.1'\nprovider='openrouter'\nmodel='fixture'\n[planning]\nrequired_policies=['verified-local-target']\n").unwrap();
+    for content in [
+        r#"{"currentContext":"remote-prod"}"#,
+        r#"{"currentContext":"unknown-context"}"#,
+    ] {
+        std::fs::write(docker.join("config.json"), content).unwrap();
+        project.reject(&["run", "benchmark.toml"], "persisted currentContext");
+        // Conservative rejection avoids CLI/SDK precedence disagreements.
+        project.reject_with_environment(
+            &["run", "benchmark.toml"],
+            "persisted currentContext",
+            &[
+                ("DOCKER_CONTEXT", "default"),
+                ("DOCKER_HOST", "unix:///tmp/local.sock"),
+            ],
+        );
+    }
+    for content in [
+        "{",
+        "null",
+        "[]",
+        r#"{"currentContext":42}"#,
+        r#"{"currentContext":"remote","currentContext":"default"}"#,
+    ] {
+        std::fs::write(docker.join("config.json"), content).unwrap();
+        project.reject(&["run", "benchmark.toml"], "cannot validate local Docker");
+    }
+    std::fs::write(docker.join("config.json"), vec![b' '; 1024 * 1024 + 1]).unwrap();
+    project.reject(&["run", "benchmark.toml"], "cannot validate local Docker");
+    for content in [
+        "{}",
+        r#"{"currentContext":""}"#,
+        r#"{"currentContext":"default"}"#,
+    ] {
+        std::fs::write(docker.join("config.json"), content).unwrap();
+        // Reaching the unrelated policy check proves metadata-only validation
+        // succeeds even with PATH cleared and no Docker daemon/executable.
+        project.reject(&["run", "benchmark.toml"], "cannot be enforced");
+    }
+    let custom = project.0.join("custom-docker");
+    std::fs::create_dir_all(&custom).unwrap();
+    std::fs::write(custom.join("config.json"), r#"{"currentContext":"remote"}"#).unwrap();
+    project.reject_with_environment(
+        &["run", "benchmark.toml"],
+        "persisted currentContext",
+        &[("DOCKER_CONFIG", custom.to_str().unwrap())],
+    );
+    project.reject_with_environment(
+        &["run", "benchmark.toml"],
+        "cannot be enforced",
+        &[(
+            "DOCKER_CONFIG",
+            project.0.join("absent-docker").to_str().unwrap(),
+        )],
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn docker_config_special_files_fail_closed_and_native_ignores_docker_entirely() {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+    let project = Project::new();
+    let directory = project.0.join("docker-config");
+    std::fs::create_dir_all(&directory).unwrap();
+    let config = directory.join("config.json");
+    std::fs::write(&config, "{}").unwrap();
+    std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o000)).unwrap();
+    std::fs::write(
+        project.0.join("benchmark.toml"),
+        "agent='pi'\nworkload='terminal-bench-2.1'\nprovider='openrouter'\nmodel='fixture'\n",
+    )
+    .unwrap();
+    // Privileged CI users can still read mode-000 files; assert this case only
+    // when the filesystem actually makes the fixture inaccessible.
+    if std::fs::File::open(&config).is_err() {
+        project.reject_with_environment(
+            &["run", "benchmark.toml"],
+            "cannot validate local Docker",
+            &[("DOCKER_CONFIG", directory.to_str().unwrap())],
+        );
+    }
+    std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o600)).unwrap();
+    std::fs::remove_file(&config).unwrap();
+    symlink(project.0.join("missing"), &config).unwrap();
+    std::fs::write(
+        project.0.join("benchmark.toml"),
+        "agent='pi'\nworkload='terminal-bench-2.1'\nprovider='openrouter'\nmodel='fixture'\n",
+    )
+    .unwrap();
+    project.reject_with_environment(
+        &["run", "benchmark.toml"],
+        "cannot validate local Docker",
+        &[("DOCKER_CONFIG", directory.to_str().unwrap())],
+    );
+    std::fs::remove_file(&config).unwrap();
+    // A FIFO must not hang the preflight even with no writer.
+    assert!(
+        Command::new("/usr/bin/mkfifo")
+            .arg(&config)
+            .status()
+            .unwrap()
+            .success()
+    );
+    project.reject_with_environment(
+        &["run", "benchmark.toml"],
+        "cannot validate local Docker",
+        &[("DOCKER_CONFIG", directory.to_str().unwrap())],
+    );
+    let fake = project.0.join("docker");
+    std::fs::write(
+        &fake,
+        format!(
+            "#!/bin/sh\nprintf invoked > '{}'\nexit 1\n",
+            project.0.join("docker-invoked").display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o700)).unwrap();
+    project.write("[planning]\nbackend='remote'");
+    project.reject_with_environment(
+        &["run", "benchmark.toml"],
+        "backend is unsupported",
+        &[
+            ("DOCKER_CONFIG", directory.to_str().unwrap()),
+            ("DOCKER_HOST", "ssh://remote"),
+            ("DOCKER_CONTEXT", "remote"),
+            ("PATH", project.0.to_str().unwrap()),
+        ],
+    );
+    assert!(!project.0.join("docker-invoked").exists());
 }
 
 #[test]
