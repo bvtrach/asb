@@ -94,6 +94,15 @@ their adapters. Audit mutable globals for necessary scope: atomics for unique
 names and synchronized process ownership are not intrinsically defects.
 Avoid removing synchronization without an ownership replacement. Pending.
 
+Process-gate inspection found an additional launch-contract problem: its
+`pre_exec` closure allocates buffers and enumerates the environment after fork
+in a multithreaded process. That needs async-signal-safety review and a launch
+descriptor/command construction design that performs fallible allocation in
+the parent. Rebuilding inherited environment also loses `Command::env_clear`
+intent, although no current production caller uses that method; do not claim
+an observed credential leak. Tests must preserve explicit environment removal,
+clearing, non-UTF8 arguments/environment, I/O, owner death and descendant cleanup.
+
 Independent review additionally found that wizard installation workers are
 detached: a draw error can return while an installer still mutates project
 files. Shared progress handling must own worker completion/cancellation, with
