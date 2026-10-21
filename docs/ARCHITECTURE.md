@@ -187,6 +187,14 @@ boundary with actual upstream catalogs, submissions, environments and
 evaluators; a session by itself is not proof of full benchmark support.
 An adapter can also expose a read-only `PlanningCatalog`: dataset identity,
 available task IDs and evaluator scope, without preparing an environment.
+Verified preparation additionally has an internal opt-in material-ready gate:
+native file sessions fingerprint adapter-owned initial files before baseline
+evaluation and reject evaluator mutation. Workers retain their sessions locally;
+only immutable identities cross the cancellable rendezvous before proxy/agent
+startup. Early failure and timeout release peers, and explicit cancellation
+retains official workload preservation semantics. Legacy runs do not acquire
+these scans. Official prepared-material identity and fresh repeated execution
+remain integration work; see [the execution design](MULTITRACK-EXECUTION-DESIGN.md).
 Sweep planning caches this once per installed workload and saves a bounded
 `plan.json` before running anything. A `TaskSelection` is requested intent,
 not an actual `TaskIdentity`, measured baseline, or evaluator result. Compare

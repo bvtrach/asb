@@ -715,6 +715,9 @@ fn runtime_binary() -> Result<PathBuf, String> {
 }
 
 impl WorkloadSession for Session {
+    fn cancel_prepared(&mut self) -> Result<(), String> {
+        self.cancel()
+    }
     fn checkpoint_evidence(&self) -> Vec<PathBuf> {
         vec![self.artifacts.clone()]
     }

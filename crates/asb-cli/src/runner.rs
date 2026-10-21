@@ -1,4 +1,5 @@
 //! Live execution of one configured benchmark.
+mod batch;
 mod completion;
 pub(crate) mod replica;
 pub(crate) mod reuse;
@@ -81,6 +82,8 @@ struct RunResult<'a> {
 /// Execution choices shared by single runs, replicas, and sweeps.
 #[derive(Clone, Copy, Default)]
 pub(crate) struct RunOptions<'a> {
+    pub verify_initial_material: bool,
+    pub preparation_gate: Option<&'a batch::Gate>,
     pub execution_cohort: Option<&'a measurements::ExecutionCohort>,
     pub json: bool,
     pub show_output: bool,
@@ -116,6 +119,13 @@ pub(crate) fn run_with_diagnostics(
         return Err(Error::Input("invalid benchmark replica identity".into()));
     }
     if let Some(reused) = options.reused {
+        if !reused.is_empty()
+            && (options.verify_initial_material || options.preparation_gate.is_some())
+        {
+            return Err(Error::Input(
+                "fresh preparation cannot reuse historical replica slots".into(),
+            ));
+        }
         if reused
             .keys()
             .any(|index| !(1..=config.concurrency).contains(index))
@@ -163,6 +173,13 @@ pub(crate) fn run_with_diagnostics(
             output.write_all(&messages).map_err(io_error)?;
         }
     }
+    let gate = (options.verify_initial_material && options.preparation_gate.is_none())
+        .then(|| batch::Gate::new(config.concurrency, None, Duration::from_secs(1800)))
+        .transpose()?;
+    let options = RunOptions {
+        preparation_gate: options.preparation_gate.or(gate.as_ref()),
+        ..options
+    };
     if config.concurrency > 1 {
         return run_concurrent(config_path, &config, options, output, warnings);
     }
@@ -342,6 +359,11 @@ fn run_mode(
     output: &mut dyn Write,
     warnings: &Mutex<BTreeSet<String>>,
 ) -> Result<(), Error> {
+    // Register before any fallible setup. Early return or unwinding aborts peers.
+    let mut arrival = options
+        .preparation_gate
+        .map(|gate| gate.register(options.replica))
+        .transpose()?;
     let RunOptions {
         json,
         show_output,
@@ -521,6 +543,8 @@ fn run_mode(
                 ))
             })?;
             workloads::prepare_task(&workloads::PreparationContext {
+                verify_initial_material: options.preparation_gate.is_some()
+                    || options.verify_initial_material,
                 on_allocation: Some(&allocation),
                 workload: &config.workload,
                 trial: config.trial.as_deref(),
@@ -535,6 +559,36 @@ fn run_mode(
     )?;
     let prompt = workload_session.invocation().prompt.clone();
     let workspace = workload_session.invocation().workspace.clone();
+    if let Some(arrival) = arrival.as_mut() {
+        let identity = (|| {
+            let task = &workload_session.invocation().identity;
+            let material_sha256 = workload_session
+                .initial_material_sha256()
+                .map_err(Error::Run)?;
+            let dataset_sha256 = task
+                .dataset
+                .as_ref()
+                .map(|dataset| {
+                    serde_json::to_vec(dataset).map(|bytes| crate::cassette::digest(&bytes))
+                })
+                .transpose()
+                .map_err(|error| Error::Run(error.to_string()))?;
+            Ok(crate::cassette::Compatibility {
+                agent: config.agent.clone(),
+                provider: config.provider.clone(),
+                model: config.model.clone(),
+                workload: task.workload.clone(),
+                task: task.task_id.clone(),
+                dataset_sha256,
+                prompt_sha256: crate::cassette::digest(prompt.as_bytes()),
+                material_sha256,
+            })
+        })();
+        let ready = identity.and_then(|identity| arrival.ready(identity));
+        if let Err(error) = ready {
+            return Err(abort_prepared(error, arrival, workload_session.as_mut()));
+        }
+    }
     let workload_baseline = workload_session.baseline_evidence();
     let workload_baseline_passed = workload_baseline.measured_passed();
     if !json && workload_baseline_passed == Some(true) {
@@ -1086,6 +1140,21 @@ fn apply_replay_network_guard(command: &mut Command) {
         .env("no_proxy", LOOPBACK)
         .env("NO_PROXY", LOOPBACK)
         .env("NODE_USE_ENV_PROXY", "1");
+}
+
+fn abort_prepared(
+    error: Error,
+    arrival: &mut batch::Arrival<'_>,
+    session: &mut dyn workloads::WorkloadSession,
+) -> Error {
+    // Wake siblings before remote preservation/cleanup, which can take minutes.
+    arrival.abort(&error.to_string());
+    match session.cancel_prepared() {
+        Ok(()) => error,
+        Err(cleanup) => Error::Run(format!(
+            "{error}; preparation cancellation failed: {cleanup}"
+        )),
+    }
 }
 
 fn instrument_operation<T, E>(

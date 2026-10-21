@@ -137,6 +137,7 @@ mod adapter_layout_tests {
                 &[
                     "mod.rs",
                     "session.rs",
+                    "material.rs",  // Generic bounded initial-file material identity.
                     "selection.rs", // Generic pre-execution catalog/identity contract.
                     "recovery.rs",  // Generic attempt references and adapter dispatch.
                     "controller.rs",

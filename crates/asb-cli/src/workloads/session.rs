@@ -58,6 +58,7 @@ impl TaskIdentity {
 }
 
 pub(crate) struct PreparationContext<'a> {
+    pub verify_initial_material: bool,
     pub on_allocation: Option<&'a super::recovery::AllocationObserver<'a>>,
     pub workload: &'a str,
     pub trial: Option<&'a str>,
@@ -166,6 +167,15 @@ pub(crate) trait WorkloadSession {
     fn invocation(&self) -> &TaskInvocation;
     fn evaluation_kind(&self) -> &'static str;
     fn baseline_passed(&self) -> Option<bool>;
+    /// Adapter-owned initial material, captured before baseline evaluation.
+    /// Unsupported identity must not be replaced with an invented fingerprint.
+    fn initial_material_sha256(&self) -> Result<String, String> {
+        Err("workload adapter does not yet establish initial material identity".into())
+    }
+    /// Abort preparation without authorizing normal destructive teardown.
+    fn cancel_prepared(&mut self) -> Result<(), String> {
+        Ok(())
+    }
     fn baseline_evidence(&self) -> BaselineEvidence {
         BaselineEvidence::Measured {
             passed: self.baseline_passed(),
@@ -197,6 +207,7 @@ pub(super) struct FileSession {
     evaluator: Evaluator,
     evaluation_kind: &'static str,
     baseline_passed: Option<bool>,
+    initial_material: Result<String, String>,
 }
 
 impl FileSession {
@@ -206,9 +217,21 @@ impl FileSession {
         evaluator: Evaluator,
         evaluation_kind: &'static str,
     ) -> Self {
+        let initial_material = if context.verify_initial_material {
+            super::material::fingerprint(context.workspace)
+        } else {
+            Err("initial material identity was not requested for this legacy execution".into())
+        };
         let baseline_passed = evaluator(context.workload, context.workspace, "")
             .ok()
             .map(|result| result == Evaluation::Passed);
+        let initial_material = initial_material.and_then(|before| {
+            if super::material::fingerprint(context.workspace)? == before {
+                Ok(before)
+            } else {
+                Err("baseline evaluation changed initial workload material".into())
+            }
+        });
         Self {
             invocation: TaskInvocation {
                 identity: TaskIdentity::local(context.workload, context.trial),
@@ -218,11 +241,15 @@ impl FileSession {
             evaluator,
             evaluation_kind,
             baseline_passed,
+            initial_material,
         }
     }
 }
 
 impl WorkloadSession for FileSession {
+    fn initial_material_sha256(&self) -> Result<String, String> {
+        self.initial_material.clone()
+    }
     fn invocation(&self) -> &TaskInvocation {
         &self.invocation
     }
@@ -244,12 +271,60 @@ impl WorkloadSession for FileSession {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn evaluator_side_effects_cannot_become_the_verified_initial_material() {
+        use super::*;
+        fn changes_files(
+            _: &str,
+            workspace: &std::path::Path,
+            _: &str,
+        ) -> Result<super::Evaluation, String> {
+            std::fs::create_dir(workspace.join("__pycache__")).unwrap();
+            std::fs::write(
+                workspace.join("__pycache__/fixture.pyc"),
+                "evaluator side effect",
+            )
+            .unwrap();
+            Ok(super::Evaluation::Failed(
+                "expected baseline failure".into(),
+            ))
+        }
+        let root = std::env::temp_dir()
+            .join(TaskIdentity::local("material-before-evaluator", None).attempt_id);
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("fixture.py"), "original material").unwrap();
+        let project = crate::project::ProjectConfig::default();
+        let context = PreparationContext {
+            verify_initial_material: true,
+            on_allocation: None,
+            workload: "fixture",
+            trial: None,
+            trial_set: None,
+            workload_directory: &root,
+            workspace: &root,
+            project_root: &root,
+            project_config: &project,
+        };
+        let session = FileSession::new(&context, "prompt".into(), changes_files, "bundled-fixture");
+        assert_eq!(session.baseline_passed(), Some(false));
+        assert_eq!(
+            session.initial_material_sha256().unwrap_err(),
+            "baseline evaluation changed initial workload material"
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("fixture.py")).unwrap(),
+            "original material"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn external_catalog_location_cannot_select_another_projects_tools() {
         let config = crate::project::ProjectConfig {
             tools_dir: "local-tools".into(),
             ..Default::default()
         };
         let context = super::PreparationContext {
+            verify_initial_material: false,
             on_allocation: None,
             workload: "fixture",
             trial: None,
@@ -366,6 +441,7 @@ mod tests {
         std::fs::create_dir_all(&workloads).unwrap();
         super::super::populate(&workloads).unwrap();
         let mut session = super::super::prepare_task(&PreparationContext {
+            verify_initial_material: true,
             on_allocation: None,
             workload: "bug-fix",
             trial: None,
@@ -380,6 +456,7 @@ mod tests {
         assert_eq!(session.invocation().identity.task_id, "bug-fix");
         assert!(!session.invocation().prompt.trim().is_empty());
         assert_eq!(session.baseline_passed(), Some(false));
+        let initial_material = session.initial_material_sha256().unwrap();
         assert_eq!(session.evaluation_kind(), "bundled-fixture");
         assert!(matches!(
             session.evaluate("done"),
@@ -389,7 +466,9 @@ mod tests {
         assert_eq!(session.evaluate(""), Ok(Evaluation::Passed));
         // Baseline evidence belongs to this attempt, not the mutated workspace.
         assert_eq!(session.baseline_passed(), Some(false));
+        assert_eq!(session.initial_material_sha256().unwrap(), initial_material);
         let later = super::super::prepare_task(&PreparationContext {
+            verify_initial_material: true,
             on_allocation: None,
             workload: "bug-fix",
             trial: None,
@@ -401,6 +480,7 @@ mod tests {
         })
         .unwrap();
         assert_eq!(later.baseline_passed(), Some(true));
+        assert_ne!(later.initial_material_sha256().unwrap(), initial_material);
         assert_ne!(
             later.invocation().identity.attempt_id,
             session.invocation().identity.attempt_id

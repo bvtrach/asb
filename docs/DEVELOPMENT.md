@@ -64,6 +64,13 @@ stages, checking active-owner exclusion and recovery without new attempts. No
 agent/provider/container runs. Fault hooks exist only in test builds and have no
 environment/configuration surface in the installed CLI. The backend does not yet
 expose new run/sweep flags; integration follows MULTITRACK.md.
+`cargo test --locked --lib runner::batch` checks the internal cancellable
+preparation gate and runner no-launch/cancellation wiring. Material regressions
+live in `workloads::material` and `workloads::session`: bounded canonical files,
+unsupported links, immutable initial identity and evaluator side effects. These
+provider-free tests qualify the native preparation foundation, not the pending
+repeat/bundle CLI or official environment identity integration. See
+MULTITRACK-EXECUTION-DESIGN.md for the remaining requirements.
 The cli2key concurrency regression uses two mock bridge listeners and mock
 clients, with fixture-only credentials. Both authenticated local requests must
 overlap and reach different owned servers; both servers must be reaped afterward.

@@ -23,6 +23,7 @@ pub(crate) fn preflight(name: &str, context: &PreflightContext<'_>) -> Result<()
     adapters::find(name).map_or(Ok(()), |adapter| adapter.preflight(context))
 }
 mod controller;
+mod material;
 pub(crate) mod recovery;
 pub(crate) mod relay;
 mod remote;
