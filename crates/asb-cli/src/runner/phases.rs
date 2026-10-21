@@ -1,0 +1,404 @@
+//! Consuming transitions after execution. A task outcome is never a collector
+//! result: once output exists, optional instrumentation cannot throw it away.
+use super::*;
+
+/// Intent publication is the admission boundary: no resources are allocated
+/// and no project/provider discovery occurs until the observer accepts it.
+pub(super) struct AdmittedAttempt<'a> {
+    pub config: BenchmarkConfig,
+    pub options: RunOptions<'a>,
+    pub project_root: PathBuf,
+    pub project_config: project::ProjectConfig,
+}
+
+impl<'a> AdmittedAttempt<'a> {
+    pub fn admit(
+        config_path: &Path,
+        config: BenchmarkConfig,
+        options: RunOptions<'a>,
+    ) -> Result<Self, Error> {
+        if options
+            .execution_cohort
+            .is_some_and(|cohort| !cohort.admits(options.replica.index, options.replica.total))
+        {
+            return Err(Error::Input(
+                "dispatch cohort does not admit the selected replica".into(),
+            ));
+        }
+        if let Some(observer) = options.on_completion {
+            observer.starting(options.replica, options.execution_cohort)?;
+        }
+        let (project_root, project_config) = project::load(config_path)?;
+        let project_root = project_root.canonicalize().map_err(|error| {
+            Error::Input(format!(
+                "cannot resolve benchmark project directory: {error}"
+            ))
+        })?;
+        Ok(Self {
+            config,
+            options,
+            project_root,
+            project_config,
+        })
+    }
+}
+
+#[derive(Default)]
+pub(super) struct AttemptIssues {
+    pub run_error: Option<String>,
+    pub collector_errors: Vec<String>,
+    pub output_error: Option<String>,
+}
+
+impl AttemptIssues {
+    pub fn run_error(&mut self, message: String) {
+        match self.run_error.as_mut() {
+            Some(previous) => {
+                previous.push_str("; ");
+                previous.push_str(&message);
+            }
+            None => self.run_error = Some(message),
+        }
+    }
+
+    pub fn event(&mut self, session: Option<&mut measurements::Session>, event: LifecycleEvent) {
+        if let Some(session) = session
+            && let Err(error) = session.event(event)
+        {
+            self.collector_errors.push(error);
+        }
+    }
+
+    /// Unlike admission instrumentation, this must invoke the operation even
+    /// if a begin/end/failure marker is unavailable. The operation owns the
+    /// evaluator or cleanup side effect, not the collector.
+    fn operation<T>(
+        &mut self,
+        mut session: Option<&mut measurements::Session>,
+        phase: LifecyclePhase,
+        operation: impl FnOnce() -> Result<T, String>,
+    ) -> Result<T, String> {
+        self.event(session.as_deref_mut(), LifecycleEvent::PhaseBegin(phase));
+        let result = operation();
+        self.event(session.as_deref_mut(), LifecycleEvent::PhaseEnd(phase));
+        if result.is_err() {
+            self.event(session, LifecycleEvent::PhaseFailed(phase));
+        }
+        result
+    }
+
+    pub fn collector_failure(&self) -> Option<String> {
+        (!self.collector_errors.is_empty()).then(|| self.collector_errors.join("; "))
+    }
+}
+
+pub(super) struct MeasuredOutput {
+    pub output: Output,
+    pub elapsed_ms: u128,
+    pub issues: AttemptIssues,
+}
+
+impl std::ops::Deref for MeasuredOutput {
+    type Target = Output;
+    fn deref(&self) -> &Output {
+        &self.output
+    }
+}
+
+pub(super) struct ExecutionEvidence {
+    pub output: Output,
+    pub run_dir: PathBuf,
+    pub guest: Option<agents::driver::GuestResult>,
+    pub elapsed_ms: u128,
+    pub runtime_output: Option<PathBuf>,
+}
+
+pub(super) struct AgentOutcome {
+    pub final_response: Option<String>,
+    pub failure: Option<String>,
+}
+
+impl ExecutionEvidence {
+    pub fn agent_outcome(&self, agent: &str, workspace: &Path) -> AgentOutcome {
+        // Prefer the agent's structured final response when deciding whether a
+        // zero-exit process succeeded. Tool output can legitimately contain a
+        // transient failed command that the agent repairs before its final answer;
+        // scanning that whole transcript would incorrectly fail the run.
+        let child = &self.output;
+        let guest = &self.guest;
+        let final_response = match guest.as_ref() {
+            Some(metadata) => metadata.final_response.clone(),
+            None => agents::final_response(agent, &bounded(&child.stdout), workspace),
+        };
+        let adapter_failure = guest
+            .as_ref()
+            .and_then(|metadata| metadata.execution_failure.clone())
+            .or_else(|| {
+                agents::find(agent).and_then(|adapter| {
+                    adapter.execution_failure(&bounded(&child.stdout), &bounded(&child.stderr))
+                })
+            });
+        let agent_failure = if adapter_failure.is_some() {
+            adapter_failure
+        } else {
+            agents::find(agent)
+                .and_then(|adapter| adapter.final_response_failure(final_response.as_deref()))
+                .or_else(|| {
+                    process_failure_reason(
+                        &child.status,
+                        &child.stdout,
+                        &child.stderr,
+                        final_response.as_deref(),
+                    )
+                })
+        };
+        AgentOutcome {
+            final_response,
+            failure: agent_failure,
+        }
+    }
+}
+
+/// Resources that must survive execution and, for adapter-owned services,
+/// evaluation. On an aborted transition their existing adapter Drop contracts
+/// cancel/preserve; only a completed evaluation reaches explicit finish.
+pub(super) struct PreparedAttempt {
+    pub workload: Box<dyn workloads::WorkloadSession>,
+    pub measurements: Option<measurements::Session>,
+    pub tape: Option<tape::Session>,
+}
+
+pub(super) struct ExecutedAttempt {
+    prepared: PreparedAttempt,
+    pub evidence: ExecutionEvidence,
+    issues: AttemptIssues,
+}
+
+impl PreparedAttempt {
+    pub fn executed(self, evidence: ExecutionEvidence, issues: AttemptIssues) -> ExecutedAttempt {
+        ExecutedAttempt {
+            prepared: self,
+            evidence,
+            issues,
+        }
+    }
+}
+
+pub(super) struct SettledAttempt {
+    prepared: PreparedAttempt,
+    pub evidence: ExecutionEvidence,
+    pub proxy_evidence: crate::proxy::Evidence,
+    pub cassette_usage_verified: bool,
+    issues: AttemptIssues,
+}
+
+impl ExecutedAttempt {
+    pub fn settle(mut self, cassette: Option<&(tape::Mode, PathBuf)>) -> SettledAttempt {
+        let proxy_evidence = match self.prepared.tape.take() {
+            Some(session) => {
+                let completed = session.finish();
+                if let Err(error) = completed.result {
+                    self.issues.run_error(error.to_string());
+                }
+                completed.evidence
+            }
+            None => crate::proxy::Evidence {
+                output_files: Vec::new(),
+                cleanup_confirmed: true,
+            },
+        };
+        // A partially served replay does not establish usage of its whole tape.
+        let cassette_usage_verified =
+            !matches!(cassette, Some((tape::Mode::Replay, _))) || self.issues.run_error.is_none();
+        if let Some((tape::Mode::Record, cassette)) = cassette {
+            match std::fs::metadata(cassette) {
+                Ok(metadata) if metadata.len() > 0 => {}
+                Ok(_) => self.issues.run_error(format!("record created an empty cassette {}; the agent made no provider request; verify its provider base URL and credentials", cassette.display())),
+                Err(error) => self.issues.run_error(format!("record completed without creating cassette {}; verify the provider endpoint and proxy adapter installation: {error}", cassette.display())),
+            }
+        }
+        SettledAttempt {
+            prepared: self.prepared,
+            evidence: self.evidence,
+            proxy_evidence,
+            cassette_usage_verified,
+            issues: self.issues,
+        }
+    }
+}
+
+pub(super) enum EvaluationOutcome {
+    Passed,
+    Failed(String),
+    GraderError(String),
+}
+
+impl EvaluationOutcome {
+    pub fn success(&self) -> Option<bool> {
+        match self {
+            Self::Passed => Some(true),
+            Self::Failed(_) => Some(false),
+            Self::GraderError(_) => None,
+        }
+    }
+    pub fn failure(&self) -> Option<(&'static str, String)> {
+        match self {
+            Self::Passed => None,
+            Self::Failed(reason) => Some((
+                "workload_check_failed",
+                format!("workload check failed: {reason}"),
+            )),
+            Self::GraderError(reason) => Some((
+                "grader_error",
+                format!("workload grader could not evaluate the result: {reason}"),
+            )),
+        }
+    }
+}
+
+pub(super) struct EvaluatedAttempt {
+    settled: SettledAttempt,
+    outcome: EvaluationOutcome,
+}
+
+impl SettledAttempt {
+    pub fn evaluate(mut self, response: &str) -> EvaluatedAttempt {
+        let outcome = match self.issues.operation(
+            self.prepared.measurements.as_mut(),
+            LifecyclePhase::WorkloadEvaluation,
+            || self.prepared.workload.evaluate(response),
+        ) {
+            Ok(workloads::Evaluation::Passed) => EvaluationOutcome::Passed,
+            Ok(workloads::Evaluation::Failed(reason)) => {
+                self.issues.event(
+                    self.prepared.measurements.as_mut(),
+                    LifecycleEvent::PhaseFailed(LifecyclePhase::WorkloadEvaluation),
+                );
+                EvaluationOutcome::Failed(reason)
+            }
+            Err(error) => EvaluationOutcome::GraderError(error),
+        };
+        EvaluatedAttempt {
+            settled: self,
+            outcome,
+        }
+    }
+}
+
+pub(super) struct FinalizedAttempt {
+    pub workload: Box<dyn workloads::WorkloadSession>,
+    pub measurements: Option<measurements::Session>,
+    pub evidence: ExecutionEvidence,
+    pub proxy_evidence: crate::proxy::Evidence,
+    pub cassette_usage_verified: bool,
+    pub outcome: EvaluationOutcome,
+    pub cleanup_confirmed: bool,
+    pub issues: AttemptIssues,
+}
+
+impl EvaluatedAttempt {
+    pub fn finish(mut self) -> FinalizedAttempt {
+        let cleanup = self.settled.issues.operation(
+            self.settled.prepared.measurements.as_mut(),
+            LifecyclePhase::WorkloadCleanup,
+            || self.settled.prepared.workload.finish(),
+        );
+        let cleanup_confirmed = cleanup.is_ok();
+        if let Err(error) = cleanup {
+            self.settled
+                .issues
+                .run_error(format!("workload cleanup failed: {error}"));
+        }
+        FinalizedAttempt {
+            workload: self.settled.prepared.workload,
+            measurements: self.settled.prepared.measurements,
+            evidence: self.settled.evidence,
+            proxy_evidence: self.settled.proxy_evidence,
+            cassette_usage_verified: self.settled.cassette_usage_verified,
+            outcome: self.outcome,
+            cleanup_confirmed,
+            issues: self.settled.issues,
+        }
+    }
+}
+
+#[cfg(all(test, unix))]
+#[path = "../../tests/unit/runner_phases.rs"]
+mod tests;
+
+#[cfg(all(test, unix))]
+#[path = "../../tests/unit/runner_entry_support.rs"]
+pub(super) mod entry_test_support;
+
+pub(super) enum MeasurementCompletion {
+    Confirmed,
+    Incomplete(Vec<String>),
+}
+impl MeasurementCompletion {
+    pub fn confirmed(&self) -> bool {
+        matches!(self, Self::Confirmed)
+    }
+    pub fn into_error(self) -> Option<Error> {
+        match self {
+            Self::Confirmed => None,
+            Self::Incomplete(errors) => Some(Error::Run(format!(
+                "measurement finalization failed after task evaluation: {}; inspect saved task/measurement evidence; do not repeat the agent to repair reporting",
+                errors.join("; ")
+            ))),
+        }
+    }
+}
+
+/// This finalization cannot change the immutable result. Incomplete publication
+/// prohibits a completion receipt, but must not hide a freshly computed grade.
+pub(super) fn finish_measurements(
+    session: Option<measurements::Session>,
+    result: &RunResult<'_>,
+    success: bool,
+) -> MeasurementCompletion {
+    let Some(mut session) = session else {
+        return MeasurementCompletion::Confirmed;
+    };
+    let mut issues = AttemptIssues::default();
+    if !success {
+        issues.event(Some(&mut session), LifecycleEvent::RunFailed);
+    }
+    issues.event(Some(&mut session), LifecycleEvent::RunFinishing);
+    let measured = measurements::RunMeasurement {
+        replica_index: result.replica_index,
+        execution_cohort: result.execution_cohort,
+        schema_version: 2,
+        run_id: format!("{}-{}", result.workload, result.elapsed_ms),
+        status: result.status,
+        success: result.success_rate == Some(1.0),
+        process_success: result.process_success,
+        workload_success: result.workload_success,
+        failure_kind: result.failure_kind,
+        failure_reason: result.failure_reason.as_deref(),
+        workload_evaluation: result.workload_evaluation,
+        workload_baseline_passed: result.workload_baseline_passed,
+        workload_baseline: Some(&result.workload_baseline),
+        workload_failure: result.workload_failure.as_ref(),
+        adapter_smoke_success: result.adapter_smoke_success,
+        success_rate: result.success_rate,
+        agent: result.agent,
+        workload: result.workload,
+        task: Some(&result.task),
+        provider: result.provider,
+        model: result.model,
+        elapsed_ms: result.elapsed_ms,
+        exit_code: result.exit_code,
+        token_usage: result.token_usage.clone(),
+        steps: result.steps,
+        started_unix_ms: session.started_unix_ms(),
+    };
+
+    if let Err(error) = session.finish(measured) {
+        issues.collector_errors.push(error);
+    }
+    if issues.collector_errors.is_empty() {
+        MeasurementCompletion::Confirmed
+    } else {
+        MeasurementCompletion::Incomplete(issues.collector_errors)
+    }
+}

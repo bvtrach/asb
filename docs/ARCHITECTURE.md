@@ -237,6 +237,31 @@ ASB is deliberately split into a small CLI and a file-backed workload directory:
   files are stored under `.asb/fixtures/<name>/` and materialized into the run
   workspace without overwriting existing edits.
 
+The runner uses private consuming attempt states rather than one shared mutable
+orchestration context. `AdmittedAttempt` publishes start intent before resolving
+the project; `PreparedAttempt` owns the workload, optional proxy and measurement
+sessions through execution. Native command intent becomes an owned
+`PreparedNative` only after adapter, endpoint, Python, runtime and replay
+preparation, so the gate executes that exact command. `ExecutionEvidence` owns
+captured output, guest observations and the frozen execution clock.
+Proxy settlement consumes execution into `SettledAttempt`; evaluation consumes
+that into `EvaluatedAttempt`, retaining an independent `EvaluationOutcome`.
+Explicit cleanup then yields `FinalizedAttempt`. Existing adapter cancellation
+on aborted transitions preserves unfinished resources rather than calling
+destructive normal-close from Drop. Provider bridge ownership remains outside
+these transitions until proxy settlement and evaluation have finished.
+
+Post-execution lifecycle failures are ancillary `AttemptIssues`, not missing
+submissions or replacement grades. Dispatch attempts every collector hook and
+execution-scoped shutdown even after a hook fails. Before execution/resume,
+required instrumentation errors still fail closed. After output exists, official
+evaluation and explicit cleanup run despite client/proxy/collector failures.
+Human presentation and guest-owner transport have distinct failure policies:
+broken presentation stops writes while already-admitted work completes; losing
+the owner transport still cancels/preserves. A final measurement-publication
+error leaves the immutable task outcome available and prevents a completion
+receipt, so an incomplete measurement cannot silently authorize continuation.
+
 `WorkloadAdapter` creates a distinct mutable `WorkloadSession` for each
 attempt. The session owns its task invocation, prepared workspace, initial
 baseline evidence and evaluator. The generic runner consumes those values
