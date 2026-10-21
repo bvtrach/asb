@@ -5,6 +5,46 @@ use serde_json::{Value, json};
 
 struct Fixture(PathBuf);
 
+#[test]
+fn prepared_typed_collector_data_reaches_configure_without_cross_session_sharing() {
+    #[derive(Default)]
+    struct Prepared {
+        directory: PathBuf,
+        configured: bool,
+    }
+    struct Adapter;
+    static ADAPTER: Adapter = Adapter;
+    impl CollectorAdapter for Adapter {
+        fn id(&self) -> &'static str {
+            "fixture-prepared-state"
+        }
+        fn preflight(&self, context: &mut collectors::PreflightContext<'_>) -> Result<(), String> {
+            context.states.state::<Prepared>().borrow_mut().directory =
+                context.measurement_dir.to_path_buf();
+            Ok(())
+        }
+        fn configure(&self, session: &mut Session, _: &[String]) -> Result<(), String> {
+            let state = session.state::<Prepared>();
+            let mut state = state.borrow_mut();
+            assert_eq!(state.directory, session.dir);
+            state.configured = true;
+            Ok(())
+        }
+    }
+    let first = Fixture::new();
+    let second = Fixture::new();
+    let mut one =
+        Session::start_with_adapters(&first.0, &[], None, None, vec![&ADAPTER], true).unwrap();
+    let mut two =
+        Session::start_with_adapters(&second.0, &[], None, None, vec![&ADAPTER], true).unwrap();
+    let a = one.state::<Prepared>();
+    let b = two.state::<Prepared>();
+    assert!(a.borrow().configured && b.borrow().configured);
+    assert!(!std::rc::Rc::ptr_eq(&a, &b));
+    a.borrow_mut().configured = false;
+    assert!(b.borrow().configured);
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn process_tree_snapshots_record_owned_target_output_and_command_failures() {

@@ -585,6 +585,23 @@ owning agent adapter's final counter and reports unknown instead of guessing
 from text or streaming JSON keys. No runner or collector branches on agent
 identity to interpret that counter.
 
+Source-file installation stages bytes in a private sibling directory before
+atomically replacing its destination. HTTP downloads ignore user curlrc files,
+use a ten-second connection limit and a five-minute total deadline, and are
+also watched by ASB for size/deadline violations. General sources are bounded
+to 1 GiB; runtime archives retain their 256 MiB bound. Local copies use the
+same publication path. File type, size, any recipe-owned checksum, executable
+permissions and any registered version probe are checked before replacement.
+Pinned Perfetto version probes have a separate ten-second deadline and their
+owned subprocess is stopped/reaped on timeout; this is not one global deadline
+over every step of a multi-artifact installation.
+Failed preparation leaves the prior destination and its permissions unchanged;
+destination symlinks are replaced rather than followed. This is per-file
+atomic publication, not an all-or-nothing transaction over a tool's multiple
+artifacts. Abrupt ASB termination can retain private staging files, but those
+are not published or considered installed. An explicit unsigned `--source`
+does not acquire a checksum that the user or recipe never supplied.
+
 `asb tool install` installs a pinned package recipe into the configured tools
 directory for supported agents and support tools, or downloads/copies an
 executable supplied with `--source`. Record/replay instead uses ASB's embedded
@@ -908,6 +925,20 @@ and SVG; comparison consumes only its `@asb_*` aggregate maps, embeds that
 profile SVG in the HTML artifact view, and emits one cross-run chart per
 numeric metric. NUMA topology and language-runtime data-structure probes remain
 custom profiles because their event layouts are neither portable nor stable.
+Custom sources are bounded, regular UTF-8 files, opened once during preflight.
+The adapter retains the exact validated and parameter-bound bytes in generic,
+session-owned typed collector state; configure and attachment never reopen the
+path or reconstruct configuration from the environment. Other adapters use the
+same state contract without collector-specific orchestration branches. Attachment
+adds ASB's process-tree tracking prelude and requires readiness before the agent
+resumes. A missing preparation state is an error, not permission to reread.
+Every custom process probe needs a positive, side-effect-free process-tree
+predicate. The validator handles complete multiline blocks and nested Boolean
+expressions, rejects membership mutation and opaque preprocessing, and reserves
+`@asb_tree` for the generated prelude. This is a process-scope contract, not a
+sandbox for arbitrary custom actions: custom programs remain trusted code.
+Numeric custom parameters use namespaced identifier substitution rather than
+the unsupported bpftrace `-D` option; see the development guide for migration.
 The `perfetto` recipe downloads SHA-256-pinned official Tracebox and trace
 processor binaries into the project tool directory. It supports Linux x86_64
 and aarch64. Ftrace itself is a tracefs interface provided by the running host

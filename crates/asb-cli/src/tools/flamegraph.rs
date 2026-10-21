@@ -1,6 +1,6 @@
 use super::{StaticTool, ToolKind};
 use crate::Error;
-use crate::install::{Recipe, install_source, make_executable};
+use crate::install::{Recipe, install_executable_source};
 use std::path::{Path, PathBuf};
 
 pub(super) static ADAPTER: StaticTool = StaticTool::new(
@@ -31,8 +31,7 @@ fn install(root: &Path, progress: &mut dyn FnMut(u8, &str)) -> Result<PathBuf, E
         ),
     ] {
         let destination = bin.join(name);
-        install_source(url, &destination, "flamegraph tool")?;
-        make_executable(&destination)?;
+        install_executable_source(url, &destination, "flamegraph tool")?;
         progress(
             if name == "flamegraph" { 90 } else { 60 },
             "installing FlameGraph scripts",
