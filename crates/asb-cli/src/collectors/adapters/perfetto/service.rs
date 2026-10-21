@@ -10,6 +10,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 static SERVICES: OnceLock<Mutex<BTreeMap<PathBuf, Weak<Service>>>> = OnceLock::new();
 
+#[cfg(test)]
+#[path = "probe_tests.rs"]
+mod probe_tests;
+
 pub(super) struct Service {
     pub instance: String,
     pub marker: PathBuf,
