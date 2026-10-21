@@ -56,6 +56,94 @@ pub(crate) struct MetricPolicy {
     pub version: u32,
     pub reward: String,
     pub aggregation: Aggregation,
+    #[serde(default = "binary_reward_specs")]
+    pub rewards: BTreeMap<String, RewardSpec>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RewardSpec {
+    pub unit: String,
+    pub range: Option<[f64; 2]>,
+}
+
+fn binary_reward_specs() -> BTreeMap<String, RewardSpec> {
+    BTreeMap::from([(
+        "resolution".into(),
+        RewardSpec {
+            unit: "ratio".into(),
+            range: Some([0.0, 1.0]),
+        },
+    )])
+}
+
+impl MetricPolicy {
+    pub fn valid(&self) -> bool {
+        let name = |s: &str| {
+            !s.is_empty()
+                && s.len() <= 128
+                && s.bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+        };
+        self.version > 0
+            && name(&self.id)
+            && name(&self.reward)
+            && self.rewards.contains_key(&self.reward)
+            && self.rewards.len() <= 128
+            && self.rewards.iter().all(|(key, spec)| {
+                name(key)
+                    && name(&spec.unit)
+                    && spec
+                        .range
+                        .is_none_or(|[min, max]| min.is_finite() && max.is_finite() && min <= max)
+            })
+    }
+    pub fn validate_evaluation(&self, evaluation: &EvaluationOutcome) -> Result<(), String> {
+        if !self.valid() {
+            return Err("invalid module metric policy or reward metadata".into());
+        }
+        evaluation.validate()?;
+        if self == &Self::default()
+            && let EvaluationOutcome::Completed {
+                resolution,
+                rewards,
+                ..
+            } = evaluation
+            && resolution.is_none_or(|resolved| {
+                rewards.get("resolution") != Some(&(if resolved { 1.0 } else { 0.0 }))
+            })
+        {
+            return Err(
+                "binary resolution policy requires a matching Boolean grade and reward".into(),
+            );
+        }
+        if let EvaluationOutcome::Completed { rewards, .. } = evaluation {
+            for (name, value) in rewards {
+                let spec = self
+                    .rewards
+                    .get(name)
+                    .ok_or_else(|| format!("undeclared native reward `{name}`"))?;
+                if spec
+                    .range
+                    .is_some_and(|[min, max]| *value < min || *value > max)
+                {
+                    return Err(format!(
+                        "native reward `{name}` is outside its declared range"
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+    pub fn matches_module(&self, module: &super::contracts::ModuleDescriptor) -> bool {
+        if module.protocol.score_policy == "unscored" {
+            return self == &Self::default();
+        }
+        if module.protocol.score_policy == "task-resolution" {
+            return self == &Self::default();
+        }
+        module.protocol.score_policy == format!("metric:{}@{}", self.id, self.version)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -72,6 +160,7 @@ impl Default for MetricPolicy {
             version: 1,
             reward: "resolution".into(),
             aggregation: Aggregation::AttemptMean,
+            rewards: binary_reward_specs(),
         }
     }
 }
@@ -127,11 +216,14 @@ impl BenchmarkOutcome {
                 .as_ref()
                 .is_some_and(|id| id.is_empty() || id.len() > 256)
             || self.evidence.len() > 64
+            || (self.policy != MetricPolicy::default()
+                && self.evaluation.completed()
+                && self.evidence.is_empty())
             || self.lineage.supersedes.as_ref() == Some(&self.lineage.evaluation_id)
         {
             return Err("unsupported outcome schema, metric policy or evaluation lineage".into());
         }
-        self.evaluation.validate()
+        self.policy.validate_evaluation(&self.evaluation)
     }
 }
 
@@ -226,6 +318,13 @@ mod tests {
             version: 2,
             reward: "accuracy".into(),
             aggregation: Aggregation::TaskMean,
+            rewards: BTreeMap::from([(
+                "accuracy".into(),
+                RewardSpec {
+                    unit: "ratio".into(),
+                    range: Some([0.0, 1.0]),
+                },
+            )]),
         };
         let rows = vec![
             ("a".into(), partial(0.2)),
@@ -245,6 +344,37 @@ mod tests {
         assert_eq!(summary.evaluated_attempts, 3);
         assert!(!summary.complete);
         assert_eq!(partial(0.8).resolution(), None);
+    }
+
+    #[test]
+    fn module_policy_validates_reward_metadata_and_protocol_binding() {
+        let mut policy = MetricPolicy::default();
+        assert!(
+            policy
+                .validate_evaluation(&EvaluationOutcome::binary(false))
+                .is_ok()
+        );
+        assert!(policy.validate_evaluation(&partial(0.5)).is_err());
+        policy.id = "accuracy".into();
+        policy.reward = "accuracy".into();
+        policy.rewards = BTreeMap::from([(
+            "accuracy".into(),
+            RewardSpec {
+                unit: "ratio".into(),
+                range: Some([0.0, 1.0]),
+            },
+        )]);
+        assert!(policy.validate_evaluation(&partial(1.2)).is_err());
+        assert!(policy.validate_evaluation(&partial(0.5)).is_ok());
+        let mut module = super::super::descriptor("bug-fix").unwrap();
+        assert!(!policy.matches_module(&module));
+        module.protocol.score_policy = "metric:accuracy@1".into();
+        assert!(module.valid());
+        assert!(policy.matches_module(&module));
+        module.protocol.score_policy = "metric:accuracy@0".into();
+        assert!(!module.valid());
+        policy.rewards.get_mut("accuracy").unwrap().unit = "bad unit".into();
+        assert!(!policy.valid());
     }
     #[test]
     fn nonfinite_rewards_and_explicit_malformed_records_fail_closed() {

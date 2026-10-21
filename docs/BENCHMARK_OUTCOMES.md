@@ -7,6 +7,12 @@ nullable resolution, pending evaluation, or evaluator error. Numeric rewards
 are never converted to a Boolean resolution. `metric_policy` declares the
 policy identity/version, primary named reward and attempt-mean or task-mean
 aggregation. Other named rewards remain available in generic metric charts.
+Each reward declares a unit and optional finite inclusive range. Names and
+units use bounded portable identifiers; undeclared, nonfinite and out-of-range
+rewards become evaluation errors. Native scoring requires evaluator evidence.
+The descriptor's scoring protocol binds custom policies as
+`metric:<policy-id>@<version>`. `task-resolution` retains the original binary
+default; `unscored` profiles cannot acquire benchmark score credit.
 
 The runner captures `module` from the adapter at execution time and writes it
 into the run log, JSONL summary, measurements and completion summary. Reports

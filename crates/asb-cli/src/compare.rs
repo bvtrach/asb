@@ -444,6 +444,22 @@ pub(crate) fn generate(path: &str, output: &mut dyn Write) -> Result<PathBuf, Er
             let module = module.or_else(|| selection.as_ref().and_then(|s| s.module.clone()));
             let benchmark_outcome = crate::workloads::outcome::BenchmarkOutcome::read(&run_value)
                 .map_err(Error::Input)?;
+            if module.is_none()
+                && benchmark_outcome
+                    .as_ref()
+                    .is_some_and(|o| o.policy != crate::workloads::outcome::MetricPolicy::default())
+            {
+                return Err(Error::Input(
+                    "custom metric policy has no recorded module provenance".into(),
+                ));
+            }
+            if let (Some(module), Some(outcome)) = (&module, &benchmark_outcome)
+                && !outcome.policy.matches_module(module)
+            {
+                return Err(Error::Input(
+                    "recorded metric policy differs from recorded module protocol".into(),
+                ));
+            }
             if let (Some(outcome), Some(task)) = (&benchmark_outcome, &task)
                 && outcome.lineage.execution_attempt != task.attempt_id
             {
@@ -475,11 +491,22 @@ pub(crate) fn generate(path: &str, output: &mut dyn Write) -> Result<PathBuf, Er
             flatten_numbers("", &run_value, &mut metrics)?;
             metrics.retain(|key, _| !key.starts_with("benchmark_outcome."));
             if let Some(outcome) = &benchmark_outcome
+                && crate::workloads::resolution_eligible(&workload_evaluation)
                 && let crate::workloads::outcome::EvaluationOutcome::Completed { rewards, .. } =
                     &outcome.evaluation
             {
                 for (name, value) in rewards {
-                    metrics.insert(format!("benchmark_rewards.{}", path_key(name)), *value);
+                    let unit = &outcome.policy.rewards[name].unit;
+                    metrics.insert(
+                        format!(
+                            "benchmark_rewards.{}@{}.{}.{}",
+                            path_key(&outcome.policy.id),
+                            outcome.policy.version,
+                            path_key(name),
+                            path_key(unit)
+                        ),
+                        *value,
+                    );
                 }
             }
             // Correct old presentations without rewriting their raw evidence.

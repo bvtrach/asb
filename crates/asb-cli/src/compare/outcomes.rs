@@ -565,8 +565,19 @@ mod tests {
     fn native_partial_rewards_survive_completion_collection_and_html_report() {
         use crate::workloads::outcome::*;
         let fixture = Fixture::new("terminal-bench-2.1", 4);
+        let mut module = crate::workloads::descriptor("terminal-bench-2.1").unwrap();
+        module.dataset = Some(serde_json::from_value(fixture.dataset.clone()).unwrap());
+        module.protocol.score_policy = "metric:accuracy@2".into();
+        assert!(module.valid());
+        let plan_path = fixture.root.join("sweep-results/plan.json");
+        let mut plan = read_json(&plan_path).unwrap();
+        plan["entries"][0]["selection"]["module"] = json!(module);
+        fs::write(plan_path, plan.to_string()).unwrap();
+        let evidence = fixture.root.join("verifier.json");
+        fs::write(&evidence, "{}").unwrap();
         for slot in 1..=3 {
             let mut record = fixture.record(slot, Value::Null, true, true);
+            record["summary"]["module"] = json!(module);
             let evaluation = if slot == 3 {
                 EvaluationOutcome::Pending {
                     reason: "external evaluator queued".into(),
@@ -583,12 +594,19 @@ mod tests {
                 execution_success: Some(true),
                 evaluation,
                 cleanup_confirmed: Some(true),
-                evidence: vec![],
+                evidence: vec![evidence.clone()],
                 policy: MetricPolicy {
                     id: "accuracy".into(),
                     version: 2,
                     reward: "accuracy".into(),
-                    aggregation: Aggregation::TaskMean
+                    aggregation: Aggregation::TaskMean,
+                    rewards: BTreeMap::from([(
+                        "accuracy".into(),
+                        RewardSpec {
+                            unit: "ratio".into(),
+                            range: Some([0.0, 1.0])
+                        }
+                    )])
                 },
                 lineage: EvaluationLineage {
                     execution_attempt: format!("ab123-{slot}"),
@@ -601,7 +619,10 @@ mod tests {
         let report = fixture.compare().unwrap();
         let rows = report["benchmarks"].as_array().unwrap();
         assert!(rows[0]["metrics"]["success_rate"].is_null());
-        assert_eq!(rows[0]["metrics"]["benchmark_rewards.accuracy"], 0.25);
+        assert_eq!(
+            rows[0]["metrics"]["benchmark_rewards.accuracy@2.accuracy.ratio"],
+            0.25
+        );
         assert_eq!(report["evaluation_coverage"]["evaluated_attempts"], 2);
         let groups = report["metric_groups"].as_object().unwrap();
         assert_eq!(groups.len(), 1);

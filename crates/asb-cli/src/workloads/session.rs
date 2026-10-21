@@ -309,6 +309,9 @@ pub(crate) trait WorkloadSession {
     fn metric_policy(&self) -> super::outcome::MetricPolicy {
         super::outcome::MetricPolicy::default()
     }
+    fn module_descriptor(&self) -> Option<super::contracts::ModuleDescriptor> {
+        super::descriptor(&self.invocation().identity.workload)
+    }
     /// Adapter-owned evaluator artifacts that bind a historical task outcome.
     /// This is not a request to inspect unrelated project or host directories.
     fn checkpoint_evidence(&self) -> Vec<PathBuf> {
