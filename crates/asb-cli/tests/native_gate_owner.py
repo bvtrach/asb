@@ -70,7 +70,7 @@ def owner(binary, root, threaded, receipts=False):
                 chunk = reader.recv(16 - len(hello))
                 assert chunk, "gate exited without Hello"
                 hello.extend(chunk)
-            assert hello == b"ASBGATE1" + bytes([1, 0, 0, 0]) + struct.pack("<I", gate.pid)
+            assert hello == b"ASBGATE2" + bytes([1, 0, 0, 0]) + struct.pack("<I", gate.pid)
             # Publish this explicit protocol barrier only after validating the
             # gate-authored Hello. The owner retains its reader until exit.
             (root / "hello").touch()

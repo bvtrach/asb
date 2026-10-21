@@ -172,23 +172,29 @@ impl<const MEMORY: bool> CollectorAdapter for AgentProcesses<MEMORY> {
         }
     }
 
-    fn agent_launch_prepared(&self, session: &mut Session, command: &std::process::Command) {
+    fn agent_launch_prepared(&self, session: &mut Session, target: &crate::launch::TargetLaunch) {
         let state = session.state::<State>();
         let mut state = state.borrow_mut();
         if state.selected {
-            let inherited = std::env::var_os("PATH");
-            let explicit = command.get_envs().find(|(key, _)| *key == "PATH");
-            let path = explicit.map_or(inherited.as_deref(), |(_, value)| value);
-            let args = command
-                .get_args()
-                .map(|value| value.to_string_lossy().into_owned())
-                .collect::<Vec<_>>();
-            state.identity = Identity::resolve_in(
-                &command.get_program().to_string_lossy(),
-                &args,
-                path,
-                command.get_current_dir(),
-            );
+            // env_clear is intentionally opaque in std::Command. A bare
+            // executable with no explicit PATH has no proven identity here.
+            // Execution still uses std's real child environment unchanged.
+            let args = target
+                .args
+                .iter()
+                .map(|arg| arg.to_str().map(str::to_owned))
+                .collect::<Option<Vec<_>>>();
+            state.identity = target.program.to_str().and_then(|program| {
+                if Path::new(program).components().count() == 1 && target.path.is_none() {
+                    return None;
+                }
+                Identity::resolve_in(
+                    program,
+                    args.as_deref()?,
+                    target.path.as_deref(),
+                    target.cwd.as_deref(),
+                )
+            });
         }
     }
 
@@ -706,6 +712,41 @@ mod tests {
 
     #[test]
     #[cfg(target_os = "linux")]
+    fn prepared_target_does_not_guess_host_path_or_identify_the_gate_as_the_agent() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/agent-identity-fixtures")
+            .join(crate::workloads::TaskIdentity::local("target-view", None).attempt_id);
+        fs::create_dir_all(root.join("bin")).unwrap();
+        let client = root.join("bin/fixture-client");
+        fs::write(&client, "#!/bin/sh\nexit 0\n").unwrap();
+        fs::set_permissions(&client, fs::Permissions::from_mode(0o700)).unwrap();
+        let mut session =
+            Session::start_in_execution_namespace(&root.join("capture"), &["agent-workers".into()])
+                .unwrap();
+        let launch = crate::launch::ProcessLaunch::new("fixture-client");
+        let (mut command, route) = launch.native(Some(Path::new("/not-the-client-asb-gate")));
+        command.env_clear();
+        session.agent_launch_prepared(&route.target(&command));
+        assert!(session.state::<State>().borrow().identity.is_none());
+        command.env("PATH", root.join("bin"));
+        session.agent_launch_prepared(&route.target(&command));
+        assert_eq!(
+            session
+                .state::<State>()
+                .borrow()
+                .identity
+                .as_ref()
+                .unwrap()
+                .executable,
+            fs::canonicalize(client).unwrap()
+        );
+        drop(session);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
     fn namespace_capture_exports_only_bounded_aggregates_and_imports_through_owner() {
         let root = std::env::temp_dir()
             .join(crate::workloads::TaskIdentity::local("namespace-capture", None).attempt_id);
@@ -716,7 +757,7 @@ mod tests {
         command
             .arg("private-prompt-fixture")
             .env("PRIVATE_KEY", "private-key-fixture");
-        capture.agent_launch_prepared(&command);
+        capture.agent_launch_prepared(&crate::launch::TargetLaunch::direct(&command));
         capture.attach_pid(std::process::id()).unwrap();
         let exported = capture.export_execution_namespace_state().unwrap();
         assert_eq!(exported.len(), 1);

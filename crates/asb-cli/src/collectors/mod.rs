@@ -266,13 +266,14 @@ pub(crate) trait CollectorAdapter: Sync {
     fn agent_launch_prepared(
         &self,
         session: &mut crate::measurements::Session,
-        command: &std::process::Command,
+        target: &crate::launch::TargetLaunch,
     ) {
-        let args = command
-            .get_args()
+        let args = target
+            .args
+            .iter()
             .map(|value| value.to_string_lossy().into_owned())
             .collect::<Vec<_>>();
-        self.agent_launch(session, &command.get_program().to_string_lossy(), &args);
+        self.agent_launch(session, &target.program.to_string_lossy(), &args);
     }
     fn preflight(&self, _context: &mut PreflightContext<'_>) -> Result<(), String> {
         Ok(())

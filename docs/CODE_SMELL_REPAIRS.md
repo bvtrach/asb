@@ -14,6 +14,20 @@ informational, not a substitute for meaningful offline regressions. Required
 functional CI, independent review, exact-head validation and patch releases
 still apply to each repair class.
 
+Integrated candidate, staged patch **0.2.20**: the independently reviewed
+launch-descriptor/one-shot admission repair (`b1a54fde`) is combined with the
+reviewed workload-wizard stack (`6af7939b`), retaining shared benchmark paths,
+bounded flamegraph cleanup, host prerequisite consent and adapter-owned
+executable readiness. Adapter package preferences and source readiness coexist
+with the raw-OS launch descriptor; native command configuration and exclusive
+gate admission remain intact. The new planning execution budget and recorded
+report-metadata boundaries remain intact as well. Independent integration
+source review approved `3259da7e`; its fresh full offline suite passed 1,008
+tests, followed by strict Clippy, formatting and build/docs/diagrams checks.
+Exact-head hosted/package CI, PR merge, post-merge verification and a patch
+release remain pending. This staging entry
+does not claim delivery or close the other audit repair classes.
+
 ## 1. Endpoint preparation invariants
 
 Eight production adapter branches used `unreachable!` for unsupported wire
@@ -230,6 +244,27 @@ the parent. Rebuilding inherited environment also loses `Command::env_clear`
 intent, although no current production caller uses that method; do not claim
 an observed credential leak. Tests must preserve explicit environment removal,
 clearing, non-UTF8 arguments/environment, I/O, owner death and descendant cleanup.
+
+Separate launch-descriptor candidate (not yet merged/released): the adapter
+returns an OS-string client executable/prefix/explicit argv[0] descriptor;
+native preparation constructs the gate command once before all configuration.
+The same actual `Command` retains standard-library environment clearing,
+removals/overrides, cwd, I/O, credentials and process settings. No getter-based
+rebuild or private `Command` layout is used. The post-fork ASB callback only
+adjusts the private receipt FD with async-signal-safe `fcntl` and captures an
+OS error; allocation, environment enumeration and manual exec argument arrays
+are gone. A typed target view keeps collectors separate from gate framing;
+route validation checks the original carrier and raw framing before any reaper
+or child is created. Only its exclusive validated token can establish admission;
+replacement/shortened/retargeted commands and direct routes are refused.
+bare unprovable PATH identities remain unavailable. The private ASBGATE2 ABI
+refuses the prior valid ASBGATE1 Hello before resume. Offline actual-binary
+fixtures cover clear/remove/override, child-only PATH, cwd/I/O, raw executable,
+argument and environment bytes, explicit client argv[0], current UID/GID,
+an owned process group, an existing async-safe callback and launch failures.
+This does not expand the separate runtime-fingerprint JSON wire to arbitrary
+filesystem byte encodings or fix output-reader memory/wait limits. Full
+independent integration review and fresh ordinary/package CI remain required.
 
 Independent review additionally found that wizard installation workers are
 detached: a draw error can return while an installer still mutates project

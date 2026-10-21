@@ -23,6 +23,7 @@ pub(super) struct NativePlan<'a> {
 
 pub(super) struct PreparedNative {
     command: Command,
+    route: crate::launch::CommandRoute,
     run_dir: PathBuf,
     runtime_path: PathBuf,
     execution_budget: Duration,
@@ -95,10 +96,24 @@ impl NativePlan<'_> {
                 )));
             }
         }
-        let mut command = agents::find(&config.agent).map_or_else(
-            || Ok(Command::new(&program)),
+        let launch = agents::find(&config.agent).map_or_else(
+            || Ok(crate::launch::ProcessLaunch::new(&program)),
             |adapter| adapter.process(&program),
         )?;
+        #[cfg(unix)]
+        let gate =
+            if (measurements.is_some() || cfg!(target_os = "linux"))
+                && gate_target_available(&launch.program)
+            {
+                Some(crate::process_gate::executable().map_err(|error| {
+                    Error::Run(format!("cannot resolve ASB process gate: {error}"))
+                })?)
+            } else {
+                None
+            };
+        #[cfg(not(unix))]
+        let gate = None;
+        let (mut command, route) = launch.native(gate.as_deref());
         project::apply_network_proxy(&mut command, config_path)?;
         command.args(specification.args);
         // Do not leak an enclosing Codex session into the benchmark agent. These
@@ -180,6 +195,7 @@ impl NativePlan<'_> {
 
         Ok(PreparedNative {
             command,
+            route,
             run_dir,
             runtime_path,
             execution_budget,
@@ -200,16 +216,11 @@ impl PreparedNative {
         // install a process wrapper that carries compatibility and output fixes;
         // bypassing it at the gate would silently undo those fixes while still
         // appearing to attach collectors correctly.
-        let gate_program = self.command.get_program().to_string_lossy().into_owned();
-        let gate_args = self
-            .command
-            .get_args()
-            .map(|value| value.to_string_lossy().into_owned())
-            .collect::<Vec<_>>();
+        let target = self.route.target(&self.command);
         let child = run_measured_agent_with_launch(
             &mut self.command,
-            &gate_program,
-            Some(&gate_args),
+            &target,
+            Some(self.route),
             measurements,
             show_output,
             output,
@@ -290,7 +301,10 @@ mod tests {
             .prepare(None)
         };
         let prepared = prepare().unwrap();
-        assert_eq!(prepared.command.get_program(), tool.canonicalize().unwrap());
+        assert_eq!(
+            prepared.route.target(&prepared.command).program,
+            tool.canonicalize().unwrap().as_os_str()
+        );
         let vars: std::collections::HashMap<_, _> = prepared.command.get_envs().collect();
         let home = prepared.run_dir.join("state/home");
         let codex_home = prepared.runtime_path.join("codex/config");
@@ -307,9 +321,10 @@ mod tests {
         std::fs::create_dir_all(explicit.parent().unwrap()).unwrap();
         std::fs::write(&explicit, "#!/bin/sh\nexit 98\n").unwrap();
         std::fs::set_permissions(&explicit, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let overridden = prepare().unwrap();
         assert_eq!(
-            prepare().unwrap().command.get_program(),
-            explicit.canonicalize().unwrap()
+            overridden.route.target(&overridden.command).program,
+            explicit.canonicalize().unwrap().as_os_str()
         );
         // A broken explicit override cannot silently choose the valid native package.
         std::fs::set_permissions(&explicit, std::fs::Permissions::from_mode(0o600)).unwrap();
@@ -331,7 +346,8 @@ mod tests {
                 .contains("not a usable executable")
         );
         std::fs::remove_file(&tool).unwrap();
-        assert_eq!(prepare().unwrap().command.get_program(), "codex");
+        let missing = prepare().unwrap();
+        assert_eq!(missing.route.target(&missing.command).program, "codex");
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -396,10 +412,11 @@ mod tests {
         }
         .prepare(None)
         .unwrap();
-        assert_eq!(prepared.command.get_program(), interpreter.as_os_str());
-        let args: Vec<_> = prepared
-            .command
-            .get_args()
+        let target = prepared.route.target(&prepared.command);
+        assert_eq!(target.program, interpreter.as_os_str());
+        let args: Vec<_> = target
+            .args
+            .iter()
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect();
         assert_eq!(args[0], "-c");

@@ -4,7 +4,6 @@ use crate::process_cleanup::OwnedReaper;
 use std::io;
 use std::os::fd::AsRawFd;
 use std::os::unix::net::UnixStream;
-use std::path::Path;
 use std::process::{Child, ChildStderr, ChildStdout, Command, ExitStatus};
 use std::time::{Duration, Instant};
 
@@ -12,37 +11,36 @@ const STARTUP: Duration = Duration::from_secs(5);
 const CLEANUP: Duration = Duration::from_secs(6);
 
 /// Create fallback custody and the private channel before admitting a child.
-pub(crate) struct Admission {
+pub(crate) struct Admission<'a> {
     receiver: Receiver,
     writer: UnixStream,
     keeper: OwnedReaper,
+    command: &'a mut Command,
 }
 
-impl Admission {
-    pub(crate) fn new(
-        command: &mut Command,
-        executable: &Path,
-        target: &str,
-        args: &[String],
-    ) -> io::Result<Self> {
+impl<'a> Admission<'a> {
+    pub(crate) fn new(validated: crate::launch::ValidatedGate<'a>) -> io::Result<Self> {
+        let command = validated.into_command();
         let keeper = OwnedReaper::new("asb-gate-custody").map_err(io::Error::other)?;
         let (receiver, writer) = Receiver::pair()?;
         let fd = writer.as_raw_fd();
         command.env(receipt::ENV_FD, fd.to_string());
-        super::install_with_receipt(command, executable, target, args, Some(fd));
+        super::install_receipt(command, fd);
         Ok(Self {
             receiver,
             writer,
             keeper,
+            command,
         })
     }
 
-    pub(crate) fn spawn(self, command: &mut Command) -> io::Result<ManagedGate> {
-        let child = command.spawn()?;
+    pub(crate) fn spawn(self) -> io::Result<ManagedGate> {
+        let child = self.command.spawn()?;
         let Self {
             receiver,
             writer,
             keeper,
+            ..
         } = self;
         drop(writer);
         Ok(ManagedGate {
