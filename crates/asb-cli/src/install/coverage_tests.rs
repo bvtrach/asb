@@ -361,6 +361,7 @@ fn download_contract(root: &Path) {
             .to_string()
             .contains("could not download fixture from https://fixture.invalid/failure")
     );
+    assert_eq!(fs::read(&destination).unwrap(), b"fixture data");
     let error = install_source_with_limit(
         "https://fixture.invalid/oversize",
         &root.join("oversize"),
@@ -371,7 +372,7 @@ fn download_contract(root: &Path) {
     assert!(error.to_string().contains("installation size limit"));
     assert_eq!(
         fs::read_to_string(root.join("download-invocations")).unwrap(),
-        "0 https://fixture.invalid/success\n0 https://fixture.invalid/failure\n1 https://fixture.invalid/oversize\n"
+        "1 https://fixture.invalid/success\n1 https://fixture.invalid/failure\n1 https://fixture.invalid/oversize\n"
     );
     fs::remove_file(root.join("bin/curl")).unwrap();
     let error =
@@ -700,7 +701,7 @@ fn diagnostics_contract(root: &Path) {
     let source = root.join("source");
     fs::write(&source, "hello").unwrap();
     let expected = "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824";
-    verify_sha256(&source, expected, "fixture").unwrap();
+    verify_sha256_preserving(&source, expected, "fixture").unwrap();
     let error = verify_sha256_preserving(&source, "wrong", "fixture").unwrap_err();
     assert!(
         error
@@ -708,8 +709,6 @@ fn diagnostics_contract(root: &Path) {
             .contains("checksum mismatch: expected wrong")
     );
     assert_eq!(fs::read(&source).unwrap(), b"hello");
-    verify_sha256(&source, "wrong", "fixture").unwrap_err();
-    assert!(!source.exists());
     for (args, expected) in [
         (["-c", "exit 7"], "command exited"),
         (["-c", "exit 0"], "command returned no output"),

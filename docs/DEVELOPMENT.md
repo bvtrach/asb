@@ -46,6 +46,26 @@ prevent the fast-forward, and no stash is automatically discarded.
 
 These checks are offline: replay tests start the embedded tape proxy and test
 clients on loopback, but CI never starts a real agent, bridge, or live provider.
+`cargo test --locked --offline --lib install::source` checks atomic installation
+with local fake downloads and version probes. The shared private `OwnedReaper`
+is established fallibly before each downloader or version subprocess starts.
+Normal errors and unwinding bound the caller's cleanup wait; an unconfirmed
+direct child transfers to that already-owned worker rather than being dropped
+or delaying the caller indefinitely. Uncertain cleanup prevents publication
+and preserves the original failure alongside its cleanup diagnostic. Worker
+creation failure launches no tool. Linux-only deterministic fault fixtures
+verify pending/error handoff, idle-worker exit, pidfd-backed reaping, unrelated
+sentinel survival and unchanged previously installed bytes/mode. No network,
+host settings or arbitrary descendant-tree supervision is involved.
+`cargo test --locked --offline --lib publication_tests` exercises source-file
+publication with an offline fake curl executable and real SHA-256 computation.
+It checks partial HTTP failures, empty/oversized bodies, checksum/probe failures,
+missing transport, timeout/child reaping, symlinks, rename failure and successful
+local/remote replacement, including nonblocking rejection of FIFO sources.
+Staged version-probe failure and timeout also retain the prior installation.
+A blocked downloader proves that the previous ready
+executable remains visible until complete validated bytes are committed. These
+tests make no network requests and install no host packages.
 Perf-stat regression fixtures process a complete synthetic file larger than
 the diagnostic cap, retain missing-interval timestamps and hybrid CPU counter
 totals, and reject invalid or excessive input without publishing partial totals.
@@ -62,6 +82,17 @@ also check that bars, series/legends and composition rows carry benchmark groups
 Reserved-`all` tests cover complete registry expansion, enabled/original trial
 populations, catalog-name collisions and provider-scoped model discovery using
 only a bounded loopback HTTP fixture with no real provider credentials.
+The agent endpoint matrix tests every declared interface/authentication pair
+and rejects every undeclared pair before configuration or command mutation.
+These are protocol-only fixtures: no agent/provider is executed. See the
+[independently checked repair ledger](CODE_SMELL_REPAIRS.md) for the broader
+code-smell audit and remaining delivery classes.
+Report identity regressions cover literal dots/brackets versus nested paths,
+empty/backslash keys, Unicode and colliding/long graph filenames, case-insensitive
+aliases, repeated configuration stems and deterministic regeneration. Numeric
+paths escape object-key separators; use `comparison.json`'s graph list rather
+than constructing filenames for unusual metric names. Conflicting collector
+identities fail explicitly instead of silently replacing a prior observation.
 `cargo test --locked cassette::` exercises the provider-free multi-track backend:
 manifest and compatibility bounds, stable seeded choices, selector edge cases,
 bounded metadata inspection, selective corruption checks and durable publication.
@@ -197,6 +228,12 @@ the lease must be reacquirable while that incidental child remains alive. This
 deterministically covers a fork-before-exec inheritance window without relying
 on scheduling sleeps. Separate tests keep inherited ownership on uncertain
 cleanup and retain the unchanged owner-SIGKILL daemon-shutdown contract.
+The daemon-identity fixture separately waits for an atomically published,
+child-authored post-exec PID/descriptor observation before checking absent
+versus deliberately inherited lease descriptors. Process creation alone is
+not that observation: a spawn fast path can resume its parent during exec,
+before close-on-exec cleanup. Both live-child lease assertions and rejection
+of the subsequently reaped child remain mandatory; no tracing service runs.
 The ignored `live_perfetto_streaming_preserves_markers_beyond_the_service_ring_capacity`
 test writes fixed, non-secret marker pressure beyond the configured 128 MiB service
 buffer, then requires complete, loss-free capture and scoped agent measurements.
