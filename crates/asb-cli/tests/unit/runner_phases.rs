@@ -907,7 +907,11 @@ fn result() -> RunResult<'static> {
         replica_index: Some(1),
         execution_cohort: None,
         schema_version: 2,
-        status: "completed",
+        disposition: RunDisposition {
+            status: RunStatus::Completed,
+            failure: None,
+            success: true,
+        },
         agent: "fixture",
         workload: "fixture",
         task: workloads::TaskIdentity::local("fixture", None),
@@ -921,8 +925,6 @@ fn result() -> RunResult<'static> {
             passed: Some(false),
         },
         workload_failure: None,
-        failure_kind: None,
-        failure_reason: None,
         success_rate: Some(1.0),
         adapter_smoke_success: None,
         elapsed_ms: 17,
@@ -952,7 +954,13 @@ fn postgrade_log_publication_is_independent_and_diagnostics_keep_primary_order()
     assert_eq!(logged["workload_resource_disposition"], "removed");
     assert_eq!(logged["workload_artifacts"], serde_json::json!([]));
     std::fs::create_dir(fixture.0.join("blocked.jsonl")).unwrap();
-    for primary in [None, Some(("run_error", "original proxy failure".into()))] {
+    for primary in [
+        None,
+        Some(RunFailure {
+            kind: FailureKind::RunError,
+            reason: "original proxy failure".into(),
+        }),
+    ] {
         let failed = LogPublication::publish(&config, "blocked.jsonl", &result);
         assert!(!failed.confirmed());
         let error = final_outcome(
@@ -1006,7 +1014,17 @@ fn final_measurement_errors_preserve_grade_and_disallow_completion_receipts() {
         if fault == "publication" {
             std::fs::create_dir(dir.join("run.json")).unwrap();
         }
-        let result = result();
+        let mut result = result();
+        if fault == "run-failed" {
+            result.disposition = RunDisposition {
+                status: RunStatus::Failed,
+                success: false,
+                failure: Some(RunFailure {
+                    kind: FailureKind::RunError,
+                    reason: "fixture operational fault".into(),
+                }),
+            };
+        }
         let before = serde_json::to_vec(&result).unwrap();
         let selected = if fault == "disabled" {
             drop(session);
@@ -1014,7 +1032,7 @@ fn final_measurement_errors_preserve_grade_and_disallow_completion_receipts() {
         } else {
             Some(session)
         };
-        let completed = finish_measurements(selected, &result, fault != "run-failed");
+        let completed = finish_measurements(selected, &result);
         assert_eq!(completed.confirmed(), matches!(fault, "none" | "disabled"));
         let error = completed.into_error();
         if !matches!(fault, "none" | "disabled") {
@@ -1080,6 +1098,24 @@ fn full_runner_entry_explicit_provider_finish_preserves_grades_and_primary_failu
         "provider-success",
         "provider-native-failed-finish",
         "provider-native-success",
+    ]);
+}
+
+#[test]
+fn full_runner_entry_disposition_keeps_pending_and_operational_failures_consistent() {
+    isolated_full_entry_cases(&[
+        "disposition-pending",
+        "disposition-pending-collector",
+        "disposition-pending-output",
+        "disposition-pending-collector-output",
+        "disposition-pending-provider",
+        "disposition-pending-client",
+        "disposition-pending-run",
+        "disposition-pending-cleanup",
+        "disposition-grader",
+        "disposition-true-output",
+        "disposition-false-output",
+        "disposition-native-output",
     ]);
 }
 
@@ -1307,6 +1343,7 @@ fn full_entry_child(case: &str) {
         }
     }
     let provider_case = case.starts_with("provider-");
+    let disposition_case = case.starts_with("disposition-");
     let fixture = Fixture::new();
     let root = fixture.0.canonicalize().unwrap();
     let project = project::ProjectConfig {
@@ -1333,20 +1370,24 @@ fn full_entry_child(case: &str) {
     let body = serde_json::json!({"model":"fixture","tools":[{"type":"function","function":{"name":"fixture","parameters":{"type":"object"}}}],"messages":[]});
     let row = serde_json::json!({"request":{"method":"POST","url":"/v1/chat/completions","body":body.to_string()},"response":{"status":200,"headers":{"content-type":"application/json"},"body":"{}"}});
     std::fs::write(&cassette, format!("{row}\n")).unwrap();
-    if provider_case {
+    if provider_case || (disposition_case && !case.contains("run")) {
         let node = crate::tools::host_executable(Path::new("node")).unwrap();
-        let answer = if case == "provider-false-failed-finish" || case.contains("repeat-grader") {
+        let answer = if case == "provider-false-failed-finish"
+            || case.contains("false")
+            || case.contains("repeat-grader")
+        {
             "incorrect"
         } else {
             "src/cli.py src/registry.py lookup"
         };
         let response = serde_json::json!({"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":answer}]}]});
-        let exit = if case == "provider-client-failed-finish" {
+        let exit = if case == "provider-client-failed-finish" || case.contains("client") {
             7
         } else {
             0
         };
-        std::fs::write(&agent, format!("#!{}\nfetch(process.env.OPENAI_BASE_URL+'/chat/completions',{{method:'POST',headers:{{'content-type':'application/json'}},body:JSON.stringify({body})}}).then(async r=>{{if(!r.ok)throw new Error('fixture request failed');await r.text();console.log(JSON.stringify({response}));process.exitCode={exit};}}).catch(()=>{{process.exitCode=9;}});\n", node.display())).unwrap();
+        let counter_js = serde_json::to_string(&counter).unwrap();
+        std::fs::write(&agent, format!("#!{}\nrequire('node:fs').appendFileSync({counter_js},'called\\n');fetch(process.env.OPENAI_BASE_URL+'/chat/completions',{{method:'POST',headers:{{'content-type':'application/json'}},body:JSON.stringify({body})}}).then(async r=>{{if(!r.ok)throw new Error('fixture request failed');await r.text();console.log(JSON.stringify({response}));process.exitCode={exit};}}).catch(()=>{{process.exitCode=9;}});\n", node.display())).unwrap();
     }
     if case == "provider-early-failed-finish" {
         std::fs::write(root.join("workspace"), "blocking fixture file").unwrap();
@@ -1378,7 +1419,9 @@ fn full_entry_child(case: &str) {
     } else {
         LifecycleEvent::RunFinishing
     };
-    let _scope = if provider_case {
+    let _scope = if disposition_case {
+        entry_test_support::Scope::disposition(&root, calls.clone(), case)
+    } else if provider_case {
         entry_test_support::Scope::provider(
             &root,
             calls.clone(),
@@ -1421,7 +1464,8 @@ fn full_entry_child(case: &str) {
     }
     let mut output = Presentation {
         bytes: Vec::new(),
-        fail_result: case == "blocked-log-broken-output",
+        fail_result: case == "blocked-log-broken-output"
+            || (disposition_case && case.contains("output")),
         fail_warning: case == "observer-warning-writer",
         summary_done: false,
         writes: 0,
@@ -1433,11 +1477,12 @@ fn full_entry_child(case: &str) {
         admitted_slots: vec![1],
     };
     let options = RunOptions {
-        json: true,
+        json: !(disposition_case && case.contains("output")),
+        show_output: disposition_case && case.contains("output"),
         mode: Some(tape::Mode::Replay),
         cassette: Some(cassette.to_str().unwrap()),
         on_completion: Some(&observer),
-        execution_cohort: provider_case.then_some(&cohort),
+        execution_cohort: (provider_case || disposition_case).then_some(&cohort),
         ..Default::default()
     };
     let result = run_mode(
@@ -1447,6 +1492,18 @@ fn full_entry_child(case: &str) {
         &mut output,
         &Mutex::new(BTreeSet::new()),
     );
+    if disposition_case {
+        check_full_entry_disposition(
+            case,
+            &root,
+            result,
+            &calls,
+            &output.bytes,
+            observer.completed.load(Ordering::SeqCst),
+        );
+        assert_eq!(std::fs::read_to_string(counter).unwrap(), "called\n");
+        return;
+    }
     if provider_case {
         let error = result.err().map(|error| error.to_string());
         assert_eq!(error.is_none(), case.ends_with("success"), "{error:?}");
@@ -1730,5 +1787,176 @@ fn full_entry_child(case: &str) {
             root.join("run.jsonl").is_dir(),
             "never replace the blocking user directory"
         );
+    }
+}
+
+fn check_full_entry_disposition(
+    case: &str,
+    root: &Path,
+    result: Result<(), Error>,
+    calls: &Rc<RefCell<Vec<&'static str>>>,
+    output: &[u8],
+    completed: usize,
+) {
+    let expected_kind = if case.contains("run") || case.contains("cleanup") {
+        Some("run_error")
+    } else if case.contains("client") {
+        Some("agent_failure")
+    } else if case.contains("grader") {
+        Some("grader_error")
+    } else if case.contains("false") {
+        Some("workload_check_failed")
+    } else if case.contains("collector") {
+        Some("collector_error")
+    } else if case.contains("output") {
+        Some("output_error")
+    } else if case.contains("provider") {
+        Some("provider_cleanup_error")
+    } else {
+        None
+    };
+    let error = result.err().map(|error| error.to_string());
+    assert_eq!(
+        error.is_some(),
+        expected_kind.is_some(),
+        "{case}: {error:?}"
+    );
+    assert_eq!(
+        calls.borrow().as_slice(),
+        ["evaluate", "finish", "provider-finish"]
+    );
+    let log: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(root.join("run.jsonl")).unwrap()).unwrap();
+    let measured: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(root.join("measurements/run.json")).unwrap())
+            .unwrap();
+    let expected_status = if expected_kind.is_some() {
+        "failed"
+    } else {
+        "evaluation-pending"
+    };
+    for record in [&log, &measured] {
+        assert_eq!(record["status"], expected_status, "{case}");
+        assert_eq!(record["failure_kind"].as_str(), expected_kind, "{case}");
+        assert_eq!(
+            record["workload_resource_disposition"],
+            if case.contains("cleanup") {
+                serde_json::Value::Null
+            } else {
+                serde_json::json!("not-required")
+            },
+            "resource settlement must remain independent of evaluation and provider cleanup"
+        );
+        assert_eq!(record["workload_artifacts"], log["workload_artifacts"]);
+        assert_eq!(record["process_success"], !case.contains("client"));
+        assert_eq!(
+            record["benchmark_outcome"]["cleanup_confirmed"],
+            !case.contains("cleanup") && !case.contains("provider")
+        );
+        if case.contains("pending") || case.contains("grader") {
+            assert!(record["workload_success"].is_null());
+            assert!(record["success_rate"].is_null());
+            assert_eq!(
+                record["benchmark_outcome"]["evaluation"]["status"],
+                if case.contains("pending") {
+                    "pending"
+                } else {
+                    "error"
+                }
+            );
+        } else if case.contains("native") {
+            assert!(record["workload_success"].is_null());
+            assert!(record["benchmark_outcome"]["evaluation"]["resolution"].is_null());
+            assert_eq!(
+                record["benchmark_outcome"]["evaluation"]["rewards"]["accuracy"],
+                0.5
+            );
+        } else {
+            assert_eq!(record["workload_success"], !case.contains("false"));
+            assert_eq!(
+                record["success_rate"],
+                if case.contains("false") { 0.0 } else { 1.0 }
+            );
+        }
+    }
+    if case.contains("output") {
+        assert!(
+            output.is_empty(),
+            "the actual presentation writer must remain broken"
+        );
+        assert!(error.as_ref().unwrap().contains("presentation closed"));
+    } else {
+        let summary: serde_json::Value = serde_json::from_slice(output).unwrap();
+        assert!(
+            summary.get("status").is_none(),
+            "do not add a public JSONL status field"
+        );
+        assert_eq!(summary["failure_kind"], log["failure_kind"]);
+        assert_eq!(summary["benchmark_outcome"], log["benchmark_outcome"]);
+        assert_eq!(
+            summary["workload_resource_disposition"],
+            log["workload_resource_disposition"]
+        );
+        assert_eq!(summary["workload_artifacts"], log["workload_artifacts"]);
+    }
+    assert_eq!(
+        measured["success"],
+        case == "disposition-true-output",
+        "legacy measurement success remains grade-derived"
+    );
+    if let Some(error) = &error {
+        assert!(
+            error.starts_with(log["failure_reason"].as_str().unwrap()),
+            "{case}: {error}"
+        );
+    }
+    // Private outcome records preserve pending/error grades for inspection;
+    // they are explicitly not completed receipts. The existing checkpoint
+    // constructor rejects pending/error or uncertain cleanup before sealing.
+    assert!(!root.join(".checkpoint").exists());
+    assert_eq!(completed, usize::from(!case.contains("provider")));
+    if !case.contains("provider") {
+        let records: Vec<_> = std::fs::read_dir(root.join(".asb-completions"))
+            .unwrap()
+            .collect();
+        assert_eq!(records.len(), 1);
+        let record: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(records[0].as_ref().unwrap().path()).unwrap())
+                .unwrap();
+        assert_eq!(record["scope"], "task-outcome-not-yet-a-resume-receipt");
+        assert_eq!(
+            record["summary"]["benchmark_outcome"],
+            log["benchmark_outcome"]
+        );
+        assert_eq!(record["summary"]["failure_kind"], log["failure_kind"]);
+        assert_eq!(
+            record["workload_resource_disposition"],
+            log["workload_resource_disposition"]
+        );
+        assert_eq!(
+            record["summary"]["workload_artifacts"],
+            log["workload_artifacts"]
+        );
+    }
+    let report = crate::compare::generate(
+        root.join("benchmark.toml").to_str().unwrap(),
+        &mut Vec::new(),
+    )
+    .unwrap();
+    let comparison: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(report.with_file_name("comparison.json")).unwrap())
+            .unwrap();
+    let row = &comparison["benchmarks"][0];
+    assert_eq!(row["benchmark_outcome"], log["benchmark_outcome"]);
+    if expected_kind.is_some() {
+        let reason = log["failure_reason"].as_str().unwrap();
+        assert!(
+            row["status"].as_str().unwrap().contains(reason),
+            "{case}: {}",
+            row["status"]
+        );
+        assert!(std::fs::read_to_string(report).unwrap().contains(reason));
+    } else {
+        assert_eq!(row["status"], "evaluation-pending");
     }
 }

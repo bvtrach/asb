@@ -235,27 +235,6 @@ impl EvaluationOutcome {
     pub fn success(&self) -> Option<bool> {
         self.evaluation.resolution()
     }
-    pub fn failure(&self) -> Option<(&'static str, String)> {
-        use workloads::outcome::EvaluationOutcome as Evaluation;
-        match &self.evaluation {
-            Evaluation::Completed {
-                resolution: Some(false),
-                reason,
-                ..
-            } => Some((
-                "workload_check_failed",
-                format!(
-                    "workload check failed: {}",
-                    reason.as_deref().unwrap_or("unresolved")
-                ),
-            )),
-            Evaluation::Error { reason } => Some((
-                "grader_error",
-                format!("workload grader could not evaluate the result: {reason}"),
-            )),
-            _ => None,
-        }
-    }
 }
 
 pub(super) struct EvaluatedAttempt {
@@ -405,13 +384,13 @@ impl LogPublication {
 }
 
 pub(super) fn final_outcome(
-    primary: Option<(&'static str, String)>,
+    primary: Option<RunFailure>,
     log: LogPublication,
     measurements: MeasurementCompletion,
 ) -> Result<(), Error> {
     let mut errors = Vec::new();
-    if let Some((_, reason)) = primary {
-        errors.push(Error::Run(reason));
+    if let Some(failure) = primary {
+        errors.push(Error::Run(failure.reason));
     }
     errors.extend(log.into_error());
     errors.extend(measurements.into_error());
@@ -458,13 +437,12 @@ impl MeasurementCompletion {
 pub(super) fn finish_measurements(
     session: Option<measurements::Session>,
     result: &RunResult<'_>,
-    success: bool,
 ) -> MeasurementCompletion {
     let Some(mut session) = session else {
         return MeasurementCompletion::Confirmed;
     };
     let mut issues = AttemptIssues::default();
-    if !success {
+    if !result.disposition.success {
         issues.event(Some(&mut session), LifecycleEvent::RunFailed);
     }
     issues.event(Some(&mut session), LifecycleEvent::RunFinishing);
@@ -481,12 +459,16 @@ pub(super) fn finish_measurements(
         execution_cohort: result.execution_cohort,
         schema_version: 2,
         run_id: format!("{}-{}", result.workload, result.elapsed_ms),
-        status: result.status,
+        status: result.disposition.status,
         success: result.success_rate == Some(1.0),
         process_success: result.process_success,
         workload_success: result.workload_success,
-        failure_kind: result.failure_kind,
-        failure_reason: result.failure_reason.as_deref(),
+        failure_kind: result.disposition.failure.as_ref().map(|f| f.kind),
+        failure_reason: result
+            .disposition
+            .failure
+            .as_ref()
+            .map(|f| f.reason.as_str()),
         workload_evaluation: result.workload_evaluation,
         workload_baseline_passed: result.workload_baseline_passed,
         workload_baseline: Some(&result.workload_baseline),

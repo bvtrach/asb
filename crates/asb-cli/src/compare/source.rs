@@ -826,38 +826,45 @@ fn decode_record(run_value: &Value, attempt: &AttemptContext<'_>) -> Result<Deco
     let identity_bound = selection
         .as_ref()
         .is_none_or(|selection| task.as_ref().is_some_and(|task| selection.matches(task)));
+    // The legacy success flag is grade-derived, not operational disposition.
+    // Keep historical category strings display-only; only actual recorded
+    // failures/cleanup uncertainty override healthy pending or native rewards.
+    let recorded_failure = run_value
+        .get("failure_reason")
+        .and_then(Value::as_str)
+        .is_some()
+        || run_value
+            .get("failure_kind")
+            .and_then(Value::as_str)
+            .is_some()
+        || run_value["benchmark_outcome"]["cleanup_confirmed"].as_bool() == Some(false);
+    let healthy_unresolved_evaluation = !recorded_failure
+        && run_value["process_success"] == true
+        && ((run_value["benchmark_outcome"]["evaluation"]["status"] == "completed"
+            && run_value["benchmark_outcome"]["evaluation"]["resolution"].is_null())
+            || (run_value["status"] == "evaluation-pending"
+                && run_value["benchmark_outcome"]["evaluation"]["status"] == "pending"));
     let run_status = if !measured {
         outcome.map(outcomes::Recorded::status)
     } else {
         match run_value.get("status").and_then(Value::as_str) {
             Some(status)
-                if run_value.get("workload_evaluation").and_then(Value::as_str)
-                    == Some("adapter-smoke") =>
+                if !recorded_failure
+                    && run_value.get("workload_evaluation").and_then(Value::as_str)
+                        == Some("adapter-smoke") =>
             {
                 Some(format!(
                     "{status}: adapter smoke only; upstream task resolution not measured"
                 ))
             }
-            Some("unscored") => Some(
+            Some("unscored") if !recorded_failure => Some(
                 "unscored: initial task was already passing or its baseline could not be verified"
                     .into(),
             ),
             Some(status)
-                if run_value.get("success") == Some(&Value::Bool(false))
-                    && !(run_value["benchmark_outcome"]["evaluation"]["status"] == "completed"
-                        && run_value["benchmark_outcome"]["evaluation"]["resolution"]
-                            .is_null()
-                        && run_value["process_success"] == true
-                        && run_value
-                            .get("failure_reason")
-                            .and_then(Value::as_str)
-                            .is_none()
-                        && run_value
-                            .get("failure_kind")
-                            .and_then(Value::as_str)
-                            .is_none()
-                        && run_value["benchmark_outcome"]["cleanup_confirmed"].as_bool()
-                            != Some(false)) =>
+                if recorded_failure
+                    || (run_value.get("success") == Some(&Value::Bool(false))
+                        && !healthy_unresolved_evaluation) =>
             {
                 Some(
                     if let Some(reason) = run_value.get("failure_reason").and_then(Value::as_str) {
