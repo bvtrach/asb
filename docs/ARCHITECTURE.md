@@ -87,7 +87,14 @@ ASB is deliberately split into a small CLI and a file-backed workload directory:
   Average and child-summary rows are excluded. `perf stat` uses the same
   interval contract. Perf scalar counters sum the emitted interval deltas,
   rather than reporting only the final interval. Unsupported counters remain
-  absent, not zero. `ASB_MEASURE_INTERVAL_MS` accepts 100--60000 ms and
+  absent, not zero. Parsing streams the complete stopped perf-stat file before
+  deleting it; the separate 256 KiB diagnostic prefix never supplies totals.
+  Original per-counter timestamps preserve missing intervals, and hybrid CPU
+  core/atom hardware counters are summed at the same observed timestamp.
+  Limits of 256 MiB input, 16 KiB per line and 100,000 points per metric fail
+  the collector without publishing partial counters. Malformed/nonfinite
+  counters and inconsistent timestamps likewise fail rather than invent data.
+  `ASB_MEASURE_INTERVAL_MS` accepts 100--60000 ms and
   defaults to 1000 ms; pidstat rounds sub-second requests to whole seconds,
   while perf supports millisecond periods. Comparisons emit line SVGs for
   series with at least two points and expose the same hover, zoom, pan, reset,

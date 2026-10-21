@@ -46,6 +46,10 @@ prevent the fast-forward, and no stash is automatically discarded.
 
 These checks are offline: replay tests start the embedded tape proxy and test
 clients on loopback, but CI never starts a real agent, bridge, or live provider.
+Perf-stat regression fixtures process a complete synthetic file larger than
+the diagnostic cap, retain missing-interval timestamps and hybrid CPU counter
+totals, and reject invalid or excessive input without publishing partial totals.
+They need neither perf permissions nor a live agent/provider.
 `cargo test --locked --offline --test compare_setup` checks repeated CLI setup
 selections, scoped models/trials, dependency expansion, non-overwriting sweep
 publication, standalone measured/unmeasured reports and an injected browser
