@@ -14,11 +14,41 @@ CRATE = Path(__file__).resolve().parents[1]
 ARTIFACTS = CRATE / "target"
 ARTIFACTS.mkdir(exist_ok=True)
 ROOT = Path(tempfile.mkdtemp(prefix="agent-artifact-repro-", dir=ARTIFACTS))
+PERMISSION_JOURNALS = []
+
+
+def restore_fixture_permissions():
+    # Keep evidence, but end the permission fault after all scenario assertions.
+    # Only the exact directories recorded before our fake client's chmod qualify;
+    # never recursively chmod a tree or follow a replacement symlink.
+    journals = PERMISSION_JOURNALS[:]
+    PERMISSION_JOURNALS.clear()
+    failures = []
+    for journal in journals:
+        if not journal.exists():
+            continue
+        for line in journal.read_text().splitlines():
+            try:
+                entry = json.loads(line)
+                path = Path(entry["path"])
+                assert path.is_relative_to(journal.parent), "foreign permission journal path"
+                descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+                try:
+                    actual = os.fstat(descriptor)
+                    assert (actual.st_dev, actual.st_ino) == (int(entry["dev"]), int(entry["ino"])), "permission target replaced"
+                    os.fchmod(descriptor, entry["mode"])
+                    assert os.fstat(descriptor).st_mode & 0o777 == entry["mode"]
+                finally:
+                    os.close(descriptor)
+            except Exception as error:
+                failures.append(str(error))
+    assert not failures, ("fixture permission restoration failed", failures)
 
 
 def project(name, scenario="normal"):
     root = ROOT / name
     (root / ".asb").mkdir(parents=True)
+    PERMISSION_JOURNALS.append(root / "permission-faults.jsonl")
     (root / ".asb/project.toml").write_text(
         "tools_dir='tools'\nworkloads_dir='workloads'\nworkspace_dir='workspace'\n"
     )
@@ -39,6 +69,13 @@ const home=path.resolve(process.env.HOME);
 if (!destination.startsWith(home+path.sep) || !destination.endsWith(path.sep+path.join('mini-swe','trajectory.json')))
  throw Error('artifact output outside fixture home');
 const marker=path.join(process.env.HOME,'executions');
+function permissionFault(directory,mode) {
+ const before=fs.statSync(directory,{bigint:true});
+ fs.appendFileSync(path.join(home,'permission-faults.jsonl'),JSON.stringify({
+  path:directory,dev:String(before.dev),ino:String(before.ino),mode:Number(before.mode & 0o777n)
+ })+'\n',{mode:0o600});
+ fs.chmodSync(directory,mode);
+}
 const previous=fs.existsSync(marker)?fs.readFileSync(marker,'utf8'):'';
 fs.appendFileSync(marker,'called\n');
 if (!previous) {
@@ -54,8 +91,8 @@ if (!previous) {
  info:{model_stats:{api_calls:4}},messages:[{role:'assistant',
  content:'src/cli.py src/registry.py lookup',
  extra:{response:{usage:{prompt_tokens:13,completion_tokens:21}}}}]}));
- fs.chmodSync(process.cwd(),0o555);
- if (process.env.ASB_ARTIFACT_SCENARIO==='cleanup') fs.chmodSync(path.dirname(destination),0o500);
+ permissionFault(process.cwd(),0o555);
+ if (process.env.ASB_ARTIFACT_SCENARIO==='cleanup') permissionFault(path.dirname(destination),0o500);
 }
 if (process.env.ASB_ARTIFACT_NATIVE) {
  fetch(process.env.OPENAI_BASE_URL+'/chat/completions',{method:'POST',headers:{'content-type':'application/json'},
@@ -223,7 +260,10 @@ if "--extended" in sys.argv:
     cases += [("guest-"+kind,lambda kind=kind:guest(kind)) for kind in ["cleanup","publication","symlink","malformed","oversized"]]
 for name, operation in cases:
     try:
-        operation()
+        try:
+            operation()
+        finally:
+            restore_fixture_permissions()
         print(f"{name}: PASS",flush=True)
     except Exception as error:
         failures.append(name)
