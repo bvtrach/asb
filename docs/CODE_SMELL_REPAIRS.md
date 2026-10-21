@@ -14,6 +14,16 @@ informational, not a substitute for meaningful offline regressions. Required
 functional CI, independent review, exact-head validation and patch releases
 still apply to each repair class.
 
+Setup publication integration, coordinated staged patch **0.2.40**, source-only:
+reviewed collector39 `1d409705` is combined with independently approved setup
+`0caafe3d`, plus reviewed fixture-only permission restoration `e284b2b7`.
+Both merges were automatic; setup source and protected incoming production are
+preserved. The historical focused setup evidence is not integrated qualification.
+Independent integration review, fresh focused/full tests, lint/build/docs, hosted
+CI, merge, both post-merge jobs and a coordinated release remain pending.
+No build, cache relink, push or PR accompanied this checkpoint. See
+[setup integration](SETUP_PUBLICATION_INTEGRATION.md) for exact scope and limits.
+
 Artifact integration, staged patch **0.2.35**, local qualification and package-fixture repair, delivery pending:
 historical artifact checkpoint `a2708632` is combined with committed
 publication34 `3359bfb2`.
