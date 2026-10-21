@@ -14,6 +14,7 @@ use std::process::{Command, ExitStatus, Stdio};
 pub(crate) mod operation;
 mod progress;
 pub(crate) use progress::ProgressStage;
+mod goose;
 mod source;
 pub(crate) use source::check_executable_version;
 
@@ -261,7 +262,7 @@ pub fn tool_with_progress(
     }
     let (project_root, project_config) = project::load(Path::new("."))?;
     let tools_root = dir
-        .map(|value| project::resolve(&project_root, &value.to_string_lossy()))
+        .map(|value| resolve_path(&project_root, &value))
         .unwrap_or_else(|| project::resolve(&project_root, &project_config.tools_dir));
     progress(2, crate::install::ProgressStage::Preparing);
     let root = tools_root.join(&id);
@@ -381,56 +382,22 @@ pub(crate) fn ensure_collector_dependencies(
 }
 
 fn install_host_dependency(name: &str, destination: &Path) -> Result<PathBuf, Error> {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
     let source = host_executable(name)?;
     let parent = destination.parent().expect("dependency has a parent");
     fs::create_dir_all(parent)
         .map_err(|error| Error::Io(format!("cannot create {}: {error}", parent.display())))?;
-    let temporary = parent.join(format!(
-        ".asb-{name}-{}-{}",
-        std::process::id(),
-        NEXT_TEMP.fetch_add(1, Ordering::Relaxed)
-    ));
-    let mut created = false;
-    let result = (|| -> Result<(), Error> {
-        let mut input = fs::File::open(&source)
-            .map_err(|error| Error::Io(format!("cannot read {}: {error}", source.display())))?;
-        let mut output = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temporary)
-            .map_err(|error| {
-                Error::Io(format!("cannot create {}: {error}", temporary.display()))
-            })?;
-        created = true;
-        io::copy(&mut input, &mut output)
-            .map_err(|error| Error::Io(format!("cannot install {name}: {error}")))?;
-        drop(output);
-        fs::set_permissions(
-            &temporary,
-            input
-                .metadata()
-                .map_err(|error| Error::Io(error.to_string()))?
-                .permissions(),
-        )
-        .map_err(|error| Error::Io(error.to_string()))?;
-        make_executable(&temporary)?;
-        match fs::hard_link(&temporary, destination) {
-            Ok(()) => Ok(()),
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists && destination.is_file() => {
-                Ok(())
-            }
-            Err(error) => Err(Error::Io(format!(
-                "cannot install {name} at {}: {error}",
-                destination.display()
-            ))),
-        }
-    })();
-    if created {
-        let _ = fs::remove_file(&temporary);
-    }
-    result?;
+    source::install_input(
+        &source::Input::pin_local(source)?,
+        destination,
+        source::Options {
+            kind: name,
+            limit: source::MAX_SOURCE_BYTES,
+            checksum: None,
+            executable: true,
+        },
+        |_| Ok(()),
+        source::Publication::NoClobber,
+    )?;
     Ok(destination.to_path_buf())
 }
 
@@ -512,7 +479,12 @@ pub fn workload_with_progress(
         name: requested_name,
         dir: requested_dir,
     } = options;
-    let (source, default_name, project_root, project_config) = workload_source(&requested)?;
+    let ResolvedWorkloadSource {
+        source,
+        default_name,
+        project_root,
+        project_config,
+    } = workload_source(&requested)?;
     let name = requested_name.unwrap_or(default_name);
     crate::selection_names::validate(&name, "workload").map_err(Error::Input)?;
     if !valid_name(&name) {
@@ -521,7 +493,7 @@ pub fn workload_with_progress(
         ));
     }
     let directory = requested_dir
-        .map(|value| project::resolve(&project_root, &value.to_string_lossy()))
+        .map(|value| resolve_path(&project_root, &value))
         .unwrap_or_else(|| {
             std::env::var_os("ASB_WORKLOAD_DIR")
                 .map(PathBuf::from)
@@ -553,7 +525,18 @@ pub fn workload_with_progress(
     }
     progress(30, crate::install::ProgressStage::Downloading);
     let reference = directory.join(format!("{name}.reference.md"));
-    install_source(&source, &reference, "workload reference")?;
+    source::install_input(
+        &source,
+        &reference,
+        source::Options {
+            kind: "workload reference",
+            limit: source::MAX_SOURCE_BYTES,
+            checksum: None,
+            executable: false,
+        },
+        |_| Ok(()),
+        source::Publication::Replace,
+    )?;
     workloads::materialize_external_adapter(&name, &directory)
         .map_err(|error| Error::Io(format!("cannot materialize {name} adapter trial: {error}")))?;
     let destination = directory.join(format!("{name}.txt"));
@@ -720,7 +703,7 @@ pub fn workload_list(
     let (project_root, project_config) = project::load(Path::new("."))?;
     let directory = options
         .dir
-        .map(|value| project::resolve(&project_root, &value.to_string_lossy()))
+        .map(|value| resolve_path(&project_root, &value))
         .or_else(|| std::env::var_os("ASB_WORKLOAD_DIR").map(PathBuf::from))
         .unwrap_or_else(|| project::resolve(&project_root, &project_config.workloads_dir));
     let mut names = fs::read_dir(&directory)
@@ -773,7 +756,95 @@ pub fn workload_list(
     Ok(())
 }
 
+enum PreparedDistribution {
+    Host(source::Input),
+    Goose {
+        archive: PathBuf,
+        checksum: &'static str,
+    },
+    Package(Recipe),
+    Custom(CustomInstall),
+}
+struct PreparedRecipe<'a> {
+    distribution: PreparedDistribution,
+    root: &'a Path,
+    project_root: &'a Path,
+    destination: PathBuf,
+}
+impl<'a> PreparedRecipe<'a> {
+    fn resolve(
+        recipe: Recipe,
+        root: &'a Path,
+        project_root: &'a Path,
+        progress: &mut dyn FnMut(u8, ProgressStage),
+    ) -> Result<Self, Error> {
+        let distribution = match recipe {
+            Recipe::Host { executable } => {
+                PreparedDistribution::Host(source::Input::pin_local(host_executable(executable)?)?)
+            }
+            Recipe::Goose => PreparedDistribution::Goose {
+                archive: goose_archive(root, progress)?,
+                checksum: goose_distribution()?.1,
+            },
+            Recipe::Custom { install, .. } => PreparedDistribution::Custom(install),
+            Recipe::Npm { .. } | Recipe::Python { .. } => PreparedDistribution::Package(recipe),
+        };
+        Ok(Self {
+            distribution,
+            root,
+            project_root,
+            destination: executable(recipe, root),
+        })
+    }
+    fn install(
+        self,
+        output: &mut dyn io::Write,
+        progress: &mut dyn FnMut(u8, ProgressStage),
+    ) -> Result<PathBuf, Error> {
+        match self.distribution {
+            PreparedDistribution::Host(source) => {
+                progress(55, ProgressStage::Copying);
+                fs::create_dir_all(self.destination.parent().expect("host tool parent")).map_err(
+                    |error| Error::Io(format!("cannot create {}: {error}", self.root.display())),
+                )?;
+                source::install_input(
+                    &source,
+                    &self.destination,
+                    source::Options {
+                        kind: "host executable",
+                        limit: source::MAX_SOURCE_BYTES,
+                        checksum: None,
+                        executable: true,
+                    },
+                    |_| Ok(()),
+                    source::Publication::Replace,
+                )?;
+                Ok(self.destination)
+            }
+            PreparedDistribution::Goose { archive, checksum } => {
+                goose::install_archive(self.root, &archive, checksum, progress)
+            }
+            PreparedDistribution::Custom(install) => install(self.root, progress),
+            PreparedDistribution::Package(recipe) => {
+                install_package(recipe, self.root, self.project_root, output, progress)
+            }
+        }
+    }
+}
+
 fn install_recipe(
+    recipe: Recipe,
+    root: &Path,
+    project_root: &Path,
+    output: &mut dyn std::io::Write,
+    progress: &mut dyn FnMut(u8, ProgressStage),
+) -> Result<PathBuf, Error> {
+    fs::create_dir_all(root)
+        .map_err(|error| Error::Io(format!("cannot create {}: {error}", root.display())))?;
+    PreparedRecipe::resolve(recipe, root, project_root, progress)?.install(output, progress)
+}
+
+fn install_package(
     recipe: Recipe,
     root: &Path,
     project_root: &Path,
@@ -793,7 +864,7 @@ fn install_recipe(
             }
             progress(15, crate::install::ProgressStage::InstallingPackage);
             let mut command = Command::new("npm");
-            tools::apply_runtime_path(&mut command, project_root, &root.parent().expect("tool parent").to_string_lossy())?;
+            tools::apply_runtime_path_at(&mut command, root.parent().expect("tool parent"))?;
             command.args(["install", "--prefix"])
                 .arg(root)
                 .args(["--no-save", package])
@@ -849,24 +920,7 @@ fn install_recipe(
             }
             Ok(status)
         }
-        Recipe::Host { executable } => {
-            progress(55, crate::install::ProgressStage::Copying);
-            let source = host_executable(executable)?;
-            let destination = root.join("bin").join(executable);
-            fs::create_dir_all(destination.parent().expect("host tool parent"))
-                .map_err(|error| Error::Io(format!("cannot create {}: {error}", root.display())))?;
-            fs::copy(&source, &destination).map_err(|error| {
-                Error::Io(format!(
-                    "cannot copy host tool {} to {}: {error}",
-                    source.display(),
-                    destination.display()
-                ))
-            })?;
-            make_executable(&destination)?;
-            return Ok(destination);
-        }
-        Recipe::Custom { install, .. } => return install(root, progress),
-        Recipe::Goose => return install_goose(root, progress),
+        Recipe::Host {..}|Recipe::Custom {..}|Recipe::Goose=>unreachable!("prepared executable recipes bypass package managers"),
     }
     .map_err(|error| {
         if error.kind() == std::io::ErrorKind::NotFound {
@@ -921,7 +975,13 @@ fn goose_archive(
     root: &Path,
     progress: &mut dyn FnMut(u8, crate::install::ProgressStage),
 ) -> Result<PathBuf, Error> {
-    let (url, checksum) = match std::env::consts::ARCH {
+    let (url, checksum) = goose_distribution()?;
+    let archive = root.join("cache/goose.tar.gz");
+    tools::runtime::cached_archive(&archive, url, checksum, progress)
+}
+
+fn goose_distribution() -> Result<(&'static str, &'static str), Error> {
+    Ok(match std::env::consts::ARCH {
         "x86_64" => (GOOSE_X86_64_URL, GOOSE_X86_64_SHA256),
         "aarch64" => (GOOSE_AARCH64_URL, GOOSE_AARCH64_SHA256),
         architecture => {
@@ -929,51 +989,7 @@ fn goose_archive(
                 "Goose is packaged by ASB only for Linux x86_64 and aarch64; this host is {architecture}"
             )));
         }
-    };
-    let archive = root.join("cache/goose.tar.gz");
-    tools::runtime::cached_archive(&archive, url, checksum, progress)
-}
-
-fn install_goose(
-    root: &Path,
-    progress: &mut dyn FnMut(u8, crate::install::ProgressStage),
-) -> Result<PathBuf, Error> {
-    let archive = goose_archive(root, progress)?;
-    let extract = root.join(format!("extract-{}", tools::runtime::unique_id()));
-    fs::create_dir(&extract)
-        .map_err(|error| Error::Io(format!("cannot create Goose extraction directory: {error}")))?;
-    progress(60, crate::install::ProgressStage::Extracting);
-    let status = Command::new("tar")
-        .args(["--extract", "--gzip", "--file"])
-        .arg(&archive)
-        .args(["--directory"])
-        .arg(&extract)
-        .logged_status()
-        .map_err(|error| missing_dependency("tar", "Goose installation", error))?;
-    if !status.success() {
-        return Err(Error::Io(
-            "could not extract the pinned Goose binary".into(),
-        ));
-    }
-    let source = extract.join("goose");
-    if !source.is_file() {
-        return Err(Error::Io(
-            "pinned Goose archive did not contain a goose executable".into(),
-        ));
-    }
-    let destination = root.join("bin").join("goose");
-    fs::create_dir_all(destination.parent().expect("Goose bin parent"))
-        .map_err(|error| Error::Io(format!("cannot create Goose bin directory: {error}")))?;
-    fs::copy(&source, &destination).map_err(|error| {
-        Error::Io(format!(
-            "cannot install Goose at {}: {error}",
-            destination.display()
-        ))
-    })?;
-    make_executable(&destination)?;
-    let _ = fs::remove_dir_all(extract);
-    progress(100, crate::install::ProgressStage::Ready);
-    Ok(destination)
+    })
 }
 
 /// Inspect cached inputs without destroying evidence needed for repair.
@@ -984,7 +1000,11 @@ pub(crate) fn verify_sha256_preserving(
 ) -> Result<(), Error> {
     let digest = command_output(
         &PathBuf::from("sha256sum"),
-        &[destination.to_string_lossy().as_ref()],
+        &[
+            std::ffi::OsStr::new("--zero"),
+            std::ffi::OsStr::new("--"),
+            destination.as_os_str(),
+        ],
         &format!("{label} checksum"),
     )?;
     let actual_hash = digest.split_whitespace().next().unwrap_or_default();
@@ -996,7 +1016,11 @@ pub(crate) fn verify_sha256_preserving(
     Ok(())
 }
 
-pub(crate) fn command_output(program: &Path, args: &[&str], label: &str) -> Result<String, Error> {
+pub(crate) fn command_output<S: AsRef<std::ffi::OsStr>>(
+    program: &Path,
+    args: &[S],
+    label: &str,
+) -> Result<String, Error> {
     let output = Command::new(program)
         .args(args)
         .output()
@@ -1092,9 +1116,14 @@ pub(crate) fn host_executable(name: &str) -> Result<PathBuf, Error> {
     Ok(path)
 }
 
-fn workload_source(
-    requested: &str,
-) -> Result<(String, String, PathBuf, project::ProjectConfig), Error> {
+#[derive(Debug)]
+struct ResolvedWorkloadSource {
+    source: source::Input,
+    default_name: String,
+    project_root: PathBuf,
+    project_config: project::ProjectConfig,
+}
+fn workload_source(requested: &str) -> Result<ResolvedWorkloadSource, Error> {
     let source = external_workload(requested)
         .map(|workload| workload.source.to_owned())
         .unwrap_or_else(|| requested.to_owned());
@@ -1126,7 +1155,12 @@ fn workload_source(
         .map(|workload| workload.name.to_owned())
         .unwrap_or(default_name);
     let (project_root, project_config) = project::load(Path::new("."))?;
-    Ok((source, name, project_root, project_config))
+    Ok(ResolvedWorkloadSource {
+        source: source::Input::from_os(source.as_ref()),
+        default_name: name,
+        project_root,
+        project_config,
+    })
 }
 
 fn valid_name(value: &str) -> bool {
@@ -1134,6 +1168,14 @@ fn valid_name(value: &str) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+}
+
+fn resolve_path(root: &Path, value: &Path) -> PathBuf {
+    if value.is_absolute() {
+        value.to_path_buf()
+    } else {
+        root.join(value)
+    }
 }
 
 fn missing_dependency(tool: &str, operation: &str, error: std::io::Error) -> Error {

@@ -183,6 +183,45 @@ fn local_copy_and_tool_source_dispatch_use_the_same_atomic_publication() {
     Fixture::new().run("local");
 }
 
+#[test]
+fn successful_probe_cannot_publish_bytes_changed_after_checksum_validation() {
+    let fixture = Fixture::new();
+    let destination = fixture.0.join("tools/perf/bin/perf");
+    let checksum = format!("{:x}", Sha256::digest(NEW));
+    let result = install(
+        fixture.0.join("new-source").to_str().unwrap(),
+        &destination,
+        options("fixture", Some(&checksum), 1024),
+        |staged| {
+            // A successful external version probe can modify its own image.
+            // Its success cannot authorize different, unchecked bytes.
+            fs::write(staged, b"changed after checksum").map_err(crate::io_error)
+        },
+    );
+    assert!(result.is_err(), "changed staged bytes were published");
+    assert_old_ready(&fixture.0, &destination);
+}
+
+#[test]
+fn successful_probe_cannot_publish_a_replacement_symlink() {
+    let fixture = Fixture::new();
+    let destination = fixture.0.join("tools/perf/bin/perf");
+    let foreign = fixture.0.join("foreign");
+    fs::write(&foreign, b"foreign bytes").unwrap();
+    let result = install(
+        fixture.0.join("new-source").to_str().unwrap(),
+        &destination,
+        options("fixture", None, 1024),
+        |staged| {
+            fs::remove_file(staged).map_err(crate::io_error)?;
+            symlink(&foreign, staged).map_err(crate::io_error)
+        },
+    );
+    assert!(result.is_err(), "replacement symlink was published");
+    assert_old_ready(&fixture.0, &destination);
+    assert_eq!(fs::read(foreign).unwrap(), b"foreign bytes");
+}
+
 fn options<'a>(kind: &'a str, checksum: Option<&'a str>, limit: u64) -> Options<'a> {
     Options {
         kind,
@@ -223,6 +262,10 @@ fn publication_fixture_child() {
     };
     let root = PathBuf::from(std::env::var_os("ASB_FIXTURE_ROOT").unwrap());
     let destination = root.join("tools/perf/bin/perf");
+    if case.starts_with("repair-") {
+        super::repair_tests::child(&case, &root);
+        return;
+    }
     #[cfg(target_os = "linux")]
     if case.starts_with("lifecycle-") {
         super::lifecycle_tests::run_case(&root, &destination, &case);
@@ -291,7 +334,21 @@ fn publication_fixture_child() {
             assert!(error.to_string().contains("not a regular file"), "{error}");
             assert_eq!(fs::read(&foreign).unwrap(), b"do not change");
             assert_old_ready(&root, &destination);
-            no_scratch(&destination);
+            // The downloader replaced our owned file with a foreign symlink.
+            // Explicit settlement must retain that entry, not silently unlink
+            // it as the old best-effort Drop implementation did.
+            assert!(error.to_string().contains("retained staging"));
+            let retained = fs::read_dir(destination.parent().unwrap())
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .find(|path| {
+                    path.file_name()
+                        .unwrap()
+                        .to_string_lossy()
+                        .starts_with(".asb-install-")
+                })
+                .unwrap();
+            assert_eq!(fs::read_link(retained.join("perf")).unwrap(), foreign);
             fs::remove_file(&destination).unwrap();
             symlink(&foreign, &destination).unwrap();
             let error = install(

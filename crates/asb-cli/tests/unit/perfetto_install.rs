@@ -78,17 +78,22 @@ done
         .unwrap_err()
         .to_string();
     let expected = match case.as_str() {
-        "bad-checksum" => "checksum mismatch",
+        // The source installer verifies SHA-256 internally. An external
+        // sha256sum is optional: its absence must not bypass verification or
+        // obscure a real content mismatch with a missing-tool diagnostic.
+        "bad-checksum" | "missing-sha" => "checksum mismatch",
         "download-fails" => "could not download Perfetto Tracebox",
         "bin-error" => "cannot create",
-        "missing-sha" => "cannot inspect Perfetto Tracebox checksum",
         "absent-curl" => "curl",
         _ => panic!("unknown fixture case"),
     };
     assert!(error.contains(expected), "{error}");
     assert!(!progress.contains(&90));
     assert!(!root.join("bin/trace_processor_shell").exists());
-    if case == "bad-checksum" {
+    if case == "bad-checksum" || case == "missing-sha" {
+        use sha2::Digest;
+        let actual = format!("{:x}", sha2::Sha256::digest(b"not a pinned binary"));
+        assert!(error.contains(&format!("got {actual}")), "{error}");
         assert!(
             !root.join("bin/tracebox").exists(),
             "unverified bytes must not be published"

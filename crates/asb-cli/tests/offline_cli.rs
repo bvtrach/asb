@@ -3011,7 +3011,7 @@ fn failed_perf_install_preserves_existing_project_binary() {
 
 #[cfg(unix)]
 #[test]
-fn perf_builds_from_verified_source_when_distribution_is_unavailable() {
+fn perf_rejects_forged_checksum_output_before_building_unverified_source() {
     use std::os::unix::fs::PermissionsExt;
     let project = Project::new();
     project.init();
@@ -3027,11 +3027,11 @@ fn perf_builds_from_verified_source_when_distribution_is_unavailable() {
         ),
         (
             "tar",
-            "#!/bin/sh\nwhile [ $# -gt 0 ]; do if [ \"$1\" = -C ]; then shift; mkdir -p \"$1/tools/perf\"; exit 0; fi; shift; done\nexit 1\n",
+            "#!/bin/sh\nprintf reached > \"$ASB_PERF_BUILD_MARKER\"\nexit 1\n",
         ),
         (
             "make",
-            "#!/bin/sh\n[ \"$1\" = -C ] || exit 1\nprintf '#!/bin/sh\\necho perf version source-fixture\\n' > \"$2/perf\"\nchmod +x \"$2/perf\"\n",
+            "#!/bin/sh\nprintf reached > \"$ASB_PERF_BUILD_MARKER\"\nexit 1\n",
         ),
     ] {
         project.write(&format!("fake-bin/{name}"), script);
@@ -3046,14 +3046,25 @@ fn perf_builds_from_verified_source_when_distribution_is_unavailable() {
         project.0.join("fake-bin").display(),
         std::env::var("PATH").unwrap_or_default()
     );
-    let result = project.command_with_env(&["tool", "install", "perf"], &[("PATH", &path)]);
-    expect_success(&result);
-    let installed = project.0.join(".asb-tools/perf/bin/perf");
-    assert!(
-        std::fs::read_to_string(installed)
-            .unwrap()
-            .contains("source-fixture")
+    let marker = project.0.join("source-build-called");
+    let marker_text = marker.to_str().unwrap();
+    let result = project.command_with_env(
+        &["tool", "install", "perf"],
+        &[("PATH", &path), ("ASB_PERF_BUILD_MARKER", marker_text)],
     );
+    assert!(!result.status.success());
+    let error = stderr(&result);
+    assert!(error.contains("checksum mismatch"), "{error}");
+    assert!(
+        error.contains("f16d05ec6b29248d2c61adb1e9263f78e4f7bace1b955014a2d17872cfe4064d"),
+        "{error}"
+    );
+    assert!(
+        !marker.exists(),
+        "unverified source reached extraction/build"
+    );
+    let installed = project.0.join(".asb-tools/perf/bin/perf");
+    assert!(!installed.exists(), "unverified executable was installed");
 }
 
 #[cfg(unix)]
