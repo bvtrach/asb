@@ -255,7 +255,11 @@ cursor=db.execute(sys.argv[1]);out=csv.writer(sys.stdout,lineterminator='\n');ou
                 "{}",
                 String::from_utf8_lossy(&output.stderr)
             );
-            assert_eq!(String::from_utf8(output.stdout).unwrap(), expected, "{mode}");
+            assert_eq!(
+                String::from_utf8(output.stdout).unwrap(),
+                expected,
+                "{mode}"
+            );
         }
     }
 
