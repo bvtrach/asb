@@ -89,6 +89,21 @@ candidate stages patch **0.2.9**, after the shell-completion repair; fresh
 release-head qualification and delivery remain pending. Other subprocess/publication cleanup
 items in this class are not claimed complete.
 
+Model-catalog transport candidate, staged patch **0.2.11**: replace blocking curl stdin/stdout operations,
+stderr-reader joins and caller-side waits with fair nonblocking Unix polling
+under one operation/cleanup deadline. Preserve proxy settings, response limits
+and sanitized protocol diagnostics. Direct-child ownership uses the shared
+pre-established reaper on uncertain cleanup; no successful catalog can bypass
+exit/EOF checks. Actual offline process fixtures cover pressure, inherited pipes,
+timeouts, custody and reaping. The body limit and I/O timeout are shared with
+curl's actual arguments; exact-limit success and one-byte-over rejection have
+real subprocess regressions. Independent source review and a separate execution
+of all 36 focused model tests passed. Non-Unix discovery fails before spawn;
+cancellable non-Unix transport remains a separate portability contract. Full
+release-head qualification and delivery remain pending. Main `398c36cc` removed
+the hosted coverage gate and the user explicitly confirmed keeping that removal;
+local measurements are optional diagnostics, not a required hosted check.
+
 ## 4. Typed domain and wire contracts
 
 Review run status/evaluation/failure categories, execution mode, result source,
