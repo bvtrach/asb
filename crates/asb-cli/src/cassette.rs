@@ -1,0 +1,237 @@
+//! Provider-independent multi-track cassette contracts and bounded ZIP reading.
+//!
+//! This backend does not launch agents, resolve credentials or change workspaces.
+//! A selected payload is ordinary JSONL for the existing tape proxy. Checksums
+//! detect corruption; they are not an authenticated provenance claim.
+
+mod archive;
+mod metadata;
+mod selection;
+
+pub use archive::{Archive, Limits};
+pub use selection::{Metric, SelectionPlan, Selector};
+use serde::{Deserialize, Serialize};
+use std::fmt;
+
+/// Current manifest format. Unknown versions are refused, not guessed.
+pub const SCHEMA_VERSION: u32 = 1;
+
+/// An actionable cassette-format, compatibility or selection error.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct Error(pub String);
+
+impl fmt::Display for Error {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for Error {}
+
+/// Canonical content identity; excludes concurrency, repetition and measurements.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Compatibility {
+    /// Logical coding agent name.
+    pub agent: String,
+    /// Logical provider name.
+    pub provider: String,
+    /// Provider-specific model name.
+    pub model: String,
+    /// Logical workload name.
+    pub workload: String,
+    /// Selected trial or original dataset instance.
+    pub task: String,
+    /// Dataset source/revision/split fingerprint, when applicable.
+    pub dataset_sha256: Option<String>,
+    /// Digest of the effective prompt, not its text.
+    pub prompt_sha256: String,
+    /// Adapter-owned canonical initial files/environment definition digest.
+    pub material_sha256: String,
+}
+
+impl Compatibility {
+    /// Validate bounded logical identities and canonical lowercase SHA-256 values.
+    pub fn validate(&self) -> Result<(), Error> {
+        for value in [
+            &self.agent,
+            &self.provider,
+            &self.model,
+            &self.workload,
+            &self.task,
+        ] {
+            if value.is_empty() || value.len() > 4096 || value.chars().any(char::is_control) {
+                return Err(Error(
+                    "invalid or oversized cassette compatibility identity".into(),
+                ));
+            }
+        }
+        if !valid_digest(&self.prompt_sha256)
+            || !valid_digest(&self.material_sha256)
+            || self
+                .dataset_sha256
+                .as_deref()
+                .is_some_and(|value| !valid_digest(value))
+        {
+            return Err(Error("invalid cassette compatibility fingerprint".into()));
+        }
+        Ok(())
+    }
+
+    /// Reject different task/material/model identities before starting execution.
+    pub fn require_match(&self, requested: &Self) -> Result<(), Error> {
+        self.validate()?;
+        requested.validate()?;
+        if self != requested {
+            return Err(Error("cassette compatibility mismatch: agent/provider/model/task, prompt or initial material differs".into()));
+        }
+        Ok(())
+    }
+}
+
+/// Optional observations; unknown is never represented as zero.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Statistics {
+    /// Canonical input plus output tokens; cached input is not added twice.
+    pub tokens: Option<u64>,
+    /// Execution-only elapsed milliseconds, excluding preparation/evaluation.
+    pub duration_ms: Option<u64>,
+    /// Recorded inference requests, excluding health/readiness probes.
+    pub requests: Option<u64>,
+    /// Owning agent adapter's step observation.
+    pub steps: Option<u64>,
+}
+
+/// One execution attempt, independent of trace completeness and task success.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Track {
+    /// Stable one-based ID in batch/replica order, not completion order.
+    pub id: u64,
+    /// One-based sequential batch.
+    pub batch: u64,
+    /// One-based concurrent replica within this batch.
+    pub replica: u64,
+    /// True only with positive recording finalization evidence.
+    pub complete: bool,
+    /// Client process outcome, or unknown after interruption/preparation failure.
+    pub process_success: Option<bool>,
+    /// Evaluator outcome, independent of client process status.
+    pub workload_success: Option<bool>,
+    /// Uncompressed JSONL length; empty attempts are retained for inspection.
+    pub bytes: u64,
+    /// Digest of exact uncompressed JSONL bytes.
+    pub sha256: String,
+    /// Optional normalized observations for selectors and presentation.
+    pub statistics: Statistics,
+}
+
+impl Track {
+    /// Canonical archive entry, never an externally supplied extraction path.
+    pub fn entry_name(&self) -> String {
+        format!("tracks/{}.jsonl", self.id)
+    }
+
+    /// Automatic selection includes failed attempts with complete nonempty traces.
+    pub fn automatically_selectable(&self) -> bool {
+        self.complete && self.bytes > 0
+    }
+}
+
+/// Versioned recording identity and immutable track catalogue.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Manifest {
+    /// Must equal [`SCHEMA_VERSION`].
+    pub schema_version: u32,
+    /// Bounded recording ID, independent of its storage location.
+    pub recording_id: String,
+    /// Common compatibility identity for every track in this bundle.
+    pub compatibility: Compatibility,
+    /// Configured replicas per recording batch; does not constrain replay.
+    pub concurrency: u64,
+    /// Tracks in strictly increasing ID order; interrupted attempts may leave gaps.
+    pub tracks: Vec<Track>,
+}
+
+impl Manifest {
+    /// Check schema, bounds, fingerprints and stable slot-to-track mapping.
+    pub fn validate(&self, limits: Limits) -> Result<(), Error> {
+        limits.validate()?;
+        if self.schema_version != SCHEMA_VERSION {
+            return Err(Error(format!(
+                "unsupported cassette schema version {}",
+                self.schema_version
+            )));
+        }
+        self.compatibility.validate()?;
+        if self.recording_id.is_empty()
+            || self.recording_id.len() > 128
+            || !self
+                .recording_id
+                .bytes()
+                .all(|value| value.is_ascii_alphanumeric() || value == b'-')
+            || !(1..=64).contains(&self.concurrency)
+            || self.tracks.len() > limits.max_tracks
+        {
+            return Err(Error(
+                "invalid or oversized cassette recording identity/catalogue".into(),
+            ));
+        }
+        let mut prior = 0;
+        let mut bytes = 0u64;
+        for track in &self.tracks {
+            let expected = track
+                .batch
+                .checked_sub(1)
+                .and_then(|batch| batch.checked_mul(self.concurrency))
+                .and_then(|base| base.checked_add(track.replica));
+            if track.id <= prior
+                || expected != Some(track.id)
+                || !(1..=self.concurrency).contains(&track.replica)
+                || !valid_digest(&track.sha256)
+                || track.bytes > limits.max_track_bytes
+            {
+                return Err(Error(format!(
+                    "invalid cassette track {} identity, digest or size",
+                    track.id
+                )));
+            }
+            bytes = bytes
+                .checked_add(track.bytes)
+                .ok_or_else(|| Error("cassette total length overflow".into()))?;
+            if bytes > limits.max_total_bytes {
+                return Err(Error(
+                    "cassette exceeds total uncompressed size limit".into(),
+                ));
+            }
+            prior = track.id;
+        }
+        Ok(())
+    }
+
+    /// Find a stable track ID without interpreting it as a vector offset.
+    pub fn track(&self, id: u64) -> Result<&Track, Error> {
+        self.tracks
+            .binary_search_by_key(&id, |track| track.id)
+            .map(|index| &self.tracks[index])
+            .map_err(|_| Error(format!("cassette track {id} does not exist")))
+    }
+}
+
+fn valid_digest(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+/// SHA-256 of exact bytes, encoded as lowercase hex for manifests and plans.
+pub fn digest(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    format!("{:x}", Sha256::digest(bytes))
+}
+
+#[cfg(test)]
+mod tests;

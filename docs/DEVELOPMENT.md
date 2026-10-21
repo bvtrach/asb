@@ -46,6 +46,10 @@ prevent the fast-forward, and no stash is automatically discarded.
 
 These checks are offline: replay tests start the embedded tape proxy and test
 clients on loopback, but CI never starts a real agent, bridge, or live provider.
+`cargo test --locked cassette::` exercises the provider-free multi-track backend:
+manifest and compatibility bounds, stable seeded choices, selector edge cases,
+bounded metadata inspection and selective payload corruption checks. The backend
+does not yet expose new run/sweep flags; integration follows MULTITRACK.md.
 The cli2key concurrency regression uses two mock bridge listeners and mock
 clients, with fixture-only credentials. Both authenticated local requests must
 overlap and reach different owned servers; both servers must be reaped afterward.
