@@ -42,6 +42,8 @@ jobs:
             src/agents/adapters/openjiuwen/usage_compat.py \
             assets/scripts/cli2key-proxy.mjs \
             assets/scripts/llmtape.mjs \
+            assets/scripts/capture-session.mjs \
+            assets/scripts/tape-normalization.mjs \
             assets/scripts/network-fetch.mjs \
             assets/workloads/bug-fix.txt \
             assets/workloads/fixtures/bug-fix/src/parser.py; do

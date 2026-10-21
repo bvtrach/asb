@@ -17,10 +17,31 @@ pub(crate) struct ProcessContext<'a> {
     pub status: &'a std::process::ExitStatus,
     pub stdout: &'a str,
     pub stderr: &'a str,
-    pub stdout_path: &'a Path,
-    /// Complete stopped-collector output, available only during processing.
-    /// The strings above remain bounded diagnostics, not measurement inputs.
-    pub stderr_path: &'a Path,
+    /// Opened admitted sources, not mutable filesystem names. Only positional
+    /// readers are exposed to processing; prefixes above are diagnostics.
+    sources: [&'a crate::evidence::Capture; 2],
+}
+impl<'a> ProcessContext<'a> {
+    pub fn new(
+        name: &'a str,
+        status: &'a std::process::ExitStatus,
+        diagnostics: [&'a str; 2],
+        sources: [&'a crate::evidence::Capture; 2],
+    ) -> Self {
+        Self {
+            name,
+            status,
+            stdout: diagnostics[0],
+            stderr: diagnostics[1],
+            sources,
+        }
+    }
+    pub fn stdout_reader(&self) -> Result<impl std::io::Read + '_, String> {
+        self.sources[0].reader()
+    }
+    pub fn stderr_reader(&self) -> Result<impl std::io::Read + '_, String> {
+        self.sources[1].reader()
+    }
 }
 
 #[derive(serde::Serialize)]
@@ -228,7 +249,10 @@ pub(crate) trait CollectorAdapter: Sync {
     fn usage(&self, _context: &UsageContext<'_>) -> Option<crate::measurements::TokenUsage> {
         None
     }
-    fn usage_file(&self, _path: &Path) -> Option<crate::measurements::TokenUsage> {
+    fn usage_document(
+        &self,
+        _value: &serde_json::Value,
+    ) -> Option<crate::measurements::TokenUsage> {
         None
     }
     fn steps(&self, _agent: &str, _stdout: &str, _stderr: &str) -> Option<u64> {
@@ -484,7 +508,7 @@ mod tests {
         assert!(adapter.display_artifact("artifact.svg").is_none());
         assert!(adapter.graph_section("metric").is_none());
         assert!(adapter.steps("agent", "output", "error").is_none());
-        assert!(adapter.usage_file(Path::new("missing")).is_none());
+        assert!(adapter.usage_document(&serde_json::Value::Null).is_none());
         assert!(
             adapter
                 .usage(&UsageContext {

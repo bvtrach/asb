@@ -369,8 +369,10 @@ impl measurements::Session {
             .map_err(|error| format!("cannot create Perfetto trace artifact: {error}"))?;
         let stdout_path = self.dir.join("perfetto.stdout");
         let stderr_path = self.dir.join("perfetto.stderr");
-        File::create(&stdout_path)
-            .map_err(|error| format!("cannot create Perfetto output: {error}"))?;
+        let captures = [
+            crate::evidence::Capture::create(&stdout_path)?,
+            crate::evidence::Capture::create(&stderr_path)?,
+        ];
         let mut marker_output = open_trace_marker(marker)?;
         let mut command = if let Some(service) = &service {
             service.command("perfetto")
@@ -388,9 +390,7 @@ impl measurements::Session {
             .args(["-o"])
             .arg(&trace)
             .stdout(Stdio::piped())
-            .stderr(Stdio::from(File::create(&stderr_path).map_err(
-                |error| format!("cannot create Perfetto error output: {error}"),
-            )?))
+            .stderr(Stdio::from(captures[1].writer()?))
             .spawn();
         match child {
             Ok(mut child) => {
@@ -417,8 +417,7 @@ impl measurements::Session {
                     adapter: collectors::find("perfetto").expect("registered collector"),
                     child,
                     started: Instant::now(),
-                    stdout_path,
-                    stderr_path,
+                    captures,
                 });
                 // Register the child before validating the live marker, so
                 // Session's drop path stops it if validation fails. A

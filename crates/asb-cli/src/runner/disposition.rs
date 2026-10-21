@@ -24,6 +24,7 @@ pub(crate) enum FailureKind {
     CollectorError,
     OutputError,
     ProviderCleanupError,
+    RecordingError,
 }
 
 impl FailureKind {
@@ -36,6 +37,7 @@ impl FailureKind {
             Self::CollectorError => "collector_error",
             Self::OutputError => "output_error",
             Self::ProviderCleanupError => "provider_cleanup_error",
+            Self::RecordingError => "recording_error",
         }
     }
 }
@@ -100,6 +102,16 @@ pub(super) struct RunDisposition {
 }
 
 impl RunDisposition {
+    /// Recording commits follow finalized execution observations but precede
+    /// immutable publication. Keep grades/primary failures while failing the
+    /// operational disposition if the recording cannot be committed.
+    pub fn recording_failed(&mut self, reason: String) {
+        self.status = RunStatus::Failed;
+        self.success = false;
+        self.failure
+            .get_or_insert_with(|| RunFailure::new(FailureKind::RecordingError, reason));
+    }
+
     pub fn from_facts(facts: RunFacts<'_>) -> Self {
         let failure = facts
             .run_error
@@ -189,6 +201,47 @@ mod tests {
             provider_cleanup_error: None,
             workload_cleanup_confirmed: true,
             proxy_cleanup_confirmed: true,
+        }
+    }
+
+    #[test]
+    fn recording_failure_preserves_evaluator_and_existing_primary_disposition() {
+        for evaluation in [
+            EvaluationOutcome::binary(true),
+            EvaluationOutcome::binary(false),
+            EvaluationOutcome::Pending {
+                reason: "queued".into(),
+            },
+            EvaluationOutcome::Completed {
+                resolution: None,
+                rewards: [("accuracy".into(), 0.5)].into(),
+                reason: None,
+            },
+        ] {
+            let original = evaluation.clone();
+            let mut disposition = RunDisposition::from_facts(facts(&evaluation));
+            let primary = disposition.failure.clone();
+            disposition.recording_failed("recording commit failed".into());
+            assert_eq!(disposition.status, RunStatus::Failed);
+            assert!(!disposition.success);
+            if let Some(primary) = primary {
+                assert_eq!(disposition.failure, Some(primary));
+            } else {
+                assert_eq!(
+                    disposition.failure.as_ref().unwrap().kind,
+                    FailureKind::RecordingError
+                );
+            }
+            let first = disposition.failure.clone();
+            disposition.recording_failed("later recording failure".into());
+            assert_eq!(disposition.failure, first);
+            let encoded = serde_json::to_value(&disposition).unwrap();
+            assert_eq!(encoded["status"], "failed");
+            assert_eq!(
+                encoded["failure_kind"],
+                disposition.failure.as_ref().unwrap().kind.as_str()
+            );
+            assert_eq!(evaluation, original);
         }
     }
 

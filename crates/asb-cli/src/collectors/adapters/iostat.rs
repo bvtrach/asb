@@ -52,7 +52,7 @@ fn process(
     context: &ProcessContext<'_>,
 ) -> Result<ProcessData, String> {
     let mut result = ProcessData::from_output(context);
-    let output = super::super::read_complete_output(context.stdout_path)?;
+    let output = super::super::read_complete_output(context.stdout_reader()?)?;
     result.metrics = parse_pidstat_io_metrics(&output);
     if result.metrics.is_empty() {
         result.metrics = parse_iostat_metrics(&output);

@@ -109,3 +109,47 @@ key-management prerequisite.
 - Test sweep aggregation/resume/reconciliation, null statistics/ties, viewer
   navigation and terminal restoration on normal/error/cancel paths.
 - Run fmt, strict Clippy, tests, build, Rust docs, UML, packaging and hosted CI.
+
+## Run integration seams
+
+The run-owned cassette coordinator owns source discovery, frozen selection,
+private JSONL materialization and the single recording journal. Neither provider
+adapters nor the proxy protocol know about ZIP entries or track selectors.
+Source discovery uses bounded file/content inspection, not a filename suffix;
+legacy JSONL and sparse concurrent layouts remain readable. A bundle is opened
+once, its complete selection plan is persisted before allocation, and only the
+selected entries are decoded before existing model checks and proxy startup.
+Each execution still owns a private replay cursor.
+
+New bundled recording and replay use fresh campaign workspaces even when
+`--repeat` is omitted (one batch). Plain runs and legacy JSONL replay without
+explicit repetition retain their existing workspace behavior; explicit
+`--repeat 1` is fresh. Thus `--record` deliberately changes its old workspace
+behavior together with its output format. Explicit cassette filenames do not
+select the storage format: a new recording is ZIP even with a `.jsonl` suffix,
+and output must make that format clear. Tests must verify every default and
+preservation of the original user workspace.
+
+Proxy resource cleanup is not recording completeness. The recorder adapter must
+provide optional capture-finalization evidence bound to its exact output bytes,
+including accepted/completed/failed/in-flight counts and inference requests
+excluding known probes. The embedded recorder stops admission, settles owned
+requests and publishes a bounded atomic final receipt. Missing legacy-override
+evidence remains unknown/incomplete, never guessed from nonempty JSONL or agent
+exit. Chain evidence retains distinct recorder hops; it must not add duplicate
+hop requests together. Complete failed attempts remain automatically selectable.
+
+Compatibility binds replay-specific module/harness/scoring semantics alongside
+the existing agent/provider/model/task/dataset/prompt/material identity. Do not
+reuse execution-plan fingerprints: those deliberately bind repetition,
+concurrency and measurement choices that may change during replay.
+
+Recording destination checks precede tools/resources, but final no-clobber
+publication remains authoritative. Journal intent is created only after actual
+prepared compatibility is confirmed, never with a fabricated material digest.
+Workers return bounded payload references and completion evidence to one writer,
+which incrementally commits stable IDs without holding a lock through client
+execution or grading. Per-attempt completion seals bind immutable committed
+tracks, not a growing archive or staging paths removed by successful cleanup.
+Ordinary execution failures still finalize settled results; interruption keeps
+recoverable partial state, and explicit recovery never implicitly reruns slots.

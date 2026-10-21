@@ -543,6 +543,43 @@ impl RecordingJournal {
     }
 }
 
+/// Read-only selected-entry proof, not a whole-archive integrity assertion.
+pub(super) fn verify_selected_publication(
+    root: &Path,
+    expected: &super::TrackEvidence,
+    limits: Limits,
+) -> Result<(), Error> {
+    let mut remaining = MAX_RECORD_BYTES;
+    let published: Published = read_json(
+        &root.join("published.json"),
+        MAX_RECORD_BYTES,
+        &mut remaining,
+    )?;
+    let file = open_regular(&expected.destination, limits.max_archive_bytes)?;
+    if published.recording_id != expected.recording_id
+        || !super::super::valid_digest(&published.archive_sha256)
+        || published.archive_bytes != file.metadata().map_err(io_error)?.len()
+    {
+        return Err(Error(
+            "published recording target differs from receipt".into(),
+        ));
+    }
+    let mut archive = Archive::open(&expected.destination, limits)?;
+    let manifest = archive.manifest();
+    if manifest.recording_id != expected.recording_id
+        || manifest.compatibility != expected.compatibility
+        || manifest.concurrency != expected.concurrency
+        || manifest_digest(manifest)? != published.manifest_sha256
+        || manifest.track(expected.track.id)? != &expected.track
+    {
+        return Err(Error(
+            "published manifest differs from immutable track evidence".into(),
+        ));
+    }
+    archive.read_track(expected.track.id)?;
+    Ok(())
+}
+
 fn manifest_digest(manifest: &Manifest) -> Result<String, Error> {
     Ok(digest(&serde_json::to_vec(manifest).map_err(json_error)?))
 }

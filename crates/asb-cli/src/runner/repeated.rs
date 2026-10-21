@@ -1,4 +1,5 @@
 //! Fresh sequential batches with a durable intended-slot plan and outcome links.
+mod replay;
 use super::{RunOptions, batch, replica};
 use crate::{Error, benchmark::BenchmarkConfig, cassette::Compatibility, io_error};
 use serde::Serialize;
@@ -17,6 +18,12 @@ const MAX_OUTCOME_BYTES: u64 = 1024 * 1024;
 
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct ExecutionIdentity {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    replay_track: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    replay_seed: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    replay_algorithm: Option<String>,
     admission: crate::planning::BatchAdmissionPolicy,
     campaign: String,
     batch: u64,
@@ -27,6 +34,8 @@ pub(crate) struct ExecutionIdentity {
 
 #[derive(Clone, Serialize)]
 pub(crate) struct BatchIdentity {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    replay: Option<replay::BatchChoices>,
     campaign: String,
     number: u64,
     repeat: u64,
@@ -34,11 +43,23 @@ pub(crate) struct BatchIdentity {
 }
 
 impl BatchIdentity {
+    pub(super) fn number(&self) -> u64 {
+        self.number
+    }
     pub(crate) fn admission(&self) -> crate::planning::BatchAdmissionPolicy {
         crate::planning::BatchAdmissionPolicy::current()
     }
     pub(crate) fn execution(&self, replica: replica::Identity) -> ExecutionIdentity {
         ExecutionIdentity {
+            replay_track: self
+                .replay
+                .as_ref()
+                .map(|choices| choices.tracks[replica.index - 1]),
+            replay_seed: self.replay.as_ref().and_then(|choices| choices.seed),
+            replay_algorithm: self
+                .replay
+                .as_ref()
+                .and_then(|choices| choices.algorithm.clone()),
             admission: self.admission(),
             campaign: self.campaign.clone(),
             batch: self.number,
@@ -51,6 +72,8 @@ impl BatchIdentity {
 
 #[derive(Serialize)]
 struct Slot {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    replay_track: Option<u64>,
     id: u64,
     batch: u64,
     replica: usize,
@@ -62,6 +85,10 @@ struct Slot {
 
 #[derive(Serialize)]
 struct ReplayInput {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    complete: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    track: Option<u64>,
     source: PathBuf,
     private: PathBuf,
     bytes: u64,
@@ -70,6 +97,10 @@ struct ReplayInput {
 
 #[derive(Serialize)]
 struct Plan<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    replay_selection: Option<crate::cassette::SelectionPlan>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    recording: Option<PathBuf>,
     admission: crate::planning::BatchAdmissionPolicy,
     schema_version: u32,
     scope: &'static str,
@@ -109,14 +140,10 @@ pub(super) fn run(
         || options.preparation_gate.is_some()
         || options.launch_gate.is_some()
         || options.batch.is_some()
+        || options.recording.is_some()
     {
         return Err(Error::Input(
             "repeated execution cannot reuse legacy observers, slots or preparation gates".into(),
-        ));
-    }
-    if options.mode == Some(crate::tape::Mode::Record) {
-        return Err(Error::Input(
-            "repeated recording requires the pending bundle integration".into(),
         ));
     }
     crate::planning::resolve_snapshot(&config, options.measurement_dir.is_some(), options.policy)?;
@@ -137,9 +164,23 @@ pub(super) fn run(
             .as_ref()
             .is_some_and(|value| value.enabled);
     let mut slots = planned_slots(&config, repeat, measured)?;
-    let replay_inputs = replay_inputs(config_path, &config, options, &mut slots)?;
+    let mut replay = replay::Prepared::open(config_path, &config, options, repeat)?;
+    let replay_inputs = if let Some(replay) = &replay {
+        replay.inputs(&mut slots)?
+    } else {
+        replay_inputs(config_path, &config, options, &mut slots)?
+    };
     let parent = project_root.join("results/asb-executions");
     let root = parent.join(&campaign);
+    let recording_destination = (options.mode == Some(crate::tape::Mode::Record))
+        .then(|| {
+            let destination = options
+                .cassette
+                .map(PathBuf::from)
+                .unwrap_or_else(|| super::default_bundle_cassette(config_path, &config));
+            super::recording::preflight(&destination)
+        })
+        .transpose()?;
     let measurement_root = measured
         .then(|| {
             options
@@ -150,6 +191,8 @@ pub(super) fn run(
         .transpose()
         .map_err(io_error)?;
     let plan = Plan {
+        replay_selection: replay.as_ref().and_then(|replay| replay.selection.clone()),
+        recording: recording_destination.clone(),
         admission,
         schema_version: 1,
         scope: "intended-executions-not-attempt-evidence",
@@ -162,6 +205,7 @@ pub(super) fn run(
         repeat,
         concurrency: config.concurrency,
         mode: match options.mode {
+            Some(crate::tape::Mode::Record) => "record",
             Some(crate::tape::Mode::Replay) => "replay",
             _ => "live",
         },
@@ -179,7 +223,21 @@ pub(super) fn run(
     )
     .map_err(Error::Run)?;
     publish_bytes(&root.join("plan.json"), &bytes)?;
-    let private_cassette = stage_replay(&root, &plan, config.concurrency)?;
+    let recording = recording_destination.map(|destination| {
+        Arc::new(super::recording::Recorder::new(
+            destination,
+            root.clone(),
+            campaign.clone(),
+            repeat,
+            config.concurrency,
+        ))
+    });
+    let private_cassette = if let Some(replay) = &mut replay {
+        replay.stage(&root, &plan.replay_inputs)?;
+        None
+    } else {
+        stage_replay(&root, &plan, config.concurrency)?
+    };
     if let Some(measurement_root) = &measurement_root
         && measurement_root != &root
     {
@@ -204,13 +262,44 @@ pub(super) fn run(
         )
         .map_err(io_error)?;
     }
-    let mut reference: Option<Compatibility> = None;
+    if let Some(selection) = &plan.replay_selection {
+        if options.json {
+            serde_json::to_writer(
+                &mut *output,
+                &json!({"type":"replay-selection","selection":selection}),
+            )
+            .map_err(|error| Error::Io(error.to_string()))?;
+            writeln!(output).map_err(io_error)?;
+        } else {
+            writeln!(
+                output,
+                "Replay seed: {} ({})\nSelected track IDs: {}",
+                selection.seed,
+                selection.algorithm,
+                selection
+                    .tracks
+                    .iter()
+                    .map(u64::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+            .map_err(io_error)?;
+        }
+    }
+    replay::disclose_incomplete(&plan.replay_inputs, options.json, output)?;
+    let mut reference: Option<Compatibility> = replay
+        .as_ref()
+        .and_then(|replay| replay.compatibility.clone());
     let mut failures = 0u64;
     let mut completed_batches = 0u64;
     let mut stopped = false;
     let mut first_reason = None;
+    let mut producers_quiescent = true;
     for number in 1..=repeat {
         let identity = BatchIdentity {
+            replay: replay
+                .as_ref()
+                .map(|replay| replay.batch_choices(&plan, number, config.concurrency)),
             campaign: campaign.clone(),
             number,
             repeat,
@@ -229,8 +318,11 @@ pub(super) fn run(
             cleanup_confirmed: AtomicBool::new(true),
         });
         let prepared = batch_root.join("prepared.json");
+        let batch_recorder = recording.clone();
         let gate = batch::Gate::new(config.concurrency, reference.clone(), admission.material_timeout())?.observe(Arc::new(move |compatibility| {
-            publish(&prepared, &json!({"schema_version":1,"scope":"verified-prepared-material","compatibility":compatibility}))
+            publish(&prepared, &json!({"schema_version":1,"scope":"verified-prepared-material","compatibility":compatibility}))?;
+            if let Some(recorder) = &batch_recorder { recorder.prepare(compatibility,number)?; }
+            Ok(())
         }));
         let mut selected = config.clone();
         selected
@@ -262,6 +354,18 @@ pub(super) fn run(
             .measurement_dir
             .map(|_| path_text(measures.as_deref().expect("explicit override is measured")))
             .transpose()?;
+        let batch_cassette = if recording.is_some() {
+            Some(path_text(&super::recording::base(&root, number))?)
+        } else if replay.is_some() {
+            Some(replay::stage_batch(
+                &root,
+                &plan,
+                number,
+                config.concurrency,
+            )?)
+        } else {
+            private_cassette.clone()
+        };
         let result = super::run_loaded(
             config_path,
             selected,
@@ -273,7 +377,8 @@ pub(super) fn run(
                 launch_gate: Some(&launch_gate),
                 verify_initial_material: true,
                 measurement_dir: override_measurements.as_deref(),
-                cassette: private_cassette.as_deref(),
+                cassette: batch_cassette.as_deref(),
+                recording: recording.as_deref(),
                 on_completion: Some(observer.as_ref()),
                 ..options
             },
@@ -287,6 +392,8 @@ pub(super) fn run(
             .map_err(|_| Error::Run("execution completion state was interrupted".into()))?
             .len();
         let batch_failed = result.is_err();
+        producers_quiescent &=
+            completed == config.concurrency && observer.cleanup_confirmed.load(Ordering::Acquire);
         // A published outcome for every admitted slot distinguishes ordinary
         // completed failures from setup, output or evidence-publication failure.
         stopped = must_stop(
@@ -322,10 +429,65 @@ pub(super) fn run(
         reference = Some(prepared?);
         completed_batches += 1;
     }
+    let publication = recording
+        .as_ref()
+        .map(|recorder| recorder.finalize(producers_quiescent));
+    let publication_status = match &publication {
+        None => serde_json::Value::Null,
+        Some(Ok(Some(published))) => {
+            json!({"status":"published","format":"asb-zip-v1","path":published.destination,"tracks":published.manifest.tracks.len(),"cleanup_complete":published.cleanup_complete,"warnings":published.warnings})
+        }
+        Some(Ok(None)) => json!({"status":"not-created","reason":"no verified recording material"}),
+        Some(Err(error)) => json!({"status":"failed","reason":error.to_string()}),
+    };
     publish(
         &root.join("finished.json"),
-        &json!({"schema_version":1,"completed_batches":completed_batches,"failed_batches":failures,"stopped":stopped}),
+        &json!({"schema_version":1,"completed_batches":completed_batches,"failed_batches":failures,"stopped":stopped,"cassette_publication":publication_status}),
     )?;
+    if publication.is_some() {
+        if options.json {
+            serde_json::to_writer(
+                &mut *output,
+                &json!({"type":"cassette-publication","publication":publication_status}),
+            )
+            .map_err(|error| Error::Io(error.to_string()))?;
+            writeln!(output).map_err(io_error)?;
+        } else {
+            match &publication {
+                Some(Ok(Some(published))) => {
+                    writeln!(
+                        output,
+                        "Cassette: {} (ZIP v1, {} tracks, published)",
+                        published.destination.display(),
+                        published.manifest.tracks.len()
+                    )
+                    .map_err(io_error)?;
+                    for warning in &published.warnings {
+                        writeln!(output, "Warning: {warning}").map_err(io_error)?;
+                    }
+                }
+                Some(Ok(None)) => writeln!(
+                    output,
+                    "Recording was not created: no compatible workload material was prepared."
+                )
+                .map_err(io_error)?,
+                Some(Err(_)) => writeln!(
+                    output,
+                    "Recording publication is not confirmed; partial evidence was retained."
+                )
+                .map_err(io_error)?,
+                None => (),
+            }
+        }
+    }
+    if let Some(Err(error)) = publication {
+        return Err(Error::Io(format!(
+            "{}; {error}",
+            first_reason
+                .as_deref()
+                .unwrap_or("recording publication failed")
+        )));
+    }
     if failures > 0 || stopped {
         Err(Error::Run(format!(
             "repeated execution had {failures} failed batch(es){}; {}; inspect {}",
@@ -376,6 +538,7 @@ fn planned_slots(
             )?;
             let measures = PathBuf::from(format!("batch-{batch}/measurements"));
             slots.push(Slot {
+                replay_track: None,
                 id: (batch - 1) * config.concurrency as u64 + replica as u64,
                 batch,
                 replica,
@@ -435,6 +598,8 @@ fn replay_inputs(
                 .ok_or_else(|| Error::Input("replay inputs exceed 2 GiB aggregate bound".into()))?;
             let id = inputs.len();
             inputs.push(ReplayInput {
+                complete: None,
+                track: None,
                 source: source.clone(),
                 private: PathBuf::from(format!("inputs/recording-{}.jsonl", id + 1)),
                 bytes,
@@ -673,7 +838,7 @@ fn publish(path: &Path, value: &impl Serialize) -> Result<(), Error> {
     publish_bytes(path, &encode(value)?)
 }
 
-fn publish_bytes(path: &Path, bytes: &[u8]) -> Result<(), Error> {
+pub(super) fn publish_bytes(path: &Path, bytes: &[u8]) -> Result<(), Error> {
     let directory = path
         .parent()
         .ok_or_else(|| Error::Input("execution metadata needs a parent".into()))?;
@@ -716,6 +881,7 @@ mod tests {
             root: root.clone(),
             directory: root.clone(),
             identity: BatchIdentity {
+                replay: None,
                 campaign: "fixture".into(),
                 number: 1,
                 repeat: 2,
@@ -782,6 +948,7 @@ mod tests {
                 root: root.clone(),
                 directory: root.clone(),
                 identity: BatchIdentity {
+                    replay: None,
                     campaign: "fixture".into(),
                     number: 1,
                     repeat: 2,

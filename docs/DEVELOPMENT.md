@@ -164,6 +164,61 @@ prevent the fast-forward, and no stash is automatically discarded.
 
 These checks are offline: replay tests start the embedded tape proxy and test
 clients on loopback, but CI never starts a real agent, bridge, or live provider.
+`cargo test --locked --offline --test agent_artifact_ownership` drives actual
+native replay and guest-driver clients through A-then-silent-B attempts. The
+former fixed workspace trajectory reproduced stale answers, 34 tokens and four
+steps after a naturally failed unlink. The fixed routes use fresh private output
+paths, retain foreign legacy workspace bytes and never attribute A to B. Actual
+scratch-cleanup/publication failure, symlink, malformed and oversized fixtures
+retain independent grades/usage or mark unavailable evidence without changing
+confirmed process quiescence. Native execution uses only the embedded loopback
+replay; guest execution uses an inert local client, never a container/provider.
+`cargo test --locked --offline --lib agents::artifacts` checks single bounded
+snapshots, namespace collisions, file/symlink/in-place replacements, absent-then-
+created files, explicit settlement failure and unwind cleanup. Deterministic
+per-owner unit hooks replace the namespace after its pathname check but before
+the relative open, and replace the source after its identity check but before
+the custody move. Both regular and symlink replacements retain foreign bytes;
+the hooks do not exist in production builds. Frozen evidence survives publication
+unwind. `agents::driver::artifact_publication_tests` uses the actual OS publisher
+with first/final write blockers: first failure retains raw JSON, final failure
+retains the durable pending record and its answer/steps/quiescence facts. This
+publisher unit seam is not an original-SDK retained-service qualification.
+The actual guest-entry first-publication fixture also verifies retained raw JSON.
+Production managed-transport seams separately admit one fake grader callback for
+pending/failed ancillary scratch status with matching retained owner evidence,
+and none for missing first metadata. The non-retained guest fallback confirms
+reset before one fake grader callback and never fabricates answer/usage. These
+are deterministic admission seams, not original-SDK or installed-client claims.
+Shared identity
+decision tests reject unknown and mismatched IDs, including high 128-bit changes.
+Windows handle identity is source-only qualification here; identity-unavailable
+hosts retain isolated evidence with a diagnostic instead of guessing deletion
+ownership or disabling execution. Build the current ASB binary before focused
+actual-entry tests and never relink while they are running.
+The ownership-window follow-up passed 61 adapter tests (including the snapshot,
+custody-window and OS-publisher seams), the exact adapter-layout guard, actual
+artifact/guest/completion tests, the existing 24 protocol harness tests, the
+updated 21 execution and 10 guest Python cases, strict all-target/all-feature
+Clippy and formatting. This old-base checkpoint has no full-suite or integrated
+current-main qualification yet; Windows remains source-qualified only.
+The subsequent native publication-loss regression uses the actual ASB Mini-SWE
+route, embedded loopback replay and bundled local repository-navigation grader,
+not an external SDK verifier. With the log blocked and measurements disabled,
+the previous binary returned a completed grade/34 tokens/four steps but deleted
+the only raw trajectory. The fixed fixture requires a recoverable mode-0600
+frozen copy containing that exact answer/usage/steps, a locatable diagnostic,
+one client call and no completion receipt. Real runner-entry observation also
+checks grading, workload finish and provider finish exactly once with blocked
+logging and either disabled or failed measurements; summary output is not
+appended twice. Unit cases verify exact frozen bytes after source replacement,
+create-new file/symlink refusal, permission failure and a test-only synchronization
+fault, all retaining the original when handoff is unconfirmed. No old-base full
+suite or integrated-current-main qualification is implied by these focused gates.
+The native handoff checkpoint passed 63 adapter tests, 73 runner tests (three
+explicit opt-in cases ignored), the layout guard, the extended actual-entry
+fixture, strict all-target/all-feature Clippy, formatting and binary build.
+
 `cargo test --locked --offline --lib runner::capture` uses real local children
 for simultaneous stdout/stderr pressure, finite capture, closed/held pipes,
 execution/drain deadlines, writer failure, unwind and uncertain cleanup custody.
@@ -389,8 +444,29 @@ individual cleanup boundaries, exact-candidate recovery and foreign targets.
 An owned test child is actually killed at recording/prepared/linked/published
 stages, checking active-owner exclusion and recovery without new attempts. No
 agent/provider/container runs. Fault hooks exist only in test builds and have no
-environment/configuration surface in the installed CLI. The backend does not yet
-expose new run/sweep flags; integration follows MULTITRACK.md.
+environment/configuration surface in the installed CLI. `run` integrates the
+backend through its own recording/replay coordinators; sweep/resume/report and
+viewer delivery remain separate steps in MULTITRACK.md.
+`cargo test --locked --offline --lib runner::recording` includes deterministic
+source-name and parent-namespace replacement after original validation, private
+custody move/restore/unlink/sync faults, EEXIST arrivals, no recursive deletion,
+and unwind retention. `raw_custody_consumption` in the actual `repeated_run`
+target records true/false local file grades through a synthetic loopback provider,
+checks track/continuation evidence after raw deletion and replays selected tracks
+with the provider closed. Build the actual ASB first and keep its hash stable
+through the runtime checks. These qualify Linux fixtures, not a live provider,
+external SDK, native Windows, or crash-atomic multi-entry restoration.
+`cargo test --locked --offline --test repeated_run` additionally records real
+embedded-proxy ZIP captures with a bounded loopback provider and synthetic agent.
+It checks no-overwrite/fresh defaults, ordinary complete failed recordings,
+seeded selections under changed arrival ordering, actual per-slot response
+identity, statistic ties, selected-only integrity, every compatibility field,
+source replacement after private staging, legacy selection/unknown metadata,
+strict partial consumption and zero-client/inference metadata-budget rejection.
+Recording commit failure preserves true grades and existing primary failures but
+publishes failed typed log/measurement disposition before withholding completion
+and stopping later admission. These tests use fixture-only credentials and no
+installed agents, real LLM calls, containers or privileged collectors.
 `cargo test --locked --lib runner::batch` checks the internal cancellable
 preparation gate and runner no-launch/cancellation wiring. Material regressions
 live in `workloads::material` and `workloads::session`: bounded canonical files,
@@ -747,6 +823,71 @@ unrelated-process survival despite an earlier failing adapter or full journal.
 The native-plan fixture verifies wrapper/endpoint/replay preparation without
 executing an installed client. All fixtures are provider-free and unprivileged;
 controller fixtures do not qualify Docker, SDK installation or a live benchmark.
+`cargo test --locked --offline --lib evidence::` checks private staged writes,
+short/Interrupted/zero/ENOSPC writes, serializer failures, file/directory sync
+and rename faults, regular-file restrictions and coordinated real-process
+writers. Measurement publication fixtures preserve malformed summary bytes and
+unknown history metadata. `runner::phases::tests::publication` drives eleven
+actual replay-only attempts with Boolean/native/pending grades, client and
+presentation failure, partial log/measurement writes and post-commit durability
+uncertainty. Client/evaluation/cleanup counts, identities, independent final
+outputs and withheld receipts are checked together. Reports refuse stale or
+malformed retained evidence instead of presenting it as the current attempt.
+The pre-fix serializer, malformed-history and two-process interleaving failures
+were observed before implementation; logs remain local qualification evidence.
+Extended review fixtures reproduce the exact-bound unterminated log and raw
+collector deletion before failed/unconfirmed publication. Stopped local child
+fixtures require raw-byte retention, sibling exports and independent run/
+lifecycle/summary finalization. Success consumes only identity-bound sources;
+an adapter replacement, a deterministic check/move race and refused cleanup
+retain foreign/owned bytes with actionable paths. Two additional actual entry
+cases retain native/pending grades and exact-once evaluation/cleanup through
+collector-result staging and post-commit sync failure, including broken output.
+Platform-confirmation regressions exercise all three policy decisions on Linux:
+only Unix invokes the directory-sync callback, Windows move flags exclude
+copy/deferred operations, and a missing/uninspectable private source is never
+called an unchanged precommit failure. A real Linux rename followed by an
+injected native-outcome failure retains its staging directory without a Drop
+cleanup/retry or a false published/unpublished claim. Existing short/zero/ENOSPC,
+file-sync, postcommit confirmation and cleanup tests remain required. Windows
+API declarations/semantics are source-reviewed only: no Windows target compile
+or runtime was performed, and Linux policy tests do not qualify native Windows
+rename behavior or portable directory durability.
+`cargo test --locked --offline --lib runner::phases::tests::bundle_publication`
+combines actual bundled recording/replay with private publication faults. Nine
+isolated cases (eleven actual attempts including clean recording baselines) use
+the same bounded synthetic loopback provider as `repeated_run`, fake Pi clients
+and fixture-only keys. True/false and nullable native grades survive committed
+recordings followed by short/precommit or postcommit log/measurement failures.
+Combined recorder commit/publication failures retain primary client/grade facts,
+failed recording disposition and raw bytes, and stop before another batch.
+Selected seeded replay preserves track/algorithm/usage after source replacement
+despite publication failure. Assertions check exact-once client/evaluate/workload/
+provider-observer finish, independent final outputs, immutable association/raw
+digests and absent completion receipts. Measurement schemas do not carry the
+repeated `execution` selection object: their task/cohort/fingerprint/usage are
+checked against plan/log/streamed selection identity without inventing fields.
+No production fault switch, SDK, container, privileged collector or live LLM is
+used. Build the current ASB executable first and keep it unchanged while testing.
+The artifact-handoff test in the same module adds six actual native MiniSWE
+record/replay cases without another provider implementation. The fake executable
+writes only the adapter's actual current-private `--output` trajectory; its
+stdout deliberately disagrees with the frozen answer and claims 999 tokens.
+True/false grades must use the frozen answer, steps remain four, validated tape
+usage stays authoritative at five tokens, and the exact retained 0600 trajectory
+independently contains 34 tokens. Commit plus log/measurement failures and selected
+private replay after source replacement must retain a locatable frozen copy,
+consume only the original owned trajectory, finish/evaluate/publish once, stop
+further admission and withhold unsafe receipts. This extends the source-approved
+integration's offline evidence, not native Windows or original-SDK qualification.
+The independent-offset fixture keeps its producer at offset five while full,
+prefix and interleaved frozen readers run; this assertion also remains enabled
+on Windows. An additional cross-platform source-replacement fixture must read
+admitted A=17, never replacement B=99. Shared pure file-ID decisions compare all
+128 bits and preserve unknown-ID semantics. A Windows-only future-native test
+checks the reopened description is read-only. These tests do not constitute
+native Windows execution in the Linux qualification; the ReOpenFile declaration,
+sharing/access/inheritability flags and full ID layout are source-reviewed.
 Human-terminal write/flush failures stop further presentation but finish an
 already-admitted execution, evaluation and explicit cleanup; broken guest-owner
 transport still cancels/preserves. Tests cover both policies. The elapsed clock
@@ -851,6 +992,38 @@ preserving cancellation independently of installation. This fixture does not
 qualify an installed runtime, SDK or workload container. Production execution
 always validates the runtime and performs checksum-pinned bootstrap preparation;
 there is no CLI, configuration or environment switch to bypass that phase.
+`cargo test --locked --offline --lib workloads::task_protocol` covers private
+ready/completion/grade constructors, delegated namespace-owner mutations,
+normal versus preserving cleanup acknowledgements and exact Rust/Python wire
+identifiers, including initial-material dispatch and preparation-failure events.
+Shared-launch fixtures require the typed agent request to preserve its remaining
+preparation allowance and notify peers before cancellation. Positive preserved
+settlement is cached independently of grade permission; failed normal removal
+retains its diagnostic without fabricating unknown cleanup. Remote execution
+fixtures additionally pair the actual Python
+task-server loop with the actual Rust controller/session; only SDK/agent work
+is replaced by an inert process-local fixture. Both grades retain a nonzero
+client exit and binary output, then consume normal-close permission. A second
+bad grade or evaluator exception revokes the first grade's permission and
+requires stopped preservation without normal close. Generic controller tests
+retain untagged inspection, sanitized errors, framing limits and cancellation
+draining, including unknown in-flight events. These are offline protocol tests,
+not original SDK/container qualification.
+`cargo test --locked --offline --lib workloads::controller::transport_tests`
+qualifies the Unix caller-side transport with actual non-reading children,
+duplex pipe pressure, bounded queued events, exact/oversized/unterminated frames,
+one write/response deadline and one cleanup acknowledgement/exit deadline.
+A Linux fixture retains only its own child's stdout writer through `/proc`,
+then proves Controller destruction releases the parent read descriptor without
+waiting for that writer. It creates no orphan descendant. Fault fixtures pin
+the direct child with a pidfd, force pending/error exit observation and unwind
+after admission, require the pre-established keeper to reap it and leave an
+unrelated sentinel alive. Worker creation failure launches no controller; pipe
+setup failure remains inside the existing custody guard. No fixture needs a
+genuinely kernel-stuck task. Python fake-monotonic-clock tests account for delayed
+polls and reject a late queued close instead of authorizing teardown. These
+checks do not qualify Docker resources, arbitrary descendants, OS spawn latency
+or the retained legacy non-Unix blocking transport.
 `benchmark_live_resources.py` additionally checks actual abrupt controller
 SIGKILL with an installed SWE-bench task image: the durable ownership journal
 quiesces only its recorded container, retains a partial output file and an
