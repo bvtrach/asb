@@ -15,6 +15,9 @@ pub(crate) mod operation;
 mod progress;
 pub(crate) use progress::ProgressStage;
 mod goose;
+#[cfg(all(test, target_os = "linux"))]
+#[path = "../tests/unit/installer_process_boundary.rs"]
+mod process_boundary_red;
 mod source;
 pub(crate) use source::check_executable_version;
 
