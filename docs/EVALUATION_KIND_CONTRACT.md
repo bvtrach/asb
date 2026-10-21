@@ -86,3 +86,40 @@ these tests establish existing behavior before a typed-contract refactor.
 No production implementation is authorized by this document. Source checkpoint
 and baseline execution evidence will be submitted for independent root review
 before any such change. No full suite/PR/push at this phase.
+
+## Executed baseline evidence, source `5ebc6cb1089cea7f599e4691861ba33126932eb0`
+
+Only the four-line cfg(test) include and the new five-test file differ in Rust
+from the qualified base; no producer/consumer implementation changed. The actual
+ASB built FIRST (`target/evaluation47-baseline-build.log`,exit0,14.18s). The owned
+HOME cache began as a copy of the verified idle class45 debug cache; its copied
+artifacts do not qualify this source. Class45 source/cache were not modified.
+Every command used this worktree's own target, offline/locked, jobs1/incremental0;
+approximately194GiB was free before the build and no other cache was used.
+
+Actual and frozen `target/qualification/evaluation47-baseline-asb` SHA256:
+`d1da6f73b9447e649aca64bd66d9b079bef7748cc7aa6b8df45739032af2deeb`.
+Before, after and final hash logs agree. Post-test libtest SHA256 is
+`3200aaa3b506e7216cdd34eae2dacdaf8b0c3a386eeda735994774e1b6c7af97`;
+there is no pre-run libtest stability claim. All handles are terminal.
+
+| Retained target log | Result |
+| --- | --- |
+| evaluation47-contract-focus.log | New5/0/0ignored;25.39s compile,0.00s runtime |
+| evaluation47-existing-contract-baselines.log | Unchanged2/0/0; exact five official descriptor and protocol-fingerprint goldens |
+| evaluation47-session.log | 9/0/0 |
+| evaluation47-selection.log | 3/0/0 |
+| evaluation47-disposition.log | 4/0/0 |
+| evaluation47-planning.log | 6/0/0 |
+| evaluation47-unknown-report.log | Existing legacy smoke/unknown scoring1/0/0 |
+| evaluation47-native-report.log | Existing native partial/null reward completion+HTML1/0/0 |
+| evaluation47-baseline-clippy.log | Strict workspace/all-target/all-feature -Dwarnings exit0,15.25s |
+| evaluation47-baseline-fmt.log / evaluation47-baseline-diffcheck.log | exit0 / exit0 |
+
+This is31 passing focused outer tests, not a full suite. Native Linux x86_64
+actually executed the existing literal protocol fingerprint expectations; ARM
+expectations remain calculated/source-only, not runtime-qualified here. No
+literal baseline was regenerated. No failure occurred in these baseline runs.
+No SDK, provider, Docker daemon or privileged operation was used. Production
+remains held for root's independent design/baseline approval; after extraction,
+the exact unchanged official goldens must run again with all other owning tests.
