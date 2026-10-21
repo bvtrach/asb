@@ -77,6 +77,8 @@ digraph ASB_Rust_UML {
         "asb-cli_src_collectors_adapters_TokenUsageCollector" [label="{collectors_adapters_TokenUsageCollector}", shape=record];
         "asb-cli_src_collectors_adapters_Topology" [label="{collectors_adapters_Topology|-packages: BTreeSet\<String\>\l-cores: BTreeSet\<(String, String)\>\l}", shape=record];
         "asb-cli_src_collectors_adapters_Totals" [label="{collectors_adapters_Totals|-seen: BTreeSet\<(u32, u64)\>\l-admitted: BTreeSet\<(u32, u64)\>\l-peak_rss_kib: u64\l-samples: u64\l-incomplete: bool\l|+matches_process(proc: &Path, generation: (u32, u64), identity: &Identity) bool\l+sample(root: ProcessIdentity, identity: &Identity) void\l}", shape=record];
+        "asb-cli_src_collectors_adapters_pidstat_Observation" [label="{collectors_adapters_pidstat_Observation|-key: (usize, u64)\l-elapsed: f64\l-totals: BTreeMap\<String, f64\>\l-pids: BTreeSet\<String\>\l}", shape=record];
+        "asb-cli_src_collectors_adapters_pidstat_Samples" [label="{collectors_adapters_pidstat_Samples|+series: BTreeMap\<String, Vec\<f64\>\>\l+timestamps: BTreeMap\<String, Vec\<f64\>\>\l}", shape=record];
     }
 
     subgraph "cluster_compare" {
