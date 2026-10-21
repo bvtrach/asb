@@ -801,10 +801,14 @@ pub(in crate::sweep) fn measurement_matches(measured: &Value, summary: &Value) -
     .all(|field| {
         if matches!(
             *field,
-            "workload_resource_disposition" | "workload_artifacts" | "execution" | "recording"
+            "workload_resource_disposition" | "workload_artifacts"
         ) {
             measured.get(*field) == summary.get(*field)
         } else {
+            // Older JSON summaries emitted null for optional execution identity
+            // while measurements omitted it. Neither representation asserts a
+            // campaign or recording. Nonnull identities must still agree exactly;
+            // campaign readers additionally require the planned typed identity.
             measured[*field] == summary[*field]
         }
     })
@@ -918,17 +922,24 @@ mod tests {
     }
 
     #[test]
-    fn measurement_agreement_binds_presence_sensitive_campaign_execution_and_recording() {
+    fn measurement_agreement_preserves_legacy_nulls_but_binds_campaign_identities() {
         let empty = json!({});
         for field in ["execution", "recording"] {
             let mut changed = empty.clone();
             changed[field] = Value::Null;
-            assert!(!measurement_matches(&changed, &empty));
-            assert!(!measurement_matches(&empty, &changed));
+            assert!(measurement_matches(&changed, &empty));
+            assert!(measurement_matches(&empty, &changed));
             assert!(measurement_matches(&changed, &changed));
             let mut other = changed.clone();
             other[field] = json!({"changed": true});
             assert!(!measurement_matches(&changed, &other));
+            assert!(!measurement_matches(&other, &changed));
+            assert!(!measurement_matches(&empty, &other));
+            assert!(!measurement_matches(&other, &empty));
+            assert!(measurement_matches(&other, &other));
+            let mut conflict = other.clone();
+            conflict[field] = json!({"changed": false});
+            assert!(!measurement_matches(&other, &conflict));
         }
     }
 
@@ -1288,6 +1299,45 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.root);
         }
+    }
+
+    #[test]
+    fn historical_measured_legacy_null_execution_can_seal_and_reuse_false_grades() {
+        let mut fixture = Fixture::new(false);
+        fixture.entry.configuration.measurements = Some(crate::benchmark::MeasurementConfig {
+            enabled: true,
+            directory: "measurements".into(),
+            collectors: Vec::new(),
+        });
+        for index in 0..2 {
+            let mut outcome = fixture.read(index);
+            let measured = outcome["summary"].clone();
+            outcome["summary"]["execution"] = Value::Null;
+            fixture.write(index, &outcome);
+            let directory = fixture
+                .directory
+                .join(format!("measurements-concurrency-{}", index + 1));
+            std::fs::create_dir(&directory).unwrap();
+            std::fs::write(
+                directory.join("run.json"),
+                serde_json::to_vec(&measured).unwrap(),
+            )
+            .unwrap();
+        }
+        fixture.seal().unwrap();
+        let (_, summaries) = fixture.verify().unwrap();
+        assert_eq!(summaries.len(), 2);
+        assert!(
+            summaries
+                .iter()
+                .all(|summary| summary["workload_success"] == false)
+        );
+        let receipt = std::fs::read(fixture.inputs.completion_path(0)).unwrap();
+        fixture.seal().unwrap();
+        assert_eq!(
+            std::fs::read(fixture.inputs.completion_path(0)).unwrap(),
+            receipt
+        );
     }
 
     #[test]

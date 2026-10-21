@@ -1705,7 +1705,6 @@ pub(crate) fn resolve_log_path(config_path: &Path, configured_path: &str) -> Pat
 
 fn render_json(result: &RunResult<'_>, output: &mut dyn Write) -> Result<(), Error> {
     let mut summary = serde_json::json!({
-        "execution": result.execution,
         "measurement_directory": result.measurement_directory,
         "planning": result.planning,
         "effective_budgets": result.effective_budgets,
@@ -1738,6 +1737,10 @@ fn render_json(result: &RunResult<'_>, output: &mut dyn Write) -> Result<(), Err
         "steps": result.steps,
         "token_usage": result.token_usage,
     });
+    if let Some(execution) = &result.execution {
+        summary["execution"] =
+            serde_json::to_value(execution).map_err(|error| Error::Io(error.to_string()))?;
+    }
     if let Some(diagnostic) = result.observation.process_termination_diagnostic {
         summary["process_termination_diagnostic"] =
             serde_json::to_value(diagnostic).map_err(|error| Error::Io(error.to_string()))?;
@@ -2817,7 +2820,29 @@ mod tests {
         assert_eq!(value["provider"], expected.provider);
         assert_eq!(value["model"], expected.model);
         assert!(value.get("stdout").is_none());
+        assert!(value.get("execution").is_none());
+        assert!(value.get("recording").is_none());
         assert_eq!(output.iter().filter(|byte| **byte == b'\n').count(), 1);
+    }
+
+    #[test]
+    fn json_output_preserves_present_campaign_identity_like_the_saved_log() {
+        let mut result = result();
+        result.execution = Some(
+            serde_json::from_value(serde_json::json!({
+                "admission":crate::planning::BatchAdmissionPolicy::current(),
+                "campaign":"fixture-campaign", "batch":2, "replica":1,
+                "slot":3, "total":4, "replay_track":7, "replay_seed":42,
+                "replay_algorithm":"fixture-selection"
+            }))
+            .unwrap(),
+        );
+        let saved = serde_json::to_value(&result).unwrap();
+        let mut output = Vec::new();
+        render_json(&result, &mut output).unwrap();
+        let summary: serde_json::Value = serde_json::from_slice(&output).unwrap();
+        assert_eq!(summary.get("execution"), saved.get("execution"));
+        assert!(summary["execution"].is_object());
     }
 
     #[test]
