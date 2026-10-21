@@ -52,16 +52,18 @@ fn process(
     context: &ProcessContext<'_>,
 ) -> Result<ProcessData, String> {
     let mut result = ProcessData::from_output(context);
-    result.metrics = parse_pidstat_cpu_metrics(context.stdout);
+    let output = super::super::read_complete_output(context.stdout_path)?;
+    result.metrics = parse_pidstat_cpu_metrics(&output);
     if result.metrics.is_empty() {
-        result.metrics = parse_mpstat_metrics(context.stdout);
+        result.metrics = parse_mpstat_metrics(&output);
     }
-    let samples = samples(context.stdout);
+    let samples = samples(&output);
     result.series = samples.series;
     result.timestamps = samples.timestamps;
     if result.metrics.is_empty() && result.series.is_empty() {
         result.status = "unavailable".into();
     }
+    super::super::validate_processed_output(&result)?;
     Ok(result)
 }
 
@@ -201,4 +203,25 @@ fn mpstat_name(name: &str) -> String {
     mapped
         .map(str::to_owned)
         .unwrap_or_else(|| format!("{}_pct", name.trim_start_matches('%')))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn cpu_processing_includes_observations_beyond_the_diagnostic_cap() {
+        let mut input = "12:00:00 UID PID %CPU Command\n12:00:01 1000 42 20 agent\n".to_owned();
+        input.push_str(&"# ignored fixture filler\n".repeat(15000));
+        input.push_str("12:00:03 1000 42 60 agent\n");
+        assert!(input.len() > 256 * 1024);
+        let result =
+            crate::collectors::process_output_fixture(&super::ADAPTER, "mpstat", &input).unwrap();
+        assert_eq!(result.status, "completed");
+        assert_eq!(result.metrics["process.cpu.total_pct"], 40.0);
+        assert_eq!(result.series["process.cpu.total_pct"], [20.0, 60.0]);
+        assert_eq!(result.timestamps["process.cpu.total_pct"], [1000.0, 3000.0]);
+        assert!(
+            crate::collectors::process_output_fixture(&super::ADAPTER, "mpstat", "unfinished")
+                .is_err()
+        );
+    }
 }

@@ -9,6 +9,7 @@ mod compare;
 mod completion;
 mod config;
 mod endpoint;
+mod executables;
 mod install;
 mod measurements;
 mod models;
@@ -157,7 +158,8 @@ mod adapter_layout_tests {
             (
                 "collectors",
                 super::collectors::names().collect(),
-                &["mod.rs"],
+                // Category-wide bounded output codec, not a target adapter.
+                &["mod.rs", "output.rs"],
             ),
         ];
         for (category, ids, root_modules) in categories {

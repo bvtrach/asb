@@ -5,8 +5,10 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
+import re
+import json
 
-from check_coverage import check, executable_lines
+from check_coverage import check, executable_lines, dependency_path_regex
 
 
 def report(*counts):
@@ -19,7 +21,91 @@ def aggregate(covered=90, count=100):
     return {"data": [{"totals": {"lines": {"covered": covered, "count": count}}}]}
 
 
+def metadata(root):
+    return {"workspace_members": ["workspace"], "packages": [
+        {"id": "cached", "source": "registry+fixture", "manifest_path": str(root / "Cargo.toml")},
+        {"id": "workspace", "source": None, "manifest_path": "/workspace/Cargo.toml"},
+        {"id": "local", "source": None, "manifest_path": "/local/Cargo.toml"},
+    ]}
+
+
 class CoverageGateTests(unittest.TestCase):
+    def test_dependency_paths_follow_custom_cargo_home_without_excluding_product(self):
+        for home in ("/fixture/.cargo/registry/src/pkg", "/fixture/cache.with+[characters] cargo/git/checkouts/pkg"):
+            value = metadata(Path(home))
+            pattern = dependency_path_regex(value)
+            self.assertIsNotNone(re.search(pattern, home + "/src/lib.rs"))
+            for path in ("/workspace/src/main.rs", "/local/src/lib.rs",
+                         "/product/.cargo/src/main.rs", "/product/src/main.rs",
+                         home + "-other/src/lib.rs"):
+                self.assertIsNone(re.search(pattern, path), path)
+
+    def test_nested_workspace_and_local_paths_fail_closed_including_symlinks(self):
+        target = Path(__file__).resolve().parent.parent / "target"
+        target.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="coverage-overlap-", dir=target) as name:
+            cached = Path(name) / "cached"
+            nested = cached / "nested"
+            nested.mkdir(parents=True)
+            alias = Path(name) / "alias"
+            alias.symlink_to(nested, target_is_directory=True)
+            for package_index in (1, 2):
+                for location in (nested, alias):
+                    value = metadata(cached)
+                    value["packages"][package_index]["manifest_path"] = str(location / "Cargo.toml")
+                    with self.assertRaisesRegex(ValueError, "hide workspace or local"):
+                        dependency_path_regex(value)
+
+    def test_dependency_discovery_rejects_invalid_metadata(self):
+        for source, path in (("unknown+fixture", "/fixture/Cargo.toml"),
+                             ("git+fixture", "relative/Cargo.toml")):
+            value = metadata(Path("/fixture"))
+            value["packages"][0].update(source=source, manifest_path=path)
+            with self.assertRaises(ValueError):
+                dependency_path_regex(value)
+
+    def test_dependency_regex_works_with_real_llvm_and_symlink_cache(self):
+        target = Path(__file__).resolve().parent.parent / "target"
+        target.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="coverage-paths-", dir=target) as name:
+            root = Path(name)
+            cached = root / "cache.with+[characters] cargo" / "package"
+            cached.mkdir(parents=True)
+            linked = root / "linked cache"
+            linked.symlink_to(cached, target_is_directory=True)
+            local = root / "local dependency"
+            local.mkdir()
+            for directory in (cached, local):
+                (directory / "lib.rs").write_text("pub fn called() -> u64 { 42 }\n")
+            source = root / "main.rs"
+            source.write_text(
+                f"#[path={json.dumps(str(cached / 'lib.rs'))}] mod cached;\n"
+                f"#[path={json.dumps(str(local / 'lib.rs'))}] mod local;\n"
+                "fn main() { assert_eq!(cached::called(), local::called()); }\n"
+            )
+            binary = root / "fixture"
+            subprocess.run(["rustc", "-C", "instrument-coverage", str(source), "-o", str(binary)],
+                           check=True, capture_output=True)
+            raw = root / "fixture.profraw"
+            subprocess.run([str(binary)], env={**os.environ,"LLVM_PROFILE_FILE":str(raw)}, check=True)
+            sysroot = subprocess.check_output(["rustc","--print","sysroot"], text=True).strip()
+            version = subprocess.check_output(["rustc","-vV"], text=True)
+            host = next(line.removeprefix("host: ") for line in version.splitlines() if line.startswith("host: "))
+            tools = Path(sysroot) / "lib/rustlib" / host / "bin"
+            merged = root / "fixture.profdata"
+            subprocess.run([str(tools / "llvm-profdata"), "merge", "-sparse", str(raw), "-o", str(merged)],
+                           check=True, capture_output=True)
+            pattern = dependency_path_regex(metadata(linked))
+            self.assertIsNotNone(re.search(pattern, str(linked / "lib.rs")))
+            result = subprocess.check_output([
+                str(tools / "llvm-cov"), "show", f"-instr-profile={merged}", str(binary),
+                f"-ignore-filename-regex={pattern}", "-show-line-counts-or-regions=false", "-show-line-counts",
+            ], text=True)
+            lines = executable_lines(result)
+            self.assertNotIn((str(cached / "lib.rs"), 1), lines)
+            self.assertIn((str(local / "lib.rs"), 1), lines)
+            self.assertIn((str(source), 3), lines)
+
     def test_failed_checker_cannot_leave_stale_green_reports(self):
         repository = Path(__file__).resolve().parent.parent
         target = repository / "target"
