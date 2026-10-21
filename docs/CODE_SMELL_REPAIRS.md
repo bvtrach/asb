@@ -26,11 +26,12 @@ retains bounded source snapshots, nullable series, signed bars and complete
 generation publication. Planning, controller caps and module revisions stay
 metadata rather than measurements. Independent integration source review
 approved parent `3259da7e`; its full offline suite passed 1,008 tests followed by
-strict Clippy, formatting and build/docs/diagrams checks. This report integration
-passed 862 library and 25 focused CLI tests plus strict Clippy and formatting.
-Its independent integration review, fresh full qualification, exact-head
-hosted/package CI, PR merge, post-merge verification and patch release remain
-pending. This staging entry
+strict Clippy, formatting and build/docs/diagrams checks. The independently
+approved report integration `1fb9bdf1` passed 1,036 full offline tests with
+21 optional skips, strict Clippy, formatting and build/docs/diagrams checks.
+Actual main ancestry through launch repair PR #286 changes only this ledger,
+not that qualified production/test tree. Exact-head hosted/package CI, PR merge,
+post-merge verification and patch release remain pending. This staging entry
 does not claim delivery or close the other audit repair classes.
 
 ## 1. Endpoint preparation invariants
@@ -66,7 +67,7 @@ without changing established result/workspace identities unintentionally.
 Also review duplicated manifest reference validation and executable resolution;
 same names alone do not prove equivalent semantics. Pending.
 
-Executable-policy candidate, staged patch **0.2.18**: project-local source
+Executable-policy repair, released patch **0.2.18**: project-local source
 installation, readiness and launch share one registry-neutral executable lookup.
 Explicit source overrides precede adapter-owned package preferences; unusable
 present candidates cannot silently fall through to stale fallback code. Codex
@@ -76,9 +77,12 @@ reran all seven isolated policy fixtures after current-stack integration. These
 exercise actual source installation and execution for every registered agent
 and tool, custom roots, override precedence, broken/non-executable/symlink
 entries and host-only discovery. Existing installer regressions now call the
-same shared executable predicate rather than a removed duplicate. Final full
-source/package checks, review of integration, PR merge, post-merge verification
-and the patch release remain pending.
+same shared executable predicate rather than a removed duplicate. Current-main
+integration `b395617e` is independently source-approved; its full offline suite
+passed 996 tests, followed by strict Clippy, formatting and build/docs checks.
+PR #263 merged as `c9beafb6dfb52562dac59dc6de7bcbc7f7421204`.
+Exact-head hosted/package CI and both post-merge jobs passed in run
+`39635610656`; the released signed tag is GitHub-verified at that exact commit.
 
 Shared benchmark-path repair, released patch **0.2.13**: all five equivalent legacy normalizers now
 use one component/stem policy, and both sweep execution and comparison use the
@@ -237,7 +241,7 @@ released from that exact commit with a GitHub-verified signed tag.
 Audit correction: current `perfetto_instance_config` is seven lines, not the
 reported 630. Comparison's filter JavaScript is already a separate asset.
 Do not perform redundant extraction based on stale line counts.
-Comparison candidate, staged patch **0.2.19**: explicit loaded/validated/prepared/rendered/published
+Comparison candidate, staged patch **0.2.21**: explicit loaded/validated/prepared/rendered/published
 states replace intertwined loading, grading coverage, graph planning and output
 publication. Stable identities, typed result provenance and one-time population
 aggregation preserve existing evidence semantics. Confirmed fixes retain null
@@ -301,7 +305,9 @@ intent, although no current production caller uses that method; do not claim
 an observed credential leak. Tests must preserve explicit environment removal,
 clearing, non-UTF8 arguments/environment, I/O, owner death and descendant cleanup.
 
-Separate launch-descriptor candidate (not yet merged/released): the adapter
+Separate launch-descriptor repair: PR #286 merged as
+`f2e805824c0815c31269b586ebca677c9a71218f`; post-merge verification and the
+**0.2.20** release remain pending. The adapter
 returns an OS-string client executable/prefix/explicit argv[0] descriptor;
 native preparation constructs the gate command once before all configuration.
 The same actual `Command` retains standard-library environment clearing,
@@ -348,7 +354,7 @@ merged as `ac80fcb4201cc679afd280b79775b46cfe20ef5b`. Exact-head
 ordinary/package CI and both post-merge jobs passed (run `39622744776`);
 the signed release points to that exact commit.
 
-Workload-wizard candidate, staged patch **0.2.19**: explicit browsing, editing
+Workload-wizard repair, released patch **0.2.19**: explicit browsing, editing
 and saved states repair the advertised Enter-to-finish action. Saved subsets
 are restored when editing, replaced rather than appended, retained across
 deselection, and published only for selected workloads. Every selected subset
@@ -358,8 +364,12 @@ not a claim of transactional multi-file I/O. Independent source review approved
 `6758b426`; a separate execution passed all 39 TUI unit tests and both terminal
 integration tests, including ten actual PTY workflow scenarios and terminal
 restoration. Worker full offline qualification passed 956 tests with 20 explicit
-optional skips. Version/package, exact-head hosted CI, merge and post-merge
-release verification remain pending. Detached installation-worker custody and
+optional skips. Current-main integration `6af7939b` is independently
+source-approved; a fresh full offline suite passed 998 tests, followed by
+strict Clippy, formatting and build/docs checks. PR #284 merged as
+`d33064f04abd84e89aad7b451efdf369c0cb7400`; exact-head hosted/package CI and
+both post-merge jobs passed in run `39637435805`. The released signed tag is
+GitHub-verified at that exact commit. Detached installation-worker custody and
 other TUI structural issues remain separate repair classes.
 
 ## 7. Limits, diagnostics and CLI consistency
