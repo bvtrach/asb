@@ -8,6 +8,96 @@ use std::cell::RefCell;
 use std::collections::VecDeque;
 
 #[test]
+fn platform_confirmation_calls_directory_sync_only_for_unix() {
+    for policy in [
+        ConfirmationPolicy::UnixDirectory,
+        ConfirmationPolicy::WindowsWriteThrough,
+        ConfirmationPolicy::PortableFileAndRename,
+    ] {
+        let calls = std::cell::Cell::new(0);
+        let result = confirm_with(policy, || {
+            calls.set(calls.get() + 1);
+            Err(io::Error::other("directory callback fixture"))
+        });
+        assert_eq!(
+            calls.get(),
+            usize::from(policy == ConfirmationPolicy::UnixDirectory)
+        );
+        assert_eq!(result.is_err(), policy == ConfirmationPolicy::UnixDirectory);
+    }
+    assert_eq!(WINDOWS_MOVE_FLAGS, 0x9);
+    assert_eq!(
+        WINDOWS_MOVE_FLAGS & (0x2 | 0x4),
+        0,
+        "never copy or defer the move"
+    );
+    #[cfg(unix)]
+    assert_eq!(confirmation_policy(), ConfirmationPolicy::UnixDirectory);
+    #[cfg(windows)]
+    assert_eq!(
+        confirmation_policy(),
+        ConfirmationPolicy::WindowsWriteThrough
+    );
+}
+
+#[test]
+fn failed_rename_with_missing_or_uninspectable_source_is_not_claimed_unpublished() {
+    let fixture = Fixture::new();
+    let source = fixture.0.join("source");
+    fs::write(&source, b"private prepared source").unwrap();
+    assert!(matches!(
+        classify_commit_failure(io::Error::other("rename failure"), fs::metadata(&source)),
+        CommitFailure::Before(_)
+    ));
+    for source in [
+        Err(io::ErrorKind::NotFound.into()),
+        Err(io::ErrorKind::PermissionDenied.into()),
+        fs::metadata(&fixture.0),
+    ] {
+        assert!(matches!(
+            classify_commit_failure(io::Error::other("rename failure"), source),
+            CommitFailure::Unconfirmed(_)
+        ));
+    }
+}
+
+#[test]
+fn ambiguous_native_commit_retains_staging_without_retry_or_false_success_claim() {
+    let fixture = Fixture::new();
+    let path = fixture.0.join("record.json");
+    fs::write(&path, b"{\"old\":true}").unwrap();
+    let scope = Scope::new(path.clone(), Some(FaultPoint::RenameOutcome), vec![]);
+    let error = write_json(&path, &serde_json::json!({"new":true})).unwrap_err();
+    assert_eq!(scope.hits(), 1);
+    assert!(error.contains("may have completed"), "{error}");
+    assert!(
+        !error.contains("was published") && !error.contains("not published"),
+        "{error}"
+    );
+    // The Linux fixture knows its rename completed before the injected failure;
+    // the generic error must not make that assertion for an unknown native call.
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&fs::read(&path).unwrap()).unwrap(),
+        serde_json::json!({"new":true})
+    );
+    let stage = fs::read_dir(&fixture.0)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| {
+            path.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with(".asb-evidence-stage-")
+        })
+        .unwrap();
+    assert!(
+        stage.is_dir(),
+        "ambiguous state must not be cleaned by explicit code or Drop"
+    );
+    assert!(error.contains(stage.to_str().unwrap()));
+}
+
+#[test]
 fn admitted_capture_readers_have_independent_offsets_and_a_frozen_length() {
     use std::io::{Read, Seek, Write};
     let root = std::env::temp_dir().join(format!(

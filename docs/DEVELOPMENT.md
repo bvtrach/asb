@@ -471,6 +471,16 @@ an adapter replacement, a deterministic check/move race and refused cleanup
 retain foreign/owned bytes with actionable paths. Two additional actual entry
 cases retain native/pending grades and exact-once evaluation/cleanup through
 collector-result staging and post-commit sync failure, including broken output.
+Platform-confirmation regressions exercise all three policy decisions on Linux:
+only Unix invokes the directory-sync callback, Windows move flags exclude
+copy/deferred operations, and a missing/uninspectable private source is never
+called an unchanged precommit failure. A real Linux rename followed by an
+injected native-outcome failure retains its staging directory without a Drop
+cleanup/retry or a false published/unpublished claim. Existing short/zero/ENOSPC,
+file-sync, postcommit confirmation and cleanup tests remain required. Windows
+API declarations/semantics are source-reviewed only: no Windows target compile
+or runtime was performed, and Linux policy tests do not qualify native Windows
+rename behavior or portable directory durability.
 Human-terminal write/flush failures stop further presentation but finish an
 already-admitted execution, evaluation and explicit cleanup; broken guest-owner
 transport still cancels/preserves. Tests cover both policies. The elapsed clock

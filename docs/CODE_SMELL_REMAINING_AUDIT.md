@@ -127,6 +127,12 @@ Pinned Rust 1.93 opens ordinary files without Windows directory-opening flags;
 healthy Windows commits would therefore be reported as unconfirmed. A separate
 platform-confirmation repair is required before source approval. No reviewer
 builds/tests or native Windows qualification were performed by this review.
+The subsequent source fix retains Unix directory synchronization, requests
+Windows file-flush/write-through rename, and keeps portable file-flush/rename
+semantics elsewhere instead of unconditionally opening directories. Ambiguous
+rename outcomes preserve exact staging without retry or a false success claim.
+Focused Linux policy/fault gates and fresh source review remain required; this
+does not qualify native Windows execution or close the other residuals below.
 
 Two additional limits remain separate follow-ups, not fixes claimed by this
 publication class:

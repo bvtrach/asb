@@ -171,6 +171,15 @@ records producer-write-error propagation and whole-history JSONL staging cost
 as separate residual limits, plus explicitly partial `f4895347` repeat/batch/
 remote/material-exec coverage. It does not claim the entire new-main delta or
 the material helper's daemon-pump lifetime has been reviewed/repaired.
+The platform-confirmation follow-up passed 16 publication, 72 measurement and
+21 runner-phase tests (including the actual twelve-case publication matrix),
+strict all-target/all-feature Clippy, formatting and binary build on Linux.
+Windows now requests a synchronized file and write-through native rename,
+without Unix directory opens, weaker retry or copy fallback; ambiguous commit
+outcomes retain staging and never claim publication definitely occurred.
+Native Windows compilation/runtime remain unqualified. A separately identified
+Windows capture-reader cursor-sharing issue still requires its own follow-up;
+this checkpoint is not whole-class/current-main/full source clearance.
 
 Completion-observer and checkpoint errors must not erase an already determined
 task grade or implicitly repeat a client. Their current fail-open treatment

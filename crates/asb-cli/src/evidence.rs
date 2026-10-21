@@ -17,6 +17,7 @@ const LOCK_WAIT: Duration = Duration::from_secs(5);
 #[derive(Debug)]
 enum PublicationError {
     BeforeCommit(String),
+    CommitOutcomeUnconfirmed(String),
     PublishedUnconfirmed(String),
     PublishedCleanupRetained(String),
 }
@@ -24,6 +25,10 @@ impl std::fmt::Display for PublicationError {
     fn fmt(&self, output: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::BeforeCommit(message) => write!(output, "evidence not published: {message}"),
+            Self::CommitOutcomeUnconfirmed(message) => write!(
+                output,
+                "evidence publication may have completed, but its commit outcome is unconfirmed: {message}; preserve destination and staging; do not repeat execution"
+            ),
             Self::PublishedUnconfirmed(message) => write!(
                 output,
                 "evidence was published, but durability is unconfirmed: {message}; preserve the published bytes; do not repeat execution"
@@ -323,10 +328,28 @@ fn publish(
             file.sync_all()?;
             checkpoint(FaultPoint::Prepared)?;
             destination.unchanged()?;
-            checkpoint(FaultPoint::Rename)?;
-            fs::rename(&stage.path, &destination.path)
+            Ok(())
         })();
-        if let Err(error) = preparation {
+        let commit = preparation.map_err(CommitFailure::Before).and_then(|()| {
+            checkpoint(FaultPoint::Rename).map_err(CommitFailure::Before)?;
+            replace_stage(&stage.path, &destination.path)
+                .and_then(|()| checkpoint(FaultPoint::RenameOutcome))
+                .map_err(|error| classify_commit_failure(error, fs::symlink_metadata(&stage.path)))
+        });
+        if let Err(error) = commit {
+            let error = match error {
+                CommitFailure::Before(error) => error,
+                CommitFailure::Unconfirmed(error) => {
+                    // Do not remove evidence or retry a rename whose outcome
+                    // cannot be established from our quiet private stage.
+                    stage.settled.set(true);
+                    return Err(PublicationError::CommitOutcomeUnconfirmed(format!(
+                        "{error}; destination {}; staging {}",
+                        destination.path.display(),
+                        stage.directory.display()
+                    )));
+                }
+            };
             let cleanup = stage.clean();
             return Err(PublicationError::BeforeCommit(format!(
                 "{error}{}",
@@ -337,8 +360,11 @@ fn publish(
             )));
         }
         // Never repeat rename or roll back after this commit boundary.
-        let confirmation = checkpoint(FaultPoint::DirectorySync)
-            .and_then(|()| File::open(&destination.parent)?.sync_all());
+        let confirmation = checkpoint(FaultPoint::DirectorySync).and_then(|()| {
+            confirm_with(confirmation_policy(), || {
+                File::open(&destination.parent)?.sync_all()
+            })
+        });
         let cleanup = stage.clean();
         match (confirmation, cleanup) {
             (Ok(()), Ok(())) => Ok(()),
@@ -349,7 +375,7 @@ fn publish(
             (confirmation, cleanup) => Err(PublicationError::PublishedUnconfirmed(format!(
                 "{}{}",
                 confirmation.err().map_or(String::new(), |error| format!(
-                    "directory synchronization failed: {error}"
+                    "platform publication confirmation failed: {error}"
                 )),
                 cleanup.err().map_or(String::new(), |error| format!(
                     "; staging cleanup failed: {error}; retained at {}",
@@ -360,6 +386,85 @@ fn publish(
     };
     operation().map_err(|error| format!("{}: {error}", path.display()))
 }
+
+enum CommitFailure {
+    Before(io::Error),
+    Unconfirmed(io::Error),
+}
+fn classify_commit_failure(error: io::Error, source: io::Result<Metadata>) -> CommitFailure {
+    // Same-filesystem rename, no copy fallback, and a quiet private stage:
+    // a remaining regular source means no move. Missing/uninspectable sources
+    // are ambiguous, not proof of either success or failure. This is not a
+    // hostile same-UID filesystem transaction/confinement guarantee.
+    if source.is_ok_and(|metadata| metadata.is_file()) {
+        CommitFailure::Before(error)
+    } else {
+        CommitFailure::Unconfirmed(error)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum ConfirmationPolicy {
+    UnixDirectory,
+    WindowsWriteThrough,
+    PortableFileAndRename,
+}
+fn confirmation_policy() -> ConfirmationPolicy {
+    if cfg!(unix) {
+        ConfirmationPolicy::UnixDirectory
+    } else if cfg!(windows) {
+        ConfirmationPolicy::WindowsWriteThrough
+    } else {
+        ConfirmationPolicy::PortableFileAndRename
+    }
+}
+fn confirm_with(
+    policy: ConfirmationPolicy,
+    directory_sync: impl FnOnce() -> io::Result<()>,
+) -> io::Result<()> {
+    match policy {
+        ConfirmationPolicy::UnixDirectory => directory_sync(),
+        // File sync already completed. Windows additionally requests native
+        // write-through rename; neither policy claims portable directory sync.
+        ConfirmationPolicy::WindowsWriteThrough | ConfirmationPolicy::PortableFileAndRename => {
+            Ok(())
+        }
+    }
+}
+#[cfg(not(windows))]
+fn replace_stage(source: &Path, destination: &Path) -> io::Result<()> {
+    fs::rename(source, destination)
+}
+#[cfg(any(windows, test))]
+const WINDOWS_MOVE_FLAGS: u32 = 0x1 | 0x8; // REPLACE_EXISTING | WRITE_THROUGH only.
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn replace_stage(source: &Path, destination: &Path) -> io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn MoveFileExW(source: *const u16, destination: *const u16, flags: u32) -> i32;
+    }
+    fn wide(path: &Path) -> io::Result<Vec<u16>> {
+        let mut encoded: Vec<u16> = path.as_os_str().encode_wide().collect();
+        if encoded.contains(&0) {
+            return Err(io::ErrorKind::InvalidInput.into());
+        }
+        encoded.push(0);
+        Ok(encoded)
+    }
+    let source = wide(source)?;
+    let destination = wide(destination)?;
+    // Paths are canonical-parent siblings on one volume. Never permit copy,
+    // delayed moves or a weaker retry. File sync precedes this native request.
+    // Microsoft documents WRITE_THROUGH as move completion, not a portable
+    // directory-flush or multi-file/crash-transaction guarantee.
+    if unsafe { MoveFileExW(source.as_ptr(), destination.as_ptr(), WINDOWS_MOVE_FLAGS) } == 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) enum FaultPoint {
     Cleanup,
@@ -368,6 +473,7 @@ pub(crate) enum FaultPoint {
     Prepared,
     FileSync,
     Rename,
+    RenameOutcome,
     DirectorySync,
 }
 fn checkpoint(_point: FaultPoint) -> io::Result<()> {

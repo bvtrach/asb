@@ -374,7 +374,17 @@ Post-grade evidence publication prepares serialized JSON before touching a
 published file. Each destination has a persistent-inode lock (shared lock
 mechanics, five-second contention observation) held across its opened regular
 snapshot, private sibling staging, atomic per-file rename and parent-directory
-synchronization. Symlinks, pipes and other nonregular destinations are rejected.
+synchronization on Unix. Windows instead synchronizes the prepared writable
+file and requests `MoveFileExW(REPLACE_EXISTING | WRITE_THROUGH)`; it never
+requests a cross-volume copy, delayed move or weaker rename retry. Other
+platforms retain file synchronization and their standard rename operation.
+No non-Unix policy attempts an ordinary `File::open(directory)` or claims
+portable directory/crash durability. The Windows route is source-qualified
+against pinned Rust/Windows API declarations, not natively compiled or executed
+by the Linux qualification. See Microsoft's [MoveFileExW contract](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-movefileexw),
+[FlushFileBuffers access contract](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-flushfilebuffers)
+and [directory-opening requirements](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew).
+Symlinks, pipes and other nonregular destinations are rejected.
 Unix snapshots additionally bind device/inode identity. Other platforms retain
 conservative creation/last-write/size/permission consistency checks instead of
 rejecting all existing files; Linux fixtures do not qualify Windows runtime.
@@ -388,6 +398,13 @@ for log records, before publishing oversized output.
 Pre-commit errors retain old published bytes; post-rename confirmation errors
 explicitly say that evidence was published but durability is unconfirmed. They
 do not roll back or repeat execution.
+If native rename reports failure and its private regular source is missing or
+uninspectable, the commit outcome is instead unknown: destination and exact
+staging are retained without retry, rollback or a claim that publication did
+or did not happen. A remaining regular private source classifies a precommit
+failure under the quiet same-filesystem staging contract, not an adversarial
+filesystem transaction guarantee. This classification is separate from a
+known successful rename followed by a failed confirmation.
 Post-commit scratch retention after successful synchronization has its own
 published-and-synchronized diagnostic and retained path; it does not pretend
 that a known successful sync was uncertain. Explicit cleanup refusal retains
