@@ -90,6 +90,7 @@ classDiagram
     }
     class C010["CompareArgs"] {
         -path: String
+        -report: bool
     }
     class C011["Compatibility"] {
         +agent: String
@@ -398,6 +399,7 @@ classDiagram
         -token_usage: collectors_adapters_TokenUsage
         -steps: Option~u64~
         -cassette: Option~String~
+        -measurement_directory: Option~PathBuf~
         -stdout: String
         -stderr: String
     }
@@ -466,23 +468,25 @@ classDiagram
     }
     class C054["SetupArgs"] {
         -mode: Option~SetupMode~
-        -agent: Option~String~
-        -workload: Option~String~
-        -trial: Option~String~
-        -trial_set: Option~String~
-        -provider: Option~String~
-        -model: Option~String~
+        -agent: Vec~String~
+        -workload: Vec~String~
+        -trial: Vec~String~
+        -trial_set: Vec~String~
+        -provider: Vec~String~
+        -model: Vec~String~
+        -measure: Vec~String~
         -concurrency: Option~usize~
         -workspace: Option~String~
         -output: Option~String~
     }
     class C055["SetupOptions"] {
-        +agent: Option~String~
-        +workload: Option~String~
-        +trial: Option~String~
-        +trial_set: Option~String~
-        +provider: Option~String~
-        +model: Option~String~
+        +agent: Vec~String~
+        +workload: Vec~String~
+        +trial: Vec~String~
+        +trial_set: Vec~String~
+        +provider: Vec~String~
+        +model: Vec~String~
+        +measure: Vec~String~
         +concurrency: Option~usize~
         +workspace: Option~String~
         +output: Option~String~
@@ -1966,6 +1970,7 @@ classDiagram
         +drop() void
         +drop() void
         +drop() void
+        +drop() void
     }
     class C258["asb-cli_tests_MockProvider"] {
         -endpoint: String
@@ -1977,6 +1982,12 @@ classDiagram
     class C259["asb-cli_tests_Process"] {
     }
     class C260["asb-cli_tests_Project"] {
+        +new() Self
+        +write(path: &str, text: &str) void
+        +command(args: &[&str]) sweep_Output
+        +command_with(args: &[&str], env: &[(&str, &str)]) sweep_Output
+        +benchmark(concurrency: usize, measured: bool) void
+        +summary(slot: usize, total: usize, id: &str) Value
         +new() Self
         +request() Value
         +new() Self
