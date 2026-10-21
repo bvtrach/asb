@@ -1,0 +1,96 @@
+//! Render one prepared immutable report into a private staging generation.
+use super::*;
+use planning::GraphKind;
+pub(super) fn render(stage: &Path, prepared: &PreparedReport) -> Result<(), Error> {
+    let benchmark_data = &prepared.data.rows;
+    let plan = &prepared.data.request.plan;
+    let sweep_path = Path::new(&prepared.data.request.path);
+    let single = prepared.data.request.single;
+    let parent = &prepared.data.request.parent;
+    let sweep_results = &prepared.data.request.sweep_results;
+    let comparison_dir = stage;
+    let graphs = prepared.graph_names();
+    let resolution_groups = &prepared.resolution;
+    let evaluation_coverage = &prepared.evaluation;
+    let population_coverage = &prepared.populations;
+    let agent_labels = benchmark_data
+        .iter()
+        .map(|row| (row.label.clone(), row.agent.clone()))
+        .collect();
+    for graph in &prepared.graphs {
+        let path = stage.join(&graph.filename);
+        match &graph.kind {
+            GraphKind::Metric(name) => {
+                let values = graph
+                    .rows
+                    .iter()
+                    .map(|index| {
+                        let row = &benchmark_data[*index];
+                        (row.label.clone(), row.metrics[name])
+                    })
+                    .collect::<Vec<_>>();
+                write_bar_svg(&path, name, &values, &agent_labels)?;
+            }
+            GraphKind::Series(name) => {
+                let values = graph
+                    .rows
+                    .iter()
+                    .map(|index| {
+                        let row = &benchmark_data[*index];
+                        (row.label.clone(), row.series[name].clone())
+                    })
+                    .collect::<Vec<_>>();
+                write_line_svg(&path, name, &values)?;
+            }
+            GraphKind::Composition => {
+                write_execution_timeline_svg(&path, benchmark_data)?;
+            }
+        }
+    }
+    let summary = json!({
+        "schema_version": 2,
+        "success_rate_definition": "resolved task attempts / all selected task attempts, including failures; not process exit rate or pass@k; smoke checks excluded",
+        "resolution_groups": resolution_groups,
+        "selection_plan": plan.as_ref().map(|plan| json!({"run_id":plan.run_id,"configuration_match":true,"execution_mode":plan.execution_mode,"respect_record_timings":plan.respect_record_timings,"scheduling":plan.scheduling})),
+        "evaluation_coverage":evaluation_coverage,
+        "population_coverage":population_coverage,
+        "input": sweep_path,
+        "input_kind": if single { "benchmark" } else { "sweep" },
+        "sweep": if single { Value::Null } else { json!(sweep_path) },
+        "results_directory": if single { json!(parent) } else { json!(sweep_results) },
+        "comparison_directory": prepared.data.request.comparison_dir,
+        "report": "report.html",
+        "benchmarks": benchmark_data.iter().map(|benchmark| json!({
+            "name": benchmark.label,
+            "directory": benchmark.directory,
+            "agent": benchmark.agent,
+            "workload": benchmark.workload,
+            "task": benchmark.task,
+            "replica_index": benchmark.replica_index,
+            "execution_cohort": benchmark.execution_cohort,
+            "reconciled": benchmark.reconciled,
+            "result_source": benchmark.result_source,
+            "selection": benchmark.selection,
+            "evaluation_completed": benchmark.evaluation_completed,
+            "workload_evaluation": benchmark.workload_evaluation,
+            "provider": benchmark.provider,
+            "model": benchmark.model,
+            "metrics": benchmark.metrics,
+            "host_metadata": benchmark.host_metadata,
+            "components": benchmark.components,
+            "series": benchmark.series.iter().map(|(name, series)| (name, &series.values)).collect::<BTreeMap<_, _>>(),
+            "series_timestamps": benchmark.series.iter().filter_map(|(name, series)| series.timestamps_ms.as_ref().map(|timestamps| (name, timestamps))).collect::<BTreeMap<_, _>>(),
+            "status": benchmark.status,
+            "artifacts": benchmark.artifacts,
+        })).collect::<Vec<_>>(),
+        "graphs": graphs,
+    });
+    let summary_path = comparison_dir.join("comparison.json");
+    let mut file = fs::File::create(&summary_path).map_err(|error| {
+        Error::Run(format!("cannot create {}: {error}", summary_path.display()))
+    })?;
+    serde_json::to_writer_pretty(&mut file, &summary)
+        .map_err(|error| Error::Run(format!("cannot write {}: {error}", summary_path.display())))?;
+    writeln!(file).map_err(|error| Error::Run(error.to_string()))?;
+    write_html_report(stage, prepared)
+}

@@ -151,10 +151,9 @@ pub(super) fn populations(
     Ok(result)
 }
 
-pub(super) fn html_table(benchmarks: &[BenchmarkData]) -> Result<String, Error> {
-    let groups = populations(benchmarks)?;
+pub(super) fn html_table(groups: &BTreeMap<String, PopulationCoverage>) -> String {
     if groups.is_empty() {
-        return Ok(String::new());
+        return String::new();
     }
     let mut html = String::from(
         "<section><h2>Population coverage</h2><p>Counts describe the entire saved selection, independent of display filters.</p><div class=\"table-wrap\"><table><thead><tr><th>Agent / provider / model / workload</th><th>Selected tasks / population</th><th>Evaluated / selected attempts</th><th>Resolved unique tasks</th><th>Selected-attempt lower bound</th><th>Complete one-attempt population score</th></tr></thead><tbody>",
@@ -177,7 +176,7 @@ pub(super) fn html_table(benchmarks: &[BenchmarkData]) -> Result<String, Error> 
         ));
     }
     html.push_str("</tbody></table></div></section>");
-    Ok(html)
+    html
 }
 
 #[cfg(test)]
