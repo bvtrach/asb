@@ -90,6 +90,129 @@ fn series(values: Value, timestamps: Option<Value>) -> TimeSeries {
 }
 
 #[test]
+fn structured_native_rewards_keep_missing_coverage_and_plan_partitions_after_publication() {
+    use crate::workloads::outcome::*;
+    let fixture = Fixture::new();
+    let manifest = fixture.seed("", 3);
+    let mut module =
+        crate::workloads::contracts::ModuleDescriptor::local("bug-fix", "bundled-fixture");
+    module.protocol.score_policy = "metric:native-points@2".into();
+    let policy = MetricPolicy {
+        id: "native-points".into(),
+        version: 2,
+        reward: "points".into(),
+        aggregation: Aggregation::AttemptMean,
+        rewards: BTreeMap::from([(
+            "points".into(),
+            RewardSpec {
+                unit: "points".into(),
+                range: Some([-10.0, 10.0]),
+            },
+        )]),
+        missing_rewards: MissingRewardPolicy::Zero,
+    };
+    let selection = crate::workloads::TaskSelection {
+        module: Some(module.clone()),
+        workload: "bug-fix".into(),
+        task_id: "bug-fix".into(),
+        dataset: None,
+        evaluation_kind: "bundled-fixture".into(),
+        population_size: None,
+    };
+    let entries = (0..3).map(|index| {
+        let config: crate::benchmark::BenchmarkConfig = toml::from_str(
+            &fs::read_to_string(fixture.0.join(format!("{index}.toml"))).unwrap()).unwrap();
+        json!({"reference":format!("{index}.toml"),"configuration":config,"selection":selection})
+    }).collect::<Vec<_>>();
+    fixture.write(
+        "sweep-results/plan.json",
+        json!({"schema_version":1,"run_id":"abc123","entries":entries}).to_string(),
+    );
+    for (index, fingerprint, reward) in [(0, "plan-P", -2.0), (1, "plan-Q", 8.0)] {
+        let task = crate::workloads::TaskIdentity::local("bug-fix", Some("bug-fix"));
+        let outcome = BenchmarkOutcome {
+            schema_version: 1,
+            execution_success: Some(true),
+            cleanup_confirmed: Some(true),
+            evaluation: EvaluationOutcome::Completed {
+                resolution: None,
+                rewards: BTreeMap::from([("points".into(), reward)]),
+                reason: None,
+            },
+            evidence: vec![PathBuf::from(format!("original/grade-{index}.json"))],
+            policy: policy.clone(),
+            lineage: EvaluationLineage {
+                execution_attempt: task.attempt_id.clone(),
+                evaluation_id: format!("evaluation-{index}"),
+                supersedes: None,
+            },
+        };
+        fixture.write(&format!("sweep-results/{index:03}-{index}/measurements/run.json"), json!({
+            "schema_version":2,"agent":"fixture","provider":"fixture","model":"fixture","workload":"bug-fix",
+            "task":task,"module":module,"benchmark_outcome":outcome,"execution_plan_fingerprint":fingerprint,
+            "status":"completed","success":false,"process_success":true,"workload_success":null,
+            "success_rate":0.0,"workload_evaluation":"bundled-fixture","workload_baseline_passed":false
+        }).to_string());
+    }
+    fs::remove_file(fixture.0.join("sweep-results/002-2/measurements/run.json")).unwrap();
+    fixture.write(
+        "sweep-results/000-0/measurements/perfetto-state-timeline.svg",
+        "<svg><title>native grade physical preview</title></svg>",
+    );
+    let report = generate(manifest.to_str().unwrap(), &mut Vec::new()).unwrap();
+    // A second complete generation must retain the original evidence and grade,
+    // while all JSON/HTML summaries share the prepared conservative denominator.
+    let first = Fixture::snapshot(report.parent().unwrap());
+    generate(manifest.to_str().unwrap(), &mut Vec::new()).unwrap();
+    assert_eq!(first, Fixture::snapshot(report.parent().unwrap()));
+    let summary: Value =
+        serde_json::from_slice(&fs::read(report.with_file_name("comparison.json")).unwrap())
+            .unwrap();
+    let groups = summary["metric_groups"].as_object().unwrap();
+    assert_eq!(groups.len(), 2);
+    for fingerprint in ["plan-P", "plan-Q"] {
+        let (key, group) = groups
+            .iter()
+            .find(|(key, _)| key.contains(fingerprint))
+            .unwrap();
+        assert!(key.contains("native-points"));
+        assert_eq!(group["selected_attempts"], 2);
+        assert_eq!(group["rewarded_attempts"], 1);
+        assert_eq!(group["contributing_attempts"], 2);
+        assert_eq!(group["complete"], false);
+        assert_eq!(
+            group["estimate"],
+            if fingerprint == "plan-P" { -1.0 } else { 4.0 }
+        );
+    }
+    assert_eq!(summary["evaluation_coverage"]["evaluated_attempts"], 2);
+    for index in 0..2 {
+        let row = &summary["benchmarks"][index];
+        assert_eq!(
+            row["benchmark_outcome"]["evaluation"]["resolution"],
+            Value::Null
+        );
+        assert_eq!(
+            row["benchmark_outcome"]["evidence"][0],
+            format!("original/grade-{index}.json")
+        );
+        assert_eq!(row["evaluation_completed"], true);
+        assert_eq!(row["status"], "completed");
+        assert!(row["metrics"].get("success_rate").is_none());
+        assert!(
+            row["metrics"]
+                .get("benchmark_rewards.native-points@2.points.points")
+                .is_some()
+        );
+    }
+    let html = fs::read_to_string(report).unwrap();
+    assert!(html.contains("native-points v2") && html.contains("1/2"));
+    assert!(html.contains("native grade physical preview"));
+    assert!(html.contains("../../sweep-results/000-0/measurements/perfetto-state-timeline.svg"));
+    assert!(!html.contains(".asb-report-stage-"));
+}
+
+#[test]
 fn paired_samples_preserve_null_positions_reject_bad_timestamps_and_never_bridge_gaps() {
     let data = series(json!([1, null, 3]), Some(json!([0, 100, 200])));
     assert_eq!(data.values, vec![Some(1.0), None, Some(3.0)]);

@@ -236,7 +236,7 @@ fetch(base+'/responses',{method:'POST',headers:{'content-type':'application/json
         (
             "/summary/workload_success",
             Value::Null,
-            "outcome grade, evaluator or baseline is incomplete",
+            "structured outcome resolution differs from its summary",
         ),
         (
             "/summary/process_success",

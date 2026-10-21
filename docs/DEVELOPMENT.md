@@ -573,6 +573,11 @@ inspection, and checks no replacement receipt or changed outcome bytes. Valid
 earlier/sibling receipts stay unchanged. The allocated unit fixture separately
 proves all-candidate validation precedes publication; neither fixture qualifies
 an original task runtime.
+Structured-outcome checkpoint fixtures additionally seal completed native
+rewards with null resolution and both process results, preserving legacy
+structured/unstructured Boolean grades. Independent mutations reject pending,
+error, missing primary rewards, policy/module, lineage, process/resolution,
+cleanup and evaluator-root mismatches through the same validated constructor.
 
 An opt-in complete-catalog planning/reporting check runs with no agent,
 provider, Docker or evaluator execution:

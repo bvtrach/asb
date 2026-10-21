@@ -46,7 +46,14 @@ ASB is deliberately split into a small CLI and a file-backed workload directory:
 - `compare`: offline reports use explicit loaded, globally validated, prepared,
   rendered and published phases. Stable row identities and typed result sources
   bind original evaluation evidence; preparation computes population coverage
-  and unique chart identities once. Sources are opened once as bounded regular
+  and unique chart identities once. Structured outcomes, recorded modules,
+  execution-plan fingerprints and retained-grade provenance are validated at
+  the source boundary. Preparation computes metric-policy and binary-resolution
+  cohorts once, including conservative missing-slot coverage; JSON and HTML
+  render those same summaries without consulting the live workload registry.
+  Native rewards retain nullable resolution and independent execution status.
+  See [benchmark outcomes](BENCHMARK_OUTCOMES.md) for policy semantics.
+  Sources are opened once as bounded regular
   files (64 KiB per benchmark, 32 MiB retained configurations, 16 MiB per
   manifest/collector/preview and 64 MiB per saved plan). Manifest, configuration
   and saved-plan validation consume retained snapshots, never a refreshed second

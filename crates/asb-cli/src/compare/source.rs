@@ -420,6 +420,10 @@ fn load_attempt(
                 configuration: context.index,
                 replica,
             },
+            legacy_evaluation_provenance: None,
+            execution_plan_fingerprint: None,
+            module: selection.as_ref().and_then(|s| s.module.clone()),
+            benchmark_outcome: None,
             result_source: ResultSource::Missing,
             reconciled: false,
             replica_index: None,
@@ -475,15 +479,143 @@ fn load_attempt(
         },
     )?;
     let mut metrics = BTreeMap::new();
+    let legacy_evaluation_provenance: Option<
+        crate::workloads::outcome::LegacyEvaluationProvenance,
+    > = run_value
+        .get("legacy_evaluation_provenance")
+        .filter(|value| !value.is_null())
+        .map(|v| serde_json::from_value(v.clone()))
+        .transpose()
+        .map_err(|_| Error::Input("invalid retained grade provenance".into()))?;
+    if let Some(provenance) = &legacy_evaluation_provenance
+        && (provenance.execution_attempt.as_deref() != task.as_ref().map(|t| t.attempt_id.as_str())
+            || provenance.evaluation_id.is_some()
+            || provenance.supersedes.is_some()
+            || provenance
+                .evidence_manifest_sha256
+                .as_ref()
+                .is_some_and(|hash| {
+                    hash.len() != 64 || !hash.bytes().all(|b| b.is_ascii_hexdigit())
+                }))
+    {
+        return Err(Error::Input("retained grade provenance differs from original attempt or invents evaluation identity".into()));
+    }
+    let execution_plan_fingerprint: Option<String> = run_value
+        .get("execution_plan_fingerprint")
+        .filter(|v| !v.is_null())
+        .map(|v| serde_json::from_value(v.clone()))
+        .transpose()
+        .map_err(|_| Error::Input("malformed recorded execution plan fingerprint".into()))?;
+    if execution_plan_fingerprint.as_ref().is_some_and(|v| {
+        v.is_empty()
+            || v.len() > 256
+            || !v
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b":._-".contains(&b))
+    }) {
+        return Err(Error::Input(
+            "invalid recorded execution plan fingerprint".into(),
+        ));
+    }
+    let module: Option<crate::workloads::contracts::ModuleDescriptor> = run_value
+        .get("module")
+        .filter(|v| !v.is_null())
+        .map(|value| serde_json::from_value(value.clone()))
+        .transpose()
+        .map_err(|e| Error::Input(format!("invalid recorded module descriptor: {e}")))?;
+    if module.as_ref().is_some_and(|m| {
+        !m.valid() || m.id != workload || task.as_ref().is_some_and(|t| m.dataset != t.dataset)
+    }) {
+        return Err(Error::Input(
+            "recorded module differs from task identity".into(),
+        ));
+    }
+    if let (Some(recorded), Some(planned)) =
+        (&module, selection.as_ref().and_then(|s| s.module.as_ref()))
+        && recorded != planned
+    {
+        return Err(Error::Input(
+            "recorded module differs from saved protocol selection".into(),
+        ));
+    }
+    let module = module.or_else(|| selection.as_ref().and_then(|s| s.module.clone()));
+    let benchmark_outcome =
+        crate::workloads::outcome::BenchmarkOutcome::read(&run_value).map_err(Error::Input)?;
+    if benchmark_outcome.is_some() && task.is_none() {
+        return Err(Error::Input(
+            "structured benchmark outcome has no execution task identity".into(),
+        ));
+    }
+    if module.is_none()
+        && benchmark_outcome
+            .as_ref()
+            .is_some_and(|o| o.policy != crate::workloads::outcome::MetricPolicy::default())
+    {
+        return Err(Error::Input(
+            "custom metric policy has no recorded module provenance".into(),
+        ));
+    }
+    if let (Some(module), Some(outcome)) = (&module, &benchmark_outcome)
+        && !outcome.policy.matches_module(module)
+    {
+        return Err(Error::Input(
+            "recorded metric policy differs from recorded module protocol".into(),
+        ));
+    }
+    if let (Some(outcome), Some(task)) = (&benchmark_outcome, &task)
+        && outcome.lineage.execution_attempt != task.attempt_id
+    {
+        return Err(Error::Input(
+            "evaluation lineage differs from execution attempt".into(),
+        ));
+    }
+    if let Some(outcome) = &benchmark_outcome
+        && (outcome.execution_success != run_value["process_success"].as_bool()
+            || (crate::workloads::resolution_eligible(&workload_evaluation)
+                && outcome.evaluation.resolution() != run_value["workload_success"].as_bool()))
+    {
+        return Err(Error::Input(
+            "structured outcome conflicts with legacy execution or resolution".into(),
+        ));
+    }
     let evaluation_completed = identity_bound
         && crate::workloads::resolution_eligible(&workload_evaluation)
-        && run_value
-            .get("workload_success")
-            .and_then(Value::as_bool)
-            .is_some();
+        && benchmark_outcome.as_ref().map_or_else(
+            || {
+                run_value
+                    .get("workload_success")
+                    .and_then(Value::as_bool)
+                    .is_some()
+            },
+            |outcome| outcome.evaluation.completed(),
+        );
     flatten_numbers("", &run_value, &mut metrics)?;
+    metrics.retain(|key, _| !key.starts_with("benchmark_outcome."));
+    if let Some(outcome) = &benchmark_outcome
+        && crate::workloads::resolution_eligible(&workload_evaluation)
+        && let crate::workloads::outcome::EvaluationOutcome::Completed { rewards, .. } =
+            &outcome.evaluation
+    {
+        for (name, value) in rewards {
+            let unit = &outcome.policy.rewards[name].unit;
+            metrics.insert(
+                format!(
+                    "benchmark_rewards.{}@{}.{}.{}",
+                    path_key(&outcome.policy.id),
+                    outcome.policy.version,
+                    path_key(name),
+                    path_key(unit)
+                ),
+                *value,
+            );
+        }
+    }
     // Correct old presentations without rewriting their raw evidence.
-    if !crate::workloads::resolution_eligible(&workload_evaluation) {
+    if !crate::workloads::resolution_eligible(&workload_evaluation)
+        || benchmark_outcome
+            .as_ref()
+            .is_some_and(|o| o.evaluation.resolution().is_none())
+    {
         metrics.remove("success_rate");
     } else {
         let resolved = evaluation_completed
@@ -505,6 +637,10 @@ fn load_attempt(
             configuration: index,
             replica,
         },
+        legacy_evaluation_provenance,
+        execution_plan_fingerprint,
+        module,
+        benchmark_outcome,
         result_source: if measured {
             ResultSource::Measurements
         } else {
@@ -674,10 +810,11 @@ fn decode_record(run_value: &Value, attempt: &AttemptContext<'_>) -> Result<Deco
     let identity_bound = selection
         .as_ref()
         .is_none_or(|selection| task.as_ref().is_some_and(|task| selection.matches(task)));
-    let run_status = if !measured {
-        outcome.map(outcomes::Recorded::status)
-    } else {
-        match run_value.get("status").and_then(Value::as_str) {
+    let run_status =
+        if !measured {
+            outcome.map(outcomes::Recorded::status)
+        } else {
+            match run_value.get("status").and_then(Value::as_str) {
             Some(status)
                 if run_value.get("workload_evaluation").and_then(Value::as_str)
                     == Some("adapter-smoke") =>
@@ -690,7 +827,10 @@ fn decode_record(run_value: &Value, attempt: &AttemptContext<'_>) -> Result<Deco
                 "unscored: initial task was already passing or its baseline could not be verified"
                     .into(),
             ),
-            Some(status) if run_value.get("success") == Some(&Value::Bool(false)) => Some(
+            Some(status) if run_value.get("success") == Some(&Value::Bool(false))
+                && !(run_value["benchmark_outcome"]["evaluation"]["status"] == "completed"
+                    && run_value["benchmark_outcome"]["evaluation"]["resolution"].is_null()
+                    && run_value["process_success"] == true) => Some(
                 if let Some(reason) = run_value.get("failure_reason").and_then(Value::as_str) {
                     format!("benchmark run failed: {reason}")
                 } else {
@@ -706,7 +846,7 @@ fn decode_record(run_value: &Value, attempt: &AttemptContext<'_>) -> Result<Deco
             Some(status) => Some(status.to_owned()),
             None => Some("unknown".into()),
         }
-    };
+        };
     let workload_evaluation = run_value
         .get("workload_evaluation")
         .and_then(Value::as_str)
