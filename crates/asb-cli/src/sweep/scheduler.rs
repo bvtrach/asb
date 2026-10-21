@@ -57,6 +57,7 @@ struct State {
     next: usize,
     active: usize,
     stopped: bool,
+    resources: crate::planning::Resources,
 }
 
 struct Queue<'a> {
@@ -64,6 +65,8 @@ struct Queue<'a> {
     changed: Condvar,
     weights: &'a [usize],
     budget: usize,
+    capacity: Option<crate::planning::Resources>,
+    costs: &'a [crate::planning::Resources],
 }
 
 impl Queue<'_> {
@@ -75,10 +78,23 @@ impl Queue<'_> {
             }
             let index = state.next;
             let cost = self.weights[index];
-            if state.active + cost <= self.budget {
+            let resources = self.costs[index];
+            let total = state.resources.checked_add(resources);
+            if state.active + cost <= self.budget
+                && total
+                    .is_some_and(|total| self.capacity.is_none_or(|capacity| total.fits(capacity)))
+            {
                 state.next += 1;
                 state.active += cost;
-                return Some((index, Permit { queue: self, cost }));
+                state.resources = total.expect("checked resource addition");
+                return Some((
+                    index,
+                    Permit {
+                        queue: self,
+                        cost,
+                        resources,
+                    },
+                ));
             }
             state = self
                 .changed
@@ -99,33 +115,67 @@ impl Queue<'_> {
 struct Permit<'q, 'w> {
     queue: &'q Queue<'w>,
     cost: usize,
+    resources: crate::planning::Resources,
 }
 
 impl Drop for Permit<'_, '_> {
     fn drop(&mut self) {
-        self.queue
+        let mut state = self
+            .queue
             .state
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .active -= self.cost;
+            .unwrap_or_else(|error| error.into_inner());
+        state.active -= self.cost;
+        state.resources.subtract(self.resources);
+        drop(state);
         self.queue.changed.notify_all();
     }
 }
 
 /// Output callbacks stay on the caller thread. On output/spawn failure stop
 /// admission and drain already running work before returning; never detach it.
+#[cfg(test)]
 pub(super) fn run(
     limits: Scheduling,
     weights: &[usize],
     execute: impl Fn(usize) -> Result<(), Error> + Sync,
+    observe: impl FnMut(Event) -> Result<(), Error>,
+) -> Result<(), Error> {
+    run_with_resources(
+        limits,
+        weights,
+        None,
+        &vec![crate::planning::Resources::default(); weights.len()],
+        execute,
+        observe,
+    )
+}
+
+pub(super) fn run_with_resources(
+    limits: Scheduling,
+    weights: &[usize],
+    capacity: Option<crate::planning::Resources>,
+    costs: &[crate::planning::Resources],
+    execute: impl Fn(usize) -> Result<(), Error> + Sync,
     mut observe: impl FnMut(Event) -> Result<(), Error>,
 ) -> Result<(), Error> {
     limits.validate(weights)?;
+    if costs.len() != weights.len()
+        || costs
+            .iter()
+            .any(|cost| capacity.is_some_and(|capacity| !cost.fits(capacity)))
+    {
+        return Err(Error::Input(
+            "configuration resources exceed scheduler capacity".into(),
+        ));
+    }
     let queue = Queue {
         state: Mutex::new(State::default()),
         changed: Condvar::new(),
         weights,
         budget: limits.max_active_attempts,
+        capacity,
+        costs,
     };
     std::thread::scope(|scope| {
         let (sender, receiver) = mpsc::sync_channel(limits.jobs * 2);
@@ -193,6 +243,71 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
+
+    #[test]
+    fn resource_admission_limits_jobs_independently_of_replica_slots_and_releases_failed_work() {
+        use crate::planning::Resources;
+        let weights = vec![1; 32];
+        let cost = Resources {
+            cpu_millis: 1000,
+            memory_mib: 4096,
+            disk_mib: 2000,
+        };
+        let capacity = Resources {
+            cpu_millis: 8000,
+            memory_mib: 8192,
+            disk_mib: 16000,
+        };
+        let active = AtomicUsize::new(0);
+        let peak = AtomicUsize::new(0);
+        let barrier = std::sync::Barrier::new(2);
+        let mut finished = Vec::new();
+        run_with_resources(
+            Scheduling::new(8, Some(8), &weights).unwrap(),
+            &weights,
+            Some(capacity),
+            &vec![cost; weights.len()],
+            |index| {
+                let now = active.fetch_add(1, Ordering::SeqCst) + 1;
+                peak.fetch_max(now, Ordering::SeqCst);
+                assert!(
+                    now <= 2,
+                    "memory admission must constrain the eight available count slots"
+                );
+                if index < 2 {
+                    barrier.wait();
+                }
+                std::thread::sleep(Duration::from_millis(1));
+                active.fetch_sub(1, Ordering::SeqCst);
+                if index == 2 {
+                    return Err(Error::Run("fixture failure".into()));
+                }
+                Ok(())
+            },
+            |event| {
+                if let Event::Finished(index, _) = event {
+                    finished.push(index);
+                }
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(peak.load(Ordering::SeqCst), 2);
+        assert_eq!(active.load(Ordering::SeqCst), 0);
+        finished.sort_unstable();
+        assert_eq!(finished, (0..32).collect::<Vec<_>>());
+        assert!(
+            run_with_resources(
+                Scheduling::new(1, None, &[1]).unwrap(),
+                &[1],
+                Some(Resources::default()),
+                &[cost],
+                |_| panic!("invalid resources must not run"),
+                |_| Ok(())
+            )
+            .is_err()
+        );
+    }
 
     #[test]
     fn parallel_tasks_overlap_without_exceeding_weighted_replica_budget() {

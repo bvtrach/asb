@@ -121,6 +121,7 @@ impl super::WorkloadAdapter for TerminalBenchAdapter {
     ) -> Result<Option<crate::workloads::PlanningCatalog>, String> {
         let catalog = catalog::read(self, directory)?;
         Ok(Some(crate::workloads::PlanningCatalog {
+            requirements: catalog::requirements(self, directory, &catalog)?,
             dataset: catalog.dataset,
             task_ids: catalog.tasks.into_iter().map(|task| task.id).collect(),
             evaluation_kind: "upstream-harness",

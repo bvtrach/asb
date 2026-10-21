@@ -136,6 +136,23 @@ impl WorkloadAdapter for SweBenchAdapter {
     ) -> Result<Option<crate::workloads::PlanningCatalog>, String> {
         let catalog = catalog::read(self, directory)?;
         Ok(Some(crate::workloads::PlanningCatalog {
+            requirements: catalog
+                .tasks
+                .iter()
+                .map(|task| {
+                    (
+                        task.id.clone(),
+                        crate::planning::TaskRequirements {
+                            // Admission envelope: source builds use 8 GiB, execution uses
+                            // 4 GiB. This is not a claim of an 8 GiB task container limit.
+                            source: "adapter-phase-reservation-envelope".into(),
+                            cpu_millis: Some(2000),
+                            memory_mib: Some(8192),
+                            ..Default::default()
+                        },
+                    )
+                })
+                .collect(),
             dataset: catalog.dataset,
             task_ids: catalog.tasks.into_iter().map(|task| task.id).collect(),
             evaluation_kind: "upstream-harness",

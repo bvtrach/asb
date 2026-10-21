@@ -310,6 +310,8 @@ pub(crate) fn runtime_inputs(
 }
 
 struct Session {
+    evaluation_seconds: u64,
+    preparation_seconds: u64,
     process_lifetime: super::session::ProcessLifetime,
     controller: Controller,
     invocation: TaskInvocation,
@@ -483,7 +485,14 @@ pub(crate) fn launch(
         .map_err(|error| error.to_string())?;
     let mut controller = Controller::spawn(&mut command)?;
     let prepared = (|| -> Result<_, String> {
-        let ready = controller.receive(Instant::now() + WORKLOAD_READY_TIMEOUT)?;
+        let ready = controller.receive(
+            Instant::now()
+                + context
+                    .budgets
+                    .environment_preparation_seconds
+                    .map(Duration::from_secs)
+                    .unwrap_or(WORKLOAD_READY_TIMEOUT),
+        )?;
         if ready["event"] != "ready" {
             return Err("official task did not become ready".into());
         }
@@ -530,18 +539,30 @@ pub(crate) fn launch(
         }
     };
     Ok(Box::new(Session {
+        evaluation_seconds: context
+            .budgets
+            .evaluation_seconds
+            .unwrap_or(EVALUATION_TIMEOUT_SECONDS),
+        preparation_seconds: context
+            .budgets
+            .environment_preparation_seconds
+            .unwrap_or(WORKLOAD_READY_TIMEOUT.as_secs()),
         process_lifetime: super::adapters::find(workload)
             .ok_or("workload adapter disappeared before execution")?
             .process_lifetime(),
         controller,
         invocation: TaskInvocation {
             identity,
-            prompt,
+            input: prompt.into(),
             workspace: context.workspace.to_path_buf(),
         },
         baseline,
         guest_workspace,
-        agent_timeout: Duration::from_secs_f64(agent_timeout),
+        agent_timeout: context
+            .budgets
+            .execution_seconds
+            .map(Duration::from_secs)
+            .unwrap_or_else(|| Duration::from_secs_f64(agent_timeout)),
         measurement_active: false,
         preparation_active: false,
         cleanup_attempted: false,
@@ -633,10 +654,11 @@ impl Session {
             }
         }
         self.controller.send(&json!({"op":"agent", "binary":binary, "project_root":context.project_root,
+            "timeout":self.agent_timeout.as_secs_f64(),
             "tools_root":tools_root, "bootstrap":bootstrap, "measure_target":context.measurements.is_some(),
             "project_configuration":guest_project_configuration(context.project_config)?,
             "environment":environment, "network":std::env::var("ASB_BENCHMARK_NETWORK").ok(),
-            "request":{"process_lifetime":self.process_lifetime,"config":config,"connection":connection,"prompt":self.invocation.prompt,
+            "request":{"process_lifetime":self.process_lifetime,"config":config,"connection":connection,"prompt":self.invocation.input.instructions,"timeout_seconds":self.agent_timeout.as_secs_f64(),
                 "project_root":"/opt/asb-project","runtime_dir":"/opt/asb-private","run_dir":"/opt/asb-private/attempt","replay":context.replay,
                 "namespace_collectors":namespace_collectors}}))
     }
@@ -844,6 +866,14 @@ fn runtime_binary() -> Result<PathBuf, String> {
 }
 
 impl WorkloadSession for Session {
+    fn effective_budgets(&self) -> crate::planning::EffectiveBudgets {
+        crate::planning::EffectiveBudgets {
+            environment_preparation_seconds: Some(self.preparation_seconds),
+            agent_preparation_seconds: None,
+            execution_seconds: Some(self.agent_timeout.as_secs_f64()),
+            evaluation_seconds: Some(self.evaluation_seconds),
+        }
+    }
     fn checkpoint_evidence(&self) -> Vec<PathBuf> {
         vec![self.artifacts.clone()]
     }
@@ -887,9 +917,9 @@ impl WorkloadSession for Session {
     fn evaluate(&mut self, _response: &str) -> Result<Evaluation, String> {
         self.evaluation_completed = false;
         let event = self.controller.request(
-            json!({"op":"evaluate","timeout":EVALUATION_TIMEOUT_SECONDS}),
+            json!({"op":"evaluate","timeout":self.evaluation_seconds}),
             "evaluated",
-            Duration::from_secs(EVALUATION_TIMEOUT_SECONDS) + EVALUATION_PROTOCOL_ALLOWANCE,
+            Duration::from_secs(self.evaluation_seconds) + EVALUATION_PROTOCOL_ALLOWANCE,
         )?;
         let result = &event["result"];
         if result["workload"] != self.invocation.identity.workload
@@ -1105,11 +1135,13 @@ sys.stdout.write(result['project_configuration'])
             .receive(Instant::now() + Duration::from_secs(3))
             .unwrap();
         Session {
+            evaluation_seconds: EVALUATION_TIMEOUT_SECONDS,
+            preparation_seconds: WORKLOAD_READY_TIMEOUT.as_secs(),
             process_lifetime: super::super::session::ProcessLifetime::Quiesce,
             controller,
             invocation: TaskInvocation {
                 identity: TaskIdentity::local("fixture", Some("original-task")),
-                prompt: "fixture issue".into(),
+                input: "fixture issue".into(),
                 workspace: "fixture-workspace".into(),
             },
             baseline: BaselineEvidence::UpstreamTaskDefinition {

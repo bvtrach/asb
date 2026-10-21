@@ -35,6 +35,8 @@ if not raw: closed();sys.exit(0)
 request=json.loads(raw);assert request['op']=='agent';record('agent')
 assert request['request']['config']['concurrency']==1
 assert request['request']['config']['workspace']=='/fixture-task'
+assert request['timeout']==1
+assert request['request']['timeout_seconds']==1
 assert request['bootstrap']==dict(runtime_tools=[],assets=[],public_package_cache=False)
 for event in events:
  print(json.dumps(event),flush=True)
@@ -57,11 +59,13 @@ closed()
             .arg(self.0.join("operations"))
             .arg(cleanup);
         Session {
+            evaluation_seconds: EVALUATION_TIMEOUT_SECONDS,
+            preparation_seconds: WORKLOAD_READY_TIMEOUT.as_secs(),
             process_lifetime: super::super::session::ProcessLifetime::Quiesce,
             controller: Controller::spawn(&mut command).unwrap(),
             invocation: TaskInvocation {
                 identity: TaskIdentity::local("fixture", Some("task")),
-                prompt: "fixture task".into(),
+                input: "fixture task".into(),
                 workspace: self.0.join("workspace"),
             },
             baseline: BaselineEvidence::Unavailable,
@@ -116,6 +120,10 @@ fn prepared_protocol_preserves_output_exit_time_and_grades_only_after_completion
             completed(),
         ];
         let mut session = fixture.session(&events, "removed");
+        let caps = session.effective_budgets();
+        assert_eq!(caps.execution_seconds, Some(1.0));
+        assert_eq!(caps.evaluation_seconds, Some(EVALUATION_TIMEOUT_SECONDS));
+        assert_eq!(caps.agent_preparation_seconds, None);
         let config = configuration();
         let project = crate::project::ProjectConfig::default();
         let connection = connection();

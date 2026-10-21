@@ -164,7 +164,10 @@ fn temporary_imports_are_ignored_but_malformed_identity_slots_fail_before_inspec
 #[test]
 fn invalid_or_unbound_original_results_cannot_be_imported() {
     let fixture = Fixture::new();
-    let manifest = super::super::SweepFile { configs: vec![] };
+    let manifest = super::super::SweepFile {
+        resources: None,
+        configs: vec![],
+    };
     let run = |output: &mut Vec<u8>| {
         import(
             &fixture.0.join("sweep.toml"),
@@ -203,7 +206,10 @@ fn no_grade_import_reports_unknown_metrics_in_both_output_formats() {
             "schema_version":1,"run_id":"a1","execution_mode":"live","entries":[]
         }),
     );
-    let manifest = super::super::SweepFile { configs: vec![] };
+    let manifest = super::super::SweepFile {
+        resources: None,
+        configs: vec![],
+    };
     for json_output in [true, false] {
         let mut output = Vec::new();
         import(
