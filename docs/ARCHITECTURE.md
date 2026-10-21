@@ -75,7 +75,9 @@ ASB is deliberately split into a small CLI and a file-backed workload directory:
   agent process and its child tasks, retaining bounded raw output and exposing
   averaged, unit-named CPU and I/O metrics under a machine-readable `metrics`
   object plus bounded per-sample `series` arrays. `perf stat` uses the same
-  interval contract. `ASB_MEASURE_INTERVAL_MS` accepts 100--60000 ms and
+  interval contract. Perf scalar counters sum the emitted interval deltas,
+  rather than reporting only the final interval. Unsupported counters remain
+  absent, not zero. `ASB_MEASURE_INTERVAL_MS` accepts 100--60000 ms and
   defaults to 1000 ms; pidstat rounds sub-second requests to whole seconds,
   while perf supports millisecond periods. Comparisons emit line SVGs for
   series with at least two points and expose the same hover, zoom, pan, reset,
