@@ -47,6 +47,7 @@ mod attributes;
 pub(crate) mod census;
 mod controller;
 mod material;
+pub(crate) mod outcome;
 pub(crate) mod recovery;
 pub(crate) mod relay;
 mod remote;

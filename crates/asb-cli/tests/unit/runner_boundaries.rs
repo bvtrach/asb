@@ -135,7 +135,7 @@ fn gate_target_checks_absolute_interpreters_without_launching_anything() {
 
 #[cfg(unix)]
 fn child(script: &str) -> OwnedChild {
-    OwnedChild(
+    OwnedChild::Direct(
         Command::new("/bin/sh")
             .args(["-c", script])
             .stdin(Stdio::null())
@@ -143,7 +143,6 @@ fn child(script: &str) -> OwnedChild {
             .stderr(Stdio::piped())
             .spawn()
             .unwrap(),
-        false,
     )
 }
 

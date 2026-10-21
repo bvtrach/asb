@@ -2210,6 +2210,22 @@ fn replay_reports_agent_exit_and_zero_exit_fatal_output() {
         assert_eq!(log["process_success"], false);
         assert_eq!(log["workload_success"], true);
         assert_eq!(log["success_rate"], 1.0);
+        assert_eq!(log["benchmark_outcome"]["execution_success"], false);
+        assert_eq!(log["module"]["id"], log["workload"]);
+        assert!(log["module"]["protocol"].is_object());
+        assert_eq!(
+            log["benchmark_outcome"]["evaluation"]["status"],
+            "completed"
+        );
+        assert_eq!(log["benchmark_outcome"]["evaluation"]["resolution"], true);
+        assert_eq!(
+            log["benchmark_outcome"]["evaluation"]["rewards"]["resolution"],
+            1.0
+        );
+        assert_eq!(
+            log["benchmark_outcome"]["lineage"]["execution_attempt"],
+            log["task"]["attempt_id"]
+        );
         assert_tape_scratch_cleaned(&project);
     }
 }

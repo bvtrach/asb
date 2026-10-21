@@ -876,7 +876,14 @@ before later fallible setup. Its single 1800-second budget arms once at the
 first registration, not when workload preparation begins and not per replica.
 Adapters receive an identity-free admission interface; the runner binds the
 already verified compatibility identity. Native targets must reach their real
-stopped gate and attach configured collectors before admission. Repeated native
+stopped gate and attach configured collectors before admission. Native custody
+validates the current gate's private Hello receipt and real stopped state before
+the shared rendezvous. This establishes managed custody without CONT; actual
+resume revalidates the target using the same startup deadline. An aborted
+known gate retains its proof-aware quiescence/handoff path, while a malformed
+or unknown launcher stays on Starting cleanup and is never resumed. The runner
+does not extract a raw child or bypass managed custody for repeated runs.
+Repeated native
 execution refuses unavailable gates rather than running ungated. Remote attempts
 must report a valid owned namespace/container/exec target even without host
 measurements; host collectors additionally require the existing host PID proof.

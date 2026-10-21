@@ -375,6 +375,9 @@ fn summary_retention_is_bounded_and_unscored_success_is_not_a_resolved_task() {
     let run = RunMeasurement {
         workload_resource_disposition: None,
         workload_artifacts: &[],
+        execution_plan_fingerprint: None,
+        module: None,
+        benchmark_outcome: None,
         replica_index: None,
         execution_cohort: None,
         schema_version: 2,

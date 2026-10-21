@@ -57,6 +57,9 @@ fn emit_warning(
 struct RunResult<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     execution: Option<repeated::ExecutionIdentity>,
+    execution_plan_fingerprint: Option<&'a str>,
+    module: Option<workloads::contracts::ModuleDescriptor>,
+    benchmark_outcome: Option<workloads::outcome::BenchmarkOutcome>,
     replica_index: Option<usize>,
     execution_cohort: Option<&'a measurements::ExecutionCohort>,
     schema_version: u32,
@@ -99,6 +102,7 @@ pub(crate) struct RunOptions<'a> {
     pub verify_initial_material: bool,
     pub preparation_gate: Option<&'a batch::Gate>,
     pub launch_gate: Option<&'a batch::Gate>,
+    pub execution_plan_fingerprint: Option<&'a str>,
     pub execution_cohort: Option<&'a measurements::ExecutionCohort>,
     pub json: bool,
     pub show_output: bool,
@@ -584,6 +588,20 @@ fn run_mode(
             Ok(workload)
         },
     )?;
+    // Capture provenance at execution time; report rendering never consults
+    // today's adapter registry to label a historical record.
+    let module = workload_session.module_descriptor();
+    let policy = workload_session.metric_policy();
+    if !policy.valid()
+        || (module.is_none() && policy != workloads::outcome::MetricPolicy::default())
+        || module
+            .as_ref()
+            .is_some_and(|m| !m.valid() || !policy.matches_module(m))
+    {
+        return Err(Error::Run(
+            "module metric policy differs from its declared scoring protocol".into(),
+        ));
+    }
     let workspace = workload_session.invocation().workspace.clone();
     if let Some(arrival) = arrival.as_mut() {
         let identity = (|| {
@@ -785,11 +803,12 @@ fn run_mode(
         proxy_evidence,
         cassette_usage_verified,
         outcome,
+        evaluator_evidence,
         cleanup_confirmed: workload_cleanup_confirmed,
         resource_disposition: workload_resource_disposition,
         issues,
     } = settled
-        .evaluate(final_response.as_deref().unwrap_or_default())
+        .evaluate_with_policy(final_response.as_deref().unwrap_or_default(), &policy)
         .finish();
     let workload_artifacts = workload_session.checkpoint_evidence();
     if workload_resource_disposition == Some(workloads::ResourceDisposition::StoppedPreserved)
@@ -810,6 +829,7 @@ fn run_mode(
     }
     let workload_success = outcome.success();
     let grading_failure = outcome.failure();
+    let evaluation = outcome.evaluation;
     let collector_error = issues.collector_failure();
     let run_error = issues.run_error;
     let output_error = issues.output_error;
@@ -817,7 +837,8 @@ fn run_mode(
         && collector_error.is_none()
         && output_error.is_none()
         && process_success
-        && workload_success == Some(true);
+        && evaluation.completed()
+        && workload_success != Some(false);
     let workload_failure =
         grading_failure
             .as_ref()
@@ -912,12 +933,33 @@ fn run_mode(
     let configured_kind = workload_session.evaluation_kind();
     let evaluation_kind = workloads::scored_kind(configured_kind, &workload_baseline);
     let resolution_eligible = workloads::resolution_eligible(evaluation_kind);
+    let evaluation_pending = matches!(
+        &evaluation,
+        workloads::outcome::EvaluationOutcome::Pending { .. }
+    );
     let result = RunResult {
         execution: options.batch.map(|batch| batch.execution(options.replica)),
+        execution_plan_fingerprint: options.execution_plan_fingerprint,
+        module,
+        benchmark_outcome: Some(workloads::outcome::BenchmarkOutcome {
+            schema_version: 1,
+            execution_success: Some(process_success),
+            evaluation,
+            cleanup_confirmed: Some(workload_cleanup_confirmed && proxy_evidence.cleanup_confirmed),
+            evidence: evaluator_evidence,
+            policy,
+            lineage: workloads::outcome::EvaluationLineage {
+                execution_attempt: workload_session.invocation().identity.attempt_id.clone(),
+                evaluation_id: workloads::TaskIdentity::local("evaluation", None).attempt_id,
+                supersedes: None,
+            },
+        }),
         replica_index: Some(options.replica.index),
         execution_cohort: options.execution_cohort,
         schema_version: 2,
-        status: if success && evaluation_kind == "invalid-baseline" {
+        status: if evaluation_pending && process_success && run_error.is_none() {
+            "evaluation-pending"
+        } else if success && evaluation_kind == "invalid-baseline" {
             "unscored"
         } else if success && !resolution_eligible {
             "smoke-passed"
@@ -941,9 +983,10 @@ fn run_mode(
         workload_failure,
         failure_kind: failure.as_ref().map(|(kind, _)| *kind),
         failure_reason: failure.as_ref().map(|(_, reason)| reason.clone()),
-        success_rate: workload_success
-            .filter(|_| resolution_eligible)
-            .map(|passed| if passed { 1.0 } else { 0.0 }),
+        success_rate: resolution_eligible
+            .then_some(workload_success)
+            .flatten()
+            .map(|resolved| if resolved { 1.0 } else { 0.0 }),
         adapter_smoke_success: (evaluation_kind == "adapter-smoke").then_some(success),
         elapsed_ms: run_metrics.elapsed_ms,
         exit_code: child.status.code(),
@@ -1145,6 +1188,8 @@ fn run_measured_agent_with_launch(
         session.agent_launch_prepared(command);
     }
     let mut gated = false;
+    #[cfg(target_os = "linux")]
+    let mut admission = None;
     #[cfg(unix)]
     if (session.is_some() || cfg!(target_os = "linux"))
         && let Some(target_args) = target_args
@@ -1152,6 +1197,18 @@ fn run_measured_agent_with_launch(
     {
         let executable = crate::process_gate::executable()
             .map_err(|error| Error::Run(format!("cannot resolve ASB process gate: {error}")))?;
+        #[cfg(target_os = "linux")]
+        {
+            admission = Some(
+                crate::process_gate::Admission::new(command, &executable, program, target_args)
+                    .map_err(|error| {
+                        Error::Run(format!(
+                            "cannot establish ASB process gate custody: {error}"
+                        ))
+                    })?,
+            );
+        }
+        #[cfg(not(target_os = "linux"))]
         crate::process_gate::install(command, &executable, program, target_args);
         gated = true;
     }
@@ -1172,8 +1229,15 @@ fn run_measured_agent_with_launch(
         if launch.is_none() {
             emit(LifecycleEvent::AgentExecuteBegin)?;
         }
-        match command.spawn() {
-            Ok(child) => OwnedChild(child, gated),
+        #[cfg(target_os = "linux")]
+        let spawned = match admission.take() {
+            Some(admission) => admission.spawn(command).map(OwnedChild::Gated),
+            None => command.spawn().map(OwnedChild::Direct),
+        };
+        #[cfg(not(target_os = "linux"))]
+        let spawned = command.spawn().map(OwnedChild::Direct);
+        match spawned {
+            Ok(child) => child,
             Err(error) => {
                 let mut primary = format!("could not start {program}: {error}");
                 for event in [
@@ -1196,7 +1260,8 @@ fn run_measured_agent_with_launch(
     }
     #[cfg(unix)]
     if launch.is_some() {
-        crate::process_gate::wait_stopped(&mut child.0)
+        child
+            .wait_stopped()
             .map_err(|error| Error::Run(format!("native launch target is not stopped: {error}")))?;
     }
     if let Some(session) = session.as_deref_mut()
@@ -1224,7 +1289,7 @@ fn run_measured_agent_with_launch(
     }
     #[cfg(unix)]
     if gated {
-        crate::process_gate::resume(&mut child.0).map_err(|error| {
+        child.resume().map_err(|error| {
             Error::Run(format!("could not resume measured agent process: {error}"))
         })?;
     }
@@ -1376,6 +1441,9 @@ pub(crate) fn resolve_log_path(config_path: &Path, configured_path: &str) -> Pat
 fn render_json(result: &RunResult<'_>, output: &mut dyn Write) -> Result<(), Error> {
     let summary = serde_json::json!({
         "execution": result.execution,
+        "execution_plan_fingerprint": result.execution_plan_fingerprint,
+        "module": result.module,
+        "benchmark_outcome": result.benchmark_outcome,
         "replica_index": result.replica_index,
         "execution_cohort": result.execution_cohort,
         "schema_version": result.schema_version,
@@ -1542,39 +1610,92 @@ enum OutputChunk {
 
 // std::process::Child does not stop a process on drop. Own it from spawn
 // through all collector attachment, output and wait error paths.
-struct OwnedChild(Child, bool);
+enum OwnedChild {
+    Direct(Child),
+    #[cfg(target_os = "linux")]
+    Gated(crate::process_gate::ManagedGate),
+}
 
 impl OwnedChild {
-    fn stop(&mut self) -> std::io::Result<std::process::ExitStatus> {
-        #[cfg(target_os = "linux")]
-        if self.1 {
-            return crate::process_gate::cancel_gate(&mut self.0);
+    #[cfg(unix)]
+    fn wait_stopped(&mut self) -> std::io::Result<()> {
+        match self {
+            #[cfg(target_os = "linux")]
+            Self::Gated(gate) => gate.wait_stopped(),
+            Self::Direct(_) => Err(std::io::Error::other(
+                "shared launch refuses a direct child without gate custody",
+            )),
         }
-        let _ = self.0.kill();
-        self.0.wait()
     }
-}
-
-impl std::ops::Deref for OwnedChild {
-    type Target = Child;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
+    fn stop(&mut self) -> std::io::Result<std::process::ExitStatus> {
+        match self {
+            Self::Direct(child) => {
+                let _ = child.kill();
+                child.wait()
+            }
+            #[cfg(target_os = "linux")]
+            Self::Gated(gate) => gate.stop(),
+        }
     }
-}
-
-impl std::ops::DerefMut for OwnedChild {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
+    fn id(&self) -> u32 {
+        match self {
+            Self::Direct(child) => child.id(),
+            #[cfg(target_os = "linux")]
+            Self::Gated(gate) => gate.id(),
+        }
+    }
+    fn try_wait(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
+        match self {
+            Self::Direct(child) => child.try_wait(),
+            #[cfg(target_os = "linux")]
+            Self::Gated(gate) => gate.try_wait(),
+        }
+    }
+    fn wait(&mut self) -> std::io::Result<std::process::ExitStatus> {
+        match self {
+            Self::Direct(child) => child.wait(),
+            #[cfg(target_os = "linux")]
+            Self::Gated(gate) => gate.wait(),
+        }
+    }
+    fn take_stdout(&mut self) -> Option<std::process::ChildStdout> {
+        match self {
+            Self::Direct(child) => child.stdout.take(),
+            #[cfg(target_os = "linux")]
+            Self::Gated(gate) => gate.take_stdout(),
+        }
+    }
+    fn take_stderr(&mut self) -> Option<std::process::ChildStderr> {
+        match self {
+            Self::Direct(child) => child.stderr.take(),
+            #[cfg(target_os = "linux")]
+            Self::Gated(gate) => gate.take_stderr(),
+        }
+    }
+    #[cfg(unix)]
+    fn resume(&mut self) -> std::io::Result<()> {
+        match self {
+            Self::Direct(child) => crate::process_gate::resume(child),
+            #[cfg(target_os = "linux")]
+            Self::Gated(gate) => gate.resume(),
+        }
     }
 }
 
 impl Drop for OwnedChild {
     fn drop(&mut self) {
-        if self.0.try_wait().ok().flatten().is_none() {
-            let _ = self.stop();
+        // ManagedGate owns its own bounded cancellation/handoff policy. Never
+        // follow it with an unconditional raw wait in this outer owner.
+        match self {
+            Self::Direct(child) => {
+                if child.try_wait().ok().flatten().is_none() {
+                    let _ = child.kill();
+                }
+                let _ = child.wait();
+            }
+            #[cfg(target_os = "linux")]
+            Self::Gated(_) => {}
         }
-        let _ = self.0.wait();
     }
 }
 
@@ -1609,7 +1730,7 @@ pub(crate) fn run_guest_process(
         .map_err(|error| Error::Run(format!("cannot retain guest agent descendants: {error}")))?;
     let child = command
         .spawn()
-        .map(|child| OwnedChild(child, false))
+        .map(OwnedChild::Direct)
         .map_err(|error| Error::Run(format!("cannot start guest agent: {error}")))?;
     wait_with_output_streams(child, true, stdout, Some(stderr), runtime, &mut || {
         #[cfg(target_os = "linux")]
@@ -1663,12 +1784,10 @@ fn capture_with_output_streams(
     after_exit: &mut dyn FnMut() -> std::io::Result<()>,
 ) -> std::io::Result<CapturedOutput> {
     let stdout = child
-        .stdout
-        .take()
+        .take_stdout()
         .ok_or_else(|| std::io::Error::other("agent stdout was not piped"))?;
     let stderr = child
-        .stderr
-        .take()
+        .take_stderr()
         .ok_or_else(|| std::io::Error::other("agent stderr was not piped"))?;
     let (sender, receiver) = mpsc::channel();
     let stdout_sender = sender.clone();
@@ -2234,6 +2353,9 @@ mod tests {
             .finish(crate::measurements::RunMeasurement {
                 workload_resource_disposition: None,
                 workload_artifacts: &[],
+                execution_plan_fingerprint: None,
+                module: None,
+                benchmark_outcome: None,
                 replica_index: None,
                 execution_cohort: None,
                 schema_version: 1,
@@ -2336,7 +2458,7 @@ mod tests {
             .spawn()
             .unwrap();
         let pid = child.id();
-        let owned = super::OwnedChild(child, false);
+        let owned = super::OwnedChild::Direct(child);
         // Simulate returning from the runner after attachment fails.
         drop(owned);
         assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists());
@@ -2362,7 +2484,7 @@ mod tests {
             .unwrap();
         let pid = child.id();
         let error =
-            super::wait_with_output(super::OwnedChild(child, false), true, &mut FailingWriter)
+            super::wait_with_output(super::OwnedChild::Direct(child), true, &mut FailingWriter)
                 .unwrap_err();
         assert!(error.to_string().contains("fixture output failure"));
         assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists());
@@ -2537,6 +2659,9 @@ mod tests {
     fn result<'a>() -> RunResult<'a> {
         RunResult {
             execution: None,
+            execution_plan_fingerprint: None,
+            module: None,
+            benchmark_outcome: None,
             replica_index: None,
             execution_cohort: None,
             schema_version: 2,

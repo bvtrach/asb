@@ -85,6 +85,9 @@ impl Gate {
 
     pub(crate) fn register(&self, replica: Identity) -> Result<Arrival<'_>, Error> {
         let mut state = self.state.lock().map_err(|_| unavailable())?;
+        if let Some(reason) = &state.aborted {
+            return Err(Error::Run(reason.clone()));
+        }
         if !replica.valid()
             || replica.total != state.registered.len()
             || state.registered[replica.index - 1]
@@ -93,9 +96,6 @@ impl Gate {
             state.aborted = Some("invalid or duplicate preparation slot".into());
             self.changed.notify_all();
             return Err(Error::Run("invalid or duplicate preparation slot".into()));
-        }
-        if let Some(reason) = &state.aborted {
-            return Err(Error::Run(reason.clone()));
         }
         if state.deadline.is_none() {
             state.deadline = Some(
@@ -111,23 +111,29 @@ impl Gate {
             settled: false,
         })
     }
-}
 
-impl Arrival<'_> {
-    pub(crate) fn abort(&mut self, reason: &str) {
+    fn abort(&self, reason: &str) {
         let mut state = self
-            .gate
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if !state.released && state.aborted.is_none() {
             state.aborted = Some(reason.into());
         }
-        self.gate.changed.notify_all();
+        self.changed.notify_all();
+    }
+}
+
+impl Arrival<'_> {
+    pub(crate) fn abort(&mut self, reason: &str) {
+        self.gate.abort(reason);
     }
 
     pub(crate) fn ready(&mut self, identity: Compatibility) -> Result<(), Error> {
         let mut state = self.gate.state.lock().map_err(|_| unavailable())?;
+        if let Some(reason) = &state.aborted {
+            return Err(Error::Run(reason.clone()));
+        }
         let deadline = state.deadline.ok_or_else(unavailable)?;
         if Instant::now() >= deadline && !state.released {
             state.aborted = Some("batch preparation timed out; no agent was admitted".into());
@@ -156,14 +162,16 @@ impl Arrival<'_> {
                     .as_ref()
                     .map_or(Ok(()), |observe| observe(&identity));
                 state = self.gate.state.lock().map_err(|_| unavailable())?;
-                if let Err(error) = published {
-                    state.aborted =
-                        Some(format!("cannot publish prepared batch identity: {error}"));
-                } else if Instant::now() >= deadline {
-                    state.aborted =
-                        Some("batch preparation timed out; no agent was admitted".into());
-                } else if state.aborted.is_none() {
-                    state.released = true;
+                if state.aborted.is_none() {
+                    if let Err(error) = published {
+                        state.aborted =
+                            Some(format!("cannot publish prepared batch identity: {error}"));
+                    } else if Instant::now() >= deadline {
+                        state.aborted =
+                            Some("batch preparation timed out; no agent was admitted".into());
+                    } else {
+                        state.released = true;
+                    }
                 }
             }
         }
@@ -312,6 +320,27 @@ mod tests {
         assert!(second.ready().is_err());
         assert!(first.ready().is_err());
         assert!(gate.confirmed_identity().is_err());
+    }
+
+    #[test]
+    fn late_readiness_and_duplicate_registration_preserve_first_failure() {
+        let gate = Gate::deferred(2, Duration::from_secs(1800)).unwrap();
+        let mut first = gate.register(Identity { index: 1, total: 2 }).unwrap();
+        let mut second = gate.register(Identity { index: 2, total: 2 }).unwrap();
+        first.abort("original preparation failure");
+        gate.state.lock().unwrap().deadline = Some(Instant::now() - Duration::from_secs(1));
+        assert!(
+            second
+                .ready(material())
+                .unwrap_err()
+                .to_string()
+                .contains("original preparation failure")
+        );
+        let error = match gate.register(Identity { index: 2, total: 2 }) {
+            Ok(_) => panic!("aborted launch cannot register another slot"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("original preparation failure"));
     }
 
     #[test]
@@ -484,6 +513,51 @@ mod tests {
             assert!(error.to_string().contains("fixture preservation failure"));
             peer.join().unwrap();
         });
+    }
+
+    #[test]
+    fn abort_during_publication_keeps_first_failure_after_error_or_expiry() {
+        for publication_error in [false, true] {
+            let (begun_tx, begun_rx) = mpsc::channel();
+            let (release_tx, release_rx) = mpsc::channel();
+            let release_rx = Mutex::new(release_rx);
+            let gate = Gate::new(2, None, Duration::from_secs(1))
+                .unwrap()
+                .observe(Arc::new(move |_| {
+                    begun_tx.send(()).unwrap();
+                    release_rx
+                        .lock()
+                        .unwrap()
+                        .recv_timeout(Duration::from_secs(3))
+                        .unwrap();
+                    if publication_error {
+                        Err(Error::Io("later publication error".into()))
+                    } else {
+                        Ok(())
+                    }
+                }));
+            std::thread::scope(|scope| {
+                let mut first = gate.register(Identity { index: 1, total: 2 }).unwrap();
+                let mut second = gate.register(Identity { index: 2, total: 2 }).unwrap();
+                let a = scope.spawn(move || first.ready(material()));
+                let b = scope.spawn(move || second.ready(material()));
+                begun_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+                gate.abort("original sibling failure during publication");
+                if !publication_error {
+                    std::thread::sleep(Duration::from_millis(1100));
+                }
+                release_tx.send(()).unwrap();
+                for result in [a.join().unwrap(), b.join().unwrap()] {
+                    assert!(
+                        result
+                            .unwrap_err()
+                            .to_string()
+                            .contains("original sibling failure during publication")
+                    );
+                }
+            });
+            assert!(gate.confirmed_identity().is_err());
+        }
     }
 
     #[cfg(unix)]

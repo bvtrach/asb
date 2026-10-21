@@ -774,6 +774,16 @@ subreaper. This retains helpers that daemonize or outlive an intermediate
 wrapper under the benchmark root, so perf inheritance, bpftrace fork tracking,
 pidstat sampling, and process-accounted timing include the complete relevant
 tree without collecting unrelated host processes.
+Changes to native custody must preserve the private Hello/Quiescent protocol,
+Starting-versus-Admitted cleanup distinction, stopped-owner-loss watcher and
+wait-only fallback ownership. Build the actual current `asb` binary before
+running the `process_gate` library tests: those tests exercise the real gate,
+not the libtest executable. Run the `guest_agent` native-gate matrix as well;
+it covers owner loss after validated Hello, while stopped, after resume and
+after a short-lived spawning thread exits, with double-forked TERM-resistant
+writers and an unrelated sentinel. Protocol stand-ins test malformed/absent
+receipts and bounded fallback custody only; they do not qualify kernel
+descendant teardown or a live provider. No root permissions are required.
 The guest driver likewise owns a private child supervisor. By default both
 supervisors stop and reap leftover helpers before accepting an execution result.
 An adapter may instead delegate guest service lifetime through evaluation to
