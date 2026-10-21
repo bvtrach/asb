@@ -819,10 +819,13 @@ fn run_mode(
         let provider_cleanup_error = providers::finish_session(&mut bridge)
             .err()
             .map(|error| error.to_string());
-        if let Some(owner) = artifact_owner
-            && let Err(error) = owner.settle()
-        {
-            issues.run_error(error);
+        let mut artifact_evidence = Vec::new();
+        if let Some(owner) = artifact_owner {
+            let report = owner.handoff_and_settle();
+            artifact_evidence = report.evidence;
+            if let Some(error) = report.error {
+                issues.run_error(error);
+            }
         }
         if let Some(error) = guest
             .as_ref()
@@ -977,8 +980,10 @@ fn run_mode(
             stderr,
         };
         let log_publication =
-            phases::LogPublication::publish(config_path, &config.log_file, &result);
-        let measurement_completion = phases::finish_measurements(measurement_session, &result);
+            phases::LogPublication::publish(config_path, &config.log_file, &result)
+                .with_artifact_evidence(&artifact_evidence);
+        let measurement_completion = phases::finish_measurements(measurement_session, &result)
+            .with_artifact_evidence(&artifact_evidence);
         // This private record preserves evaluator outcomes, including unresolved
         // tasks. Its absence never changes a benchmark grade or blocks execution;
         // a future continuation must also validate its input and evidence seals.

@@ -1,7 +1,7 @@
 //! Attempt-scoped scratch ownership, frozen before interpretation and settled once.
 use std::collections::BTreeMap;
 use std::fs::{self, File, Metadata, OpenOptions};
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 const LIMIT: u64 = 16 * 1024 * 1024;
@@ -17,11 +17,14 @@ struct OwnedFile {
     namespace: File,
     directory: Observation,
     observed: Option<Observation>,
+    snapshot: Option<Vec<u8>>,
     retain: bool,
     #[cfg(test)]
     before_open: Option<Box<dyn FnOnce() + Send>>,
     #[cfg(test)]
     before_move: Option<Box<dyn FnOnce() + Send>>,
+    #[cfg(test)]
+    snapshot_sync_failure: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -124,6 +127,12 @@ pub(crate) struct ArtifactOwner {
 }
 
 #[derive(Default)]
+pub(crate) struct ArtifactSettlement {
+    pub evidence: Vec<String>,
+    pub error: Option<String>,
+}
+
+#[derive(Default)]
 pub(crate) struct FrozenArtifacts {
     documents: BTreeMap<String, serde_json::Value>,
     pub error: bool,
@@ -204,11 +213,14 @@ impl ArtifactOwner {
                 namespace,
                 directory: metadata,
                 observed: None,
+                snapshot: None,
                 retain: false,
                 #[cfg(test)]
                 before_open: None,
                 #[cfg(test)]
                 before_move: None,
+                #[cfg(test)]
+                snapshot_sync_failure: false,
             });
         }
         Ok(owner)
@@ -262,11 +274,12 @@ impl ArtifactOwner {
                     return Err(std::io::Error::other("artifact changed or exceeds bound"));
                 }
                 serde_json::from_slice(&bytes)
-                    .map(Some)
+                    .map(|document| Some((document, bytes)))
                     .map_err(|_| std::io::Error::other("malformed artifact JSON"))
             })();
             match result {
-                Ok(Some(document)) => {
+                Ok(Some((document, bytes))) => {
+                    owned.snapshot = Some(bytes);
                     frozen.documents.insert(
                         owned
                             .path
@@ -302,13 +315,67 @@ impl ArtifactOwner {
         self.settle_inner()
     }
 
+    /// Native publishers consume one immutable result. Transfer the exact
+    /// validated bytes first, so even loss of every publisher cannot erase them.
+    pub fn handoff_and_settle(mut self) -> ArtifactSettlement {
+        let mut report = ArtifactSettlement::default();
+        if !self.frozen {
+            self.settled = true;
+            report.error = Some(
+                "agent artifact handoff requires a frozen snapshot; source not consumed".into(),
+            );
+            return report;
+        }
+        let mut failures = Vec::new();
+        for owned in &mut self.files {
+            let Some(bytes) = owned.snapshot.as_ref() else {
+                continue;
+            };
+            let name = format!(
+                "frozen-{}",
+                owned.path.file_name().unwrap().to_string_lossy()
+            );
+            let copied = (|| {
+                let mut file = create_snapshot(owned, &name)?;
+                file.write_all(bytes)?;
+                #[cfg(test)]
+                if owned.snapshot_sync_failure {
+                    return Err(std::io::Error::other(
+                        "injected evidence synchronization failure",
+                    ));
+                }
+                file.sync_all()?;
+                // Unix directory synchronization confirms the new entry too.
+                // Windows uses the write-through creation/file-flush route;
+                // std does not provide a portable directory-flush contract.
+                #[cfg(unix)]
+                owned.namespace.sync_all()?;
+                Ok::<_, std::io::Error>(())
+            })();
+            if copied.is_ok() {
+                report.evidence.push(owned.location(&name));
+            } else {
+                // Never consume the only source when copying or synchronization
+                // failed. Drop never retries this explicit finalization.
+                owned.retain = true;
+                failures
+                    .push(owned.diagnostic("frozen evidence handoff failed; source not consumed"));
+            }
+        }
+        if let Err(error) = self.settle_inner() {
+            failures.push(error);
+        }
+        report.error = (!failures.is_empty()).then(|| failures.join("; "));
+        report
+    }
+
     fn settle_inner(&mut self) -> Result<(), String> {
         self.settled = true;
         let mut failures = Vec::new();
         for owned in &mut self.files {
             let result = (|| {
                 if owned.retain {
-                    return Err(std::io::Error::other("snapshot unavailable"));
+                    return Err(std::io::Error::other("retention required"));
                 }
                 let parent = owned.path.parent().expect("artifact directory");
                 let directory = Observation::read(&open_regular_or_directory(parent)?)?;
@@ -343,7 +410,9 @@ impl ArtifactOwner {
                     "scratch settlement failed: stable file identity unavailable"
                 } else {
                     match error.to_string().as_str() {
-                        "snapshot unavailable" => "scratch settlement failed: snapshot unavailable",
+                        "retention required" => {
+                            "scratch settlement failed: evidence requires retention"
+                        }
                         "artifact directory changed" => {
                             "scratch settlement failed: namespace changed"
                         }
@@ -378,18 +447,60 @@ impl Drop for ArtifactOwner {
 }
 
 impl OwnedFile {
-    fn diagnostic(&self, reason: &str) -> String {
+    fn location(&self, filename: &str) -> String {
+        let namespace = self.path.parent().unwrap();
+        let attempt = namespace.parent().unwrap().file_name().unwrap();
         format!(
-            "agent artifact {}/{}: {reason}; inspect source or custody (which may remain)",
-            self.path
-                .parent()
-                .unwrap()
-                .file_name()
-                .unwrap()
-                .to_string_lossy(),
-            self.path.file_name().unwrap().to_string_lossy()
+            "{}/{}/{}",
+            attempt.to_string_lossy(),
+            namespace.file_name().unwrap().to_string_lossy(),
+            filename
         )
     }
+    fn diagnostic(&self, reason: &str) -> String {
+        format!(
+            "agent artifact {}: {reason}; inspect source or custody (which may remain)",
+            self.location(&self.path.file_name().unwrap().to_string_lossy())
+        )
+    }
+}
+
+#[cfg(unix)]
+#[allow(unsafe_code)]
+fn create_snapshot(owned: &OwnedFile, name: &str) -> std::io::Result<File> {
+    use std::os::fd::{AsRawFd, FromRawFd};
+    let name = std::ffi::CString::new(name)?;
+    // Create-new and nofollow: never adopt or overwrite a client-created entry.
+    let fd = unsafe {
+        libc::openat(
+            owned.namespace.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            0o600,
+        )
+    };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(unsafe { File::from_raw_fd(fd) })
+}
+
+#[cfg(windows)]
+fn create_snapshot(owned: &OwnedFile, name: &str) -> std::io::Result<File> {
+    windows_child(
+        &owned.namespace,
+        std::ffi::OsStr::new(name),
+        0x4010_0000,
+        2,
+        0x0020_0022,
+    )
+}
+
+#[cfg(not(any(unix, windows)))]
+fn create_snapshot(_owned: &OwnedFile, _name: &str) -> std::io::Result<File> {
+    Err(std::io::Error::other(
+        "pinned evidence creation unavailable; source not consumed",
+    ))
 }
 
 fn open_owned(owned: &OwnedFile, delete: bool) -> std::io::Result<File> {
@@ -481,6 +592,24 @@ fn dispose_child(owned: &OwnedFile, _file: &File, expected: &Observation) -> std
 #[cfg(windows)]
 #[allow(unsafe_code)]
 fn open_child(directory: &File, name: &std::ffi::OsStr, delete: bool) -> std::io::Result<File> {
+    windows_child(
+        directory,
+        name,
+        0x8010_0000 | if delete { 0x10000 } else { 0 },
+        1,
+        0x0020_0020,
+    )
+}
+
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn windows_child(
+    directory: &File,
+    name: &std::ffi::OsStr,
+    access: u32,
+    disposition: u32,
+    options: u32,
+) -> std::io::Result<File> {
     use std::os::windows::ffi::OsStrExt;
     use std::os::windows::io::{AsRawHandle, FromRawHandle};
     #[repr(C)]
@@ -546,14 +675,14 @@ fn open_child(directory: &File, name: &std::ffi::OsStr, delete: bool) -> std::io
     let result = unsafe {
         NtCreateFile(
             &mut handle,
-            0x8010_0000 | if delete { 0x10000 } else { 0 },
+            access,
             &mut attributes,
             &mut status,
             std::ptr::null_mut(),
             0,
             7,
-            1,
-            0x0020_0020,
+            disposition,
+            options,
             std::ptr::null_mut(),
             0,
         )
@@ -857,5 +986,79 @@ mod tests {
             fs::read_to_string(fixture.file()).unwrap(),
             "{secret malformed bytes"
         );
+    }
+
+    #[test]
+    fn native_handoff_uses_exact_frozen_bytes_and_never_refreshes_the_source() {
+        let fixture = Fixture::new();
+        let mut owner = ArtifactOwner::prepare(&fixture.0, SPEC).unwrap();
+        let bytes = b"{ \"answer\": \"owned\", \"usage\": 34 }\n";
+        fs::write(fixture.file(), bytes).unwrap();
+        assert!(!owner.freeze().error);
+        fs::rename(fixture.file(), fixture.0.join("original.saved")).unwrap();
+        fs::write(fixture.file(), "foreign replacement bytes").unwrap();
+        let report = owner.handoff_and_settle();
+        assert!(report.error.unwrap().contains("file changed"));
+        assert_eq!(report.evidence.len(), 1);
+        assert!(report.evidence[0].contains(fixture.0.file_name().unwrap().to_str().unwrap()));
+        let copy = fixture.0.join("scratch/frozen-evidence.json");
+        assert_eq!(fs::read(&copy).unwrap(), bytes);
+        assert_eq!(
+            fs::metadata(copy).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(
+            fs::read_to_string(fixture.file()).unwrap(),
+            "foreign replacement bytes"
+        );
+    }
+
+    #[test]
+    fn failed_handoff_never_consumes_original_or_overwrites_foreign_evidence() {
+        for failure in ["file", "symlink", "permission", "sync"] {
+            let fixture = Fixture::new();
+            let mut owner = ArtifactOwner::prepare(&fixture.0, SPEC).unwrap();
+            fs::write(fixture.file(), "{\"usage\":34}").unwrap();
+            assert!(!owner.freeze().error);
+            let destination = fixture.0.join("scratch/frozen-evidence.json");
+            match failure {
+                "file" => fs::write(&destination, "foreign evidence").unwrap(),
+                "symlink" => {
+                    fs::write(fixture.0.join("foreign"), "foreign target").unwrap();
+                    symlink(fixture.0.join("foreign"), &destination).unwrap();
+                }
+                "permission" => fs::set_permissions(
+                    fixture.0.join("scratch"),
+                    fs::Permissions::from_mode(0o500),
+                )
+                .unwrap(),
+                "sync" => owner.files[0].snapshot_sync_failure = true,
+                _ => unreachable!(),
+            }
+            let report = owner.handoff_and_settle();
+            assert!(
+                report.evidence.is_empty(),
+                "unconfirmed copies are not handed off"
+            );
+            assert!(
+                report
+                    .error
+                    .unwrap()
+                    .contains("handoff failed; source not consumed")
+            );
+            assert_eq!(
+                fs::read_to_string(fixture.file()).unwrap(),
+                "{\"usage\":34}"
+            );
+            if failure == "file" {
+                assert_eq!(fs::read_to_string(destination).unwrap(), "foreign evidence");
+            }
+            if failure == "symlink" {
+                assert_eq!(
+                    fs::read_to_string(fixture.0.join("foreign")).unwrap(),
+                    "foreign target"
+                );
+            }
+        }
     }
 }

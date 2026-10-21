@@ -85,6 +85,22 @@ artifact/guest/completion tests, the existing 24 protocol harness tests, the
 updated 21 execution and 10 guest Python cases, strict all-target/all-feature
 Clippy and formatting. This old-base checkpoint has no full-suite or integrated
 current-main qualification yet; Windows remains source-qualified only.
+The subsequent native publication-loss regression uses the actual ASB Mini-SWE
+route, embedded loopback replay and bundled local repository-navigation grader,
+not an external SDK verifier. With the log blocked and measurements disabled,
+the previous binary returned a completed grade/34 tokens/four steps but deleted
+the only raw trajectory. The fixed fixture requires a recoverable mode-0600
+frozen copy containing that exact answer/usage/steps, a locatable diagnostic,
+one client call and no completion receipt. Real runner-entry observation also
+checks grading, workload finish and provider finish exactly once with blocked
+logging and either disabled or failed measurements; summary output is not
+appended twice. Unit cases verify exact frozen bytes after source replacement,
+create-new file/symlink refusal, permission failure and a test-only synchronization
+fault, all retaining the original when handoff is unconfirmed. No old-base full
+suite or integrated-current-main qualification is implied by these focused gates.
+The native handoff checkpoint passed 63 adapter tests, 73 runner tests (three
+explicit opt-in cases ignored), the layout guard, the extended actual-entry
+fixture, strict all-target/all-feature Clippy, formatting and binary build.
 `cargo test --locked --offline --test tui_install` exercises the actual ASB
 install helper and real terminal backend with local fake npm/node executables.
 Closing the backend's output pipe forces EPIPE while the input PTY stays open:

@@ -368,6 +368,15 @@ impl LogPublication {
     pub fn confirmed(&self) -> bool {
         matches!(self, Self::Confirmed)
     }
+    pub fn with_artifact_evidence(self, paths: &[String]) -> Self {
+        match self {
+            Self::Failed(error) if !paths.is_empty() => Self::Failed(Error::Run(format!(
+                "{error}; retained frozen agent evidence (relative to private attempt runtime parent): {}",
+                paths.join(", ")
+            ))),
+            other => other,
+        }
+    }
     pub fn into_error(self) -> Option<Error> {
         match self {
             Self::Confirmed => None,
@@ -415,6 +424,15 @@ pub(super) enum MeasurementCompletion {
 impl MeasurementCompletion {
     pub fn confirmed(&self) -> bool {
         matches!(self, Self::Confirmed)
+    }
+    pub fn with_artifact_evidence(self, paths: &[String]) -> Self {
+        match self {
+            Self::Incomplete(mut errors) if !paths.is_empty() => {
+                errors.push(format!("retained frozen agent evidence (relative to private attempt runtime parent): {}", paths.join(", ")));
+                Self::Incomplete(errors)
+            }
+            other => other,
+        }
     }
     pub fn into_error(self) -> Option<Error> {
         match self {

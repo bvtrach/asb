@@ -786,6 +786,29 @@ namespace/filename and failure class, never file contents or raw OS/JSON errors.
 Malformed/oversized/unreadable snapshots are retained. Before freezing, unwind
 has a best-effort guard; after freezing, unwind retains evidence for inspection.
 Explicit failed settlement is never retried by Drop, which never prints.
+Before native scratch settlement, each valid frozen snapshot is transferred to
+`<private-runtime>/runs/<attempt>/mini-swe/frozen-trajectory.json` (or the
+declaring adapter's equivalent `frozen-<filename>`). This writes the exact
+already-validated bytes, never a second source-path read or JSON re-encoding.
+Create-new, nofollow, pinned-relative creation refuses existing files/symlinks.
+Unix files use mode 0600 inside the owned 0700 namespace and synchronize both
+file and namespace; Windows retains its namespace ACL and uses rooted
+write-through creation plus file flush (source qualification only, not a claim
+of portable directory flushing). Failed creation/write/synchronization prevents
+source consumption, records a fixed attempt-relative diagnostic and still allows
+the independent publishers to run. Original deletion retains the existing
+identity/version and custody checks. The durable evidence copy is intentionally
+retained even after successful publication, not counted as unremoved scratch.
+It can contain complete agent conversation/usage and sensitive data; do not
+share it as a harmless diagnostic. Each raw snapshot/copy is at most 16 MiB,
+with at most 16 declared artifacts (256 MiB raw-copy storage per attempt at the
+API ceiling; currently one for each owning adapter). Frozen raw bytes also stay
+in bounded memory alongside the parsed document until handoff. Copies accumulate
+across attempts: there is no project-wide storage quota or automatic evidence
+expiry. Disk-full errors retain the original and are not a reason to retry the
+agent. These file/namespace flushes are not a multi-file publication transaction.
+Log/measurement publishers still consume one immutable result exactly once;
+their failures disclose locatable attempt-relative frozen evidence when available.
 Scratch retention is ancillary run failure, not unconfirmed workload/container
 quiescence: official grading and independent workload/provider cleanup and
 publication still run once. Guest metadata carries a separate optional artifact

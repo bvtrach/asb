@@ -78,6 +78,8 @@ def native(scenario="normal"):
     root, config = project("native-"+scenario)
     config_path = root / "benchmark.toml"
     config_path.write_text("".join(f"{key}={json.dumps(value)}\n" for key, value in config.items()))
+    if scenario == "publication-loss":
+        (root / "run.jsonl").mkdir()
     if scenario == "cleanup-logfail":
         (root / "run.jsonl").mkdir()
         with config_path.open("a") as stream:
@@ -96,6 +98,30 @@ def native(scenario="normal"):
             cwd=root,env=env,capture_output=True,timeout=30)
         (root / f"invocation-{len(records)}.stderr").write_bytes(result.stderr)
         (root / f"invocation-{len(records)}.stdout").write_bytes(result.stdout)
+        if scenario == "publication-loss":
+            assert result.returncode != 0, "blocked result publication must remain an error"
+            record = json.loads(result.stdout)
+            assert record["workload_success"] is True, record
+            assert record["token_usage"]["total_tokens"] == 34, record
+            assert record["steps"] == 4, record
+            assert record["benchmark_outcome"]["cleanup_confirmed"] is True, record
+            assert "log" in result.stderr.decode().lower(), result.stderr
+            assert not (root / "measurements").exists(), "measurements are disabled"
+            assert not list(root.glob("**/.asb-completions/*.json")), "no receipt after blocked log"
+            assert (root / "executions").read_text().splitlines() == ["called"], "never retry the client"
+            raw = list(root.glob("**/mini-swe/frozen-trajectory.json"))
+            assert len(raw) == 1, "native publication failure needs a durable frozen raw handoff"
+            frozen = json.loads(raw[0].read_text())
+            assert frozen["info"]["model_stats"]["api_calls"] == 4
+            message = frozen["messages"][0]
+            assert message["content"] == "src/cli.py src/registry.py lookup"
+            usage = message["extra"]["response"]["usage"]
+            assert usage["prompt_tokens"] + usage["completion_tokens"] == 34
+            assert raw[0].stat().st_mode & 0o777 == 0o600
+            assert raw[0].parent.stat().st_mode & 0o777 == 0o700
+            assert str(raw[0].relative_to(raw[0].parents[2])) in result.stderr.decode(), "locatable attempt identity/path required"
+            assert not list(root.glob("**/mini-swe/trajectory.json")), "original scratch consumed only after handoff"
+            return
         if scenario == "cleanup-logfail":
             assert result.returncode != 0
             record = json.loads((root / "measurements/run.json").read_text())
@@ -184,8 +210,10 @@ def guest(scenario="normal"):
 
 failures = []
 cases = [("native",native),("guest",guest)]
+if "--native-publication-repro" in sys.argv:
+    cases = [("native-publication-loss",lambda:native("publication-loss"))]
 if "--extended" in sys.argv:
-    cases += [("native-"+kind,lambda kind=kind:native(kind)) for kind in ["cleanup","cleanup-logfail"]]
+    cases += [("native-"+kind,lambda kind=kind:native(kind)) for kind in ["cleanup","cleanup-logfail","publication-loss"]]
     cases += [("guest-"+kind,lambda kind=kind:guest(kind)) for kind in ["cleanup","publication","symlink","malformed","oversized"]]
 for name, operation in cases:
     try:

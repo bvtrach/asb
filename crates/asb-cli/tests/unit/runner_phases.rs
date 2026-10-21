@@ -917,6 +917,11 @@ fn full_runner_entry_observer_warning_is_redacted_and_broken_warning_writer_keep
 }
 
 #[test]
+fn full_runner_native_artifact_handoff_survives_publication_loss_without_repeating_owners() {
+    isolated_full_entry_cases(&["artifact-loss-disabled", "artifact-loss-failed-measurement"]);
+}
+
+#[test]
 fn full_runner_entry_explicit_provider_finish_preserves_grades_and_primary_failures() {
     isolated_full_entry_cases(&[
         "provider-true-failed-finish",
@@ -1001,6 +1006,7 @@ fn full_entry_child(case: &str) {
             }
         }
     }
+    let artifact_case = case.starts_with("artifact-loss-");
     let provider_case = case.starts_with("provider-");
     let disposition_case = case.starts_with("disposition-");
     let fixture = Fixture::new();
@@ -1019,7 +1025,11 @@ fn full_entry_child(case: &str) {
     .unwrap();
     std::fs::create_dir(root.join("workloads")).unwrap();
     workloads::populate(&root.join("workloads")).unwrap();
-    let agent = root.join("tools/pi/bin/pi");
+    let agent = root.join(if artifact_case {
+        "tools/mini-swe/bin/mini"
+    } else {
+        "tools/pi/bin/pi"
+    });
     std::fs::create_dir_all(agent.parent().unwrap()).unwrap();
     let counter = root.join("agent-executions");
     let quoted_counter = counter.to_string_lossy().replace('\'', "'\\''");
@@ -1029,7 +1039,7 @@ fn full_entry_child(case: &str) {
     let body = serde_json::json!({"model":"fixture","tools":[{"type":"function","function":{"name":"fixture","parameters":{"type":"object"}}}],"messages":[]});
     let row = serde_json::json!({"request":{"method":"POST","url":"/v1/chat/completions","body":body.to_string()},"response":{"status":200,"headers":{"content-type":"application/json"},"body":"{}"}});
     std::fs::write(&cassette, format!("{row}\n")).unwrap();
-    if provider_case || (disposition_case && !case.contains("run")) {
+    if artifact_case || provider_case || (disposition_case && !case.contains("run")) {
         let node = crate::tools::host_executable(Path::new("node")).unwrap();
         let answer = if case == "provider-false-failed-finish" || case.contains("false") {
             "incorrect"
@@ -1044,14 +1054,26 @@ fn full_entry_child(case: &str) {
         };
         let counter_js = serde_json::to_string(&counter).unwrap();
         std::fs::write(&agent, format!("#!{}\nrequire('node:fs').appendFileSync({counter_js},'called\\n');fetch(process.env.OPENAI_BASE_URL+'/chat/completions',{{method:'POST',headers:{{'content-type':'application/json'}},body:JSON.stringify({body})}}).then(async r=>{{if(!r.ok)throw new Error('fixture request failed');await r.text();console.log(JSON.stringify({response}));process.exitCode={exit};}}).catch(()=>{{process.exitCode=9;}});\n", node.display())).unwrap();
+        if artifact_case {
+            let trajectory = serde_json::json!({"trajectory_format":"mini-swe-agent-1.1", "info":{"model_stats":{"api_calls":4}},
+                "messages":[{"role":"assistant","content":"src/cli.py src/registry.py lookup",
+                "extra":{"response":{"usage":{"prompt_tokens":13,"completion_tokens":21}}}}]});
+            std::fs::write(&agent, format!("#!{}\nconst fs=require('node:fs');fs.appendFileSync({counter_js},'called\\n');const out=process.argv[process.argv.indexOf('--output')+1];fs.writeFileSync(out,JSON.stringify({trajectory}));fetch(process.env.OPENAI_BASE_URL+'/chat/completions',{{method:'POST',headers:{{'content-type':'application/json'}},body:JSON.stringify({body})}}).then(async r=>{{if(!r.ok)throw Error('fixture replay');await r.text();}}).catch(()=>{{process.exitCode=9;}});\n", node.display())).unwrap();
+        }
     }
     if case == "provider-early-failed-finish" {
         std::fs::write(root.join("workspace"), "blocking fixture file").unwrap();
     }
-    let config: BenchmarkConfig = toml::from_str("agent='pi'\nprovider='openrouter'\nmodel='fixture'\nworkload='repository-navigation'\nworkspace='workspace'\nlog_file='run.jsonl'\n[measurements]\nenabled=true\ndirectory='measurements'\ncollectors=[]\n").unwrap();
+    let mut config: BenchmarkConfig = toml::from_str("agent='pi'\nprovider='openrouter'\nmodel='fixture'\nworkload='repository-navigation'\nworkspace='workspace'\nlog_file='run.jsonl'\n[measurements]\nenabled=true\ndirectory='measurements'\ncollectors=[]\n").unwrap();
+    if artifact_case {
+        config.agent = "mini-swe".into();
+        if case.ends_with("disabled") {
+            config.measurements = None;
+        }
+    }
     let config_path = root.join("benchmark.toml");
     std::fs::write(&config_path, toml::to_string(&config).unwrap()).unwrap();
-    let blocked_log = case.starts_with("blocked-log");
+    let blocked_log = artifact_case || case.starts_with("blocked-log");
     if blocked_log {
         std::fs::create_dir(root.join("run.jsonl")).unwrap();
     }
@@ -1068,7 +1090,9 @@ fn full_entry_child(case: &str) {
     } else {
         LifecycleEvent::RunFinishing
     };
-    let _scope = if disposition_case {
+    let _scope = if artifact_case {
+        entry_test_support::Scope::artifact(&root, calls.clone(), !case.ends_with("disabled"))
+    } else if disposition_case {
         entry_test_support::Scope::disposition(&root, calls.clone(), case)
     } else if provider_case {
         entry_test_support::Scope::provider(
@@ -1141,6 +1165,58 @@ fn full_entry_child(case: &str) {
         &mut output,
         &Mutex::new(BTreeSet::new()),
     );
+    if artifact_case {
+        let error = result.unwrap_err().to_string();
+        assert!(
+            error.contains("run log publication failed after task evaluation"),
+            "{error}"
+        );
+        assert!(error.contains("retained frozen agent evidence"), "{error}");
+        if !case.ends_with("disabled") {
+            assert!(error.contains("measurement finalization failed"), "{error}");
+            assert!(
+                error.find("run log publication failed").unwrap()
+                    < error.find("measurement finalization failed").unwrap()
+            );
+        }
+        let summary: serde_json::Value = serde_json::from_slice(&output.bytes).unwrap();
+        assert_eq!(summary["workload_success"], true);
+        assert_eq!(summary["token_usage"]["total_tokens"], 34);
+        assert_eq!(summary["steps"], 4);
+        assert_eq!(summary["benchmark_outcome"]["cleanup_confirmed"], true);
+        assert_eq!(
+            calls.borrow().as_slice(),
+            ["evaluate", "finish", "provider-finish"]
+        );
+        assert_eq!(std::fs::read_to_string(counter).unwrap(), "called\n");
+        assert_eq!(observer.completed.load(Ordering::SeqCst), 0);
+        assert!(!root.join(".asb-completions").exists());
+        let runs = replica::runtime_path(&root.join("workspace")).join("runs");
+        let attempts: Vec<_> = std::fs::read_dir(runs)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect();
+        assert_eq!(attempts.len(), 1);
+        let frozen = attempts[0].join("mini-swe/frozen-trajectory.json");
+        let raw: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&frozen).unwrap()).unwrap();
+        assert_eq!(raw["info"]["model_stats"]["api_calls"], 4);
+        assert_eq!(
+            raw["messages"][0]["extra"]["response"]["usage"]["prompt_tokens"],
+            13
+        );
+        assert_eq!(
+            raw["messages"][0]["content"],
+            "src/cli.py src/registry.py lookup"
+        );
+        assert!(!attempts[0].join("mini-swe/trajectory.json").exists());
+        assert_eq!(
+            output.bytes.iter().filter(|byte| **byte == b'\n').count(),
+            1,
+            "one summary, never append a corrected duplicate"
+        );
+        return;
+    }
     if disposition_case {
         check_full_entry_disposition(
             case,
