@@ -575,6 +575,39 @@ else:
 
     #[test]
     fn creator_thread_exit_and_failed_client_do_not_kill_a_sibling_service() {
+        // A parallel libtest worker can fork while this lease is open. Even
+        // CLOEXEC descriptors survive in that unrelated child until exec, so
+        // daemon exit alone cannot prove immediate lock release in the shared
+        // process. Keep the ownership assertions in an exclusive test process.
+        const ISOLATED: &str = "ASB_TEST_ISOLATED_MANUAL_SERVICE";
+        if std::env::var_os(ISOLATED).is_none() {
+            let temporary = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../target/perfetto-service-isolation");
+            fs::create_dir_all(&temporary).unwrap();
+            let name = format!(
+                "{}::creator_thread_exit_and_failed_client_do_not_kill_a_sibling_service",
+                module_path!().split_once("::").unwrap().1
+            );
+            let mut command = Command::new(std::env::current_exe().unwrap());
+            command
+                .args(["--exact", &name, "--nocapture"])
+                .env_clear()
+                .env("PATH", "/usr/bin:/bin")
+                .env("TMPDIR", temporary)
+                .env(ISOLATED, "1");
+            if let Some(profile) = std::env::var_os("LLVM_PROFILE_FILE") {
+                command.env("LLVM_PROFILE_FILE", profile);
+            }
+            let output = command.output().unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+            return;
+        }
         let root = std::env::temp_dir()
             .join(crate::workloads::TaskIdentity::local("perfetto-service", None).attempt_id);
         let executable = fixture(&root);
@@ -630,6 +663,56 @@ else:
         {
             assert!(entry.metadata().unwrap().len() <= 256 * 1024);
         }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cloexec_lease_remains_in_an_owned_fork_child_until_exec() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/perfetto-fork-lease")
+            .join(crate::workloads::TaskIdentity::local("fixture", None).attempt_id);
+        fs::create_dir_all(&root).unwrap();
+        let source = r#"
+import os,fcntl,sys
+from pathlib import Path
+path=Path(sys.argv[1])/'lease'
+original=path.open('w+b')
+fcntl.flock(original,fcntl.LOCK_EX|fcntl.LOCK_NB)
+assert fcntl.fcntl(original,fcntl.F_GETFD)&fcntl.FD_CLOEXEC
+probe=path.open('r+b')
+read_fd,write_fd=os.pipe()
+pid=os.fork()
+if pid==0:
+    os.close(write_fd)
+    os.read(read_fd,1)
+    os.execv('/bin/true',['true'])
+os.close(read_fd)
+original.close()
+blocked=False
+try:
+    fcntl.flock(probe,fcntl.LOCK_EX|fcntl.LOCK_NB)
+except BlockingIOError:
+    blocked=True
+finally:
+    os.write(write_fd,b'x')
+    os.close(write_fd)
+    _,status=os.waitpid(pid,0)
+assert os.waitstatus_to_exitcode(status)==0
+assert blocked,'CLOEXEC does not close a lease before exec'
+fcntl.flock(probe,fcntl.LOCK_EX|fcntl.LOCK_NB)
+probe.close()
+"#;
+        let output = Command::new("/usr/bin/python3")
+            .args(["-I", "-S", "-B", "-c", source])
+            .arg(&root)
+            .env_clear()
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
         fs::remove_dir_all(root).unwrap();
     }
 
