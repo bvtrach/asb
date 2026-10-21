@@ -187,7 +187,7 @@ impl PreparedNative {
         let child = run_measured_agent(
             &mut self.command,
             &target,
-            self.route.gated,
+            Some(self.route),
             measurements,
             show_output,
             output,

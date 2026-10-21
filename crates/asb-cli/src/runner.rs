@@ -980,26 +980,32 @@ fn instrument_phase<T>(
 fn run_measured_agent(
     command: &mut Command,
     target: &crate::launch::TargetLaunch,
-    gated: bool,
+    route: Option<crate::launch::CommandRoute>,
     mut session: Option<&mut measurements::Session>,
     show_output: bool,
     output: &mut dyn Write,
 ) -> Result<MeasuredOutput, Error> {
     let started = Instant::now();
-    if let Some(session) = session.as_deref_mut() {
-        session.agent_launch_prepared(target);
-    }
+    let gated = route
+        .as_ref()
+        .is_some_and(crate::launch::CommandRoute::is_gated);
     #[cfg(target_os = "linux")]
-    let mut admission = None;
-    #[cfg(target_os = "linux")]
-    if gated {
-        admission = Some(
-            crate::process_gate::Admission::new(command).map_err(|error| {
+    let admission = if let Some(route) = route.filter(|route| route.is_gated()) {
+        let validated = route
+            .validate_gate(command)
+            .map_err(|error| Error::Run(format!("cannot validate ASB gate launch: {error}")))?;
+        Some(
+            crate::process_gate::Admission::new(validated).map_err(|error| {
                 Error::Run(format!(
                     "cannot establish ASB process gate custody: {error}"
                 ))
             })?,
-        );
+        )
+    } else {
+        None
+    };
+    if let Some(session) = session.as_deref_mut() {
+        session.agent_launch_prepared(target);
     }
     let mut child = {
         let mut emit = |event| {
@@ -1012,8 +1018,8 @@ fn run_measured_agent(
         emit(LifecycleEvent::AgentSpawn)?;
         emit(LifecycleEvent::AgentExecuteBegin)?;
         #[cfg(target_os = "linux")]
-        let spawned = match admission.take() {
-            Some(admission) => admission.spawn(command).map(OwnedChild::Gated),
+        let spawned = match admission {
+            Some(admission) => admission.spawn().map(OwnedChild::Gated),
             None => command.spawn().map(OwnedChild::Direct),
         };
         #[cfg(not(target_os = "linux"))]
@@ -1858,7 +1864,7 @@ mod tests {
         let _ = super::run_measured_agent(
             command,
             &target,
-            false,
+            None,
             Some(&mut session),
             false,
             &mut Vec::new(),
@@ -2089,7 +2095,7 @@ mod tests {
         let output = super::run_measured_agent(
             &mut command,
             &target,
-            false,
+            None,
             Some(&mut session),
             false,
             &mut Vec::new(),

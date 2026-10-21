@@ -177,6 +177,9 @@ rebuild or private `Command` layout is used. The post-fork ASB callback only
 adjusts the private receipt FD with async-signal-safe `fcntl` and captures an
 OS error; allocation, environment enumeration and manual exec argument arrays
 are gone. A typed target view keeps collectors separate from gate framing;
+route validation checks the original carrier and raw framing before any reaper
+or child is created. Only its exclusive validated token can establish admission;
+replacement/shortened/retargeted commands and direct routes are refused.
 bare unprovable PATH identities remain unavailable. The private ASBGATE2 ABI
 refuses the prior valid ASBGATE1 Hello before resume. Offline actual-binary
 fixtures cover clear/remove/override, child-only PATH, cwd/I/O, raw executable,

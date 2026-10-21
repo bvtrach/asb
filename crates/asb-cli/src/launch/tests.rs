@@ -36,14 +36,14 @@ impl Drop for Fixture {
 }
 
 fn execute(launch: &ProcessLaunch, configure: impl FnOnce(&mut Command)) -> Output {
-    let (mut command, _) = launch.native(Some(&binary()));
+    let (mut command, route) = launch.native(Some(&binary()));
     command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     configure(&mut command);
-    let admission = Admission::new(&mut command).unwrap();
-    let mut gate = admission.spawn(&mut command).unwrap();
+    let admission = Admission::new(route.validate_gate(&mut command).unwrap()).unwrap();
+    let mut gate = admission.spawn().unwrap();
     let mut out = gate.take_stdout();
     let mut err = gate.take_stderr();
     gate.resume().unwrap();
@@ -219,28 +219,37 @@ fn collector_view_is_the_original_target_not_gate_metadata_and_never_guesses_pat
 }
 
 #[test]
+fn a_direct_route_cannot_be_validated_for_gate_admission() {
+    let (mut command, route) = ProcessLaunch::new("/bin/true").native(None);
+    let scope = crate::process_cleanup::test_support::Scope::new();
+    let error = route.validate_gate(&mut command).err().unwrap().to_string();
+    assert!(error.contains("requires a gated launch route"));
+    assert_eq!(scope.count(), 0);
+}
+
+#[test]
 fn invalid_command_inputs_fail_before_spawn_and_missing_client_is_not_success() {
     for invalid_env in [false, true] {
         let mut launch = ProcessLaunch::new("/bin/true");
         if !invalid_env {
             launch.arg(OsStr::from_bytes(b"invalid\0argument"));
         }
-        let (mut command, _) = launch.native(Some(&binary()));
+        let (mut command, route) = launch.native(Some(&binary()));
         if invalid_env {
             command.env("INVALID", OsStr::from_bytes(b"invalid\0value"));
         }
-        let admission = Admission::new(&mut command).unwrap();
+        let admission = Admission::new(route.validate_gate(&mut command).unwrap()).unwrap();
         assert_eq!(
-            admission.spawn(&mut command).err().unwrap().kind(),
+            admission.spawn().err().unwrap().kind(),
             std::io::ErrorKind::InvalidInput
         );
     }
     let fixture = Fixture::new();
-    let (mut command, _) =
+    let (mut command, route) =
         ProcessLaunch::new("/bin/true").native(Some(&fixture.0.join("missing-runtime")));
-    let admission = Admission::new(&mut command).unwrap();
+    let admission = Admission::new(route.validate_gate(&mut command).unwrap()).unwrap();
     assert_eq!(
-        admission.spawn(&mut command).err().unwrap().kind(),
+        admission.spawn().err().unwrap().kind(),
         std::io::ErrorKind::NotFound
     );
     let output = execute(

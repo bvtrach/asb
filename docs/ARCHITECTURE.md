@@ -480,6 +480,12 @@ The actual native child retains PATH lookup under its final environment. A
 collector cannot infer inheritance versus `env_clear` from `Command` getters;
 bare targets without a provable explicit PATH and unsupported byte-level
 identities remain unavailable instead of being guessed from host PATH.
+Before establishing cleanup custody, the private route verifies the original
+gate executable, exact OS-string target framing and initial adapter arguments.
+A changed carrier, replaced prefix or truncation fails without spawning a child
+or creating a reaper. Admission
+accepts only that validated gated-route token and holds its exclusive command
+borrow through spawn, so there is no mutable configuration gap after checking.
 The native supervisor and its idle watcher are part of the measured process
 tree; process-tree totals include that instrumentation overhead. The watcher
 is created before cgroup attachment, so it remains outside the new accounting

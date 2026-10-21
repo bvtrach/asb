@@ -603,6 +603,11 @@ existing async-signal-safe configuration callback. NUL inputs fail before
 spawn; missing clients cannot become success. The original binary-replacement,
 guest-wrapper and owner-loss matrices remain required. The previous valid
 ASBGATE1 Hello is explicitly rejected without resuming the old runtime.
+Full-entry gate-route regressions replace the carrier, shorten/change framing
+or retarget its executable; every case must fail before a child or reaper is
+created. Validation consumes the one-shot route, and admission exclusively
+borrows that configured command until spawn. Create a fresh launch command for
+another attempt rather than reusing pre-exec descriptor callbacks.
 Do not reconstruct an opaque `Command` from `get_envs`/`get_args`: those APIs
 do not reveal environment clearing, credentials, I/O and arbitrary callbacks.
 Rust 1.93 runs pre-exec callbacks before applying its prepared environment;

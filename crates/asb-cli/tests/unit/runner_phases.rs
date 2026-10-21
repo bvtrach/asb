@@ -196,7 +196,7 @@ fn required_prelaunch_lifecycle_errors_admit_no_client_process() {
         let error = run_measured_agent(
             &mut command,
             &target,
-            false,
+            None,
             Some(&mut session),
             false,
             &mut Vec::new(),
@@ -212,6 +212,82 @@ fn required_prelaunch_lifecycle_errors_admit_no_client_process() {
             !marker.exists(),
             "required prelaunch failure must remain fail-closed"
         );
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn changed_gate_carrier_or_target_framing_is_rejected_before_custody_or_execution() {
+    use std::os::unix::fs::PermissionsExt;
+    for variant in ["carrier", "framing", "short", "target", "adapter-prefix"] {
+        let fixture = Fixture::new();
+        let marker = fixture.0.join("must-not-run");
+        let gate_program = fixture.0.join("fixture-gate");
+        std::fs::write(
+            &gate_program,
+            "#!/bin/sh\nprintf executed > \"$ASB_REPLACEMENT_MARKER\"\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&gate_program, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut launch = crate::launch::ProcessLaunch::new("/bin/true");
+        launch.arg("immutable-adapter-prefix");
+        let (mut command, route) = launch.native(Some(&gate_program));
+        assert_eq!(command.get_program(), gate_program.as_os_str());
+        command = if variant == "carrier" {
+            let mut replacement = Command::new("/bin/sh");
+            replacement.args(["-c", "printf executed > \"$ASB_REPLACEMENT_MARKER\""]);
+            replacement
+        } else {
+            let mut replacement = Command::new(&gate_program);
+            match variant {
+                "framing" => {
+                    replacement.args(["wrong-framing", "ignored"]);
+                }
+                "target" => {
+                    replacement.args(["__asb-gate", crate::launch::FORMAT, "0", "/bin/false"]);
+                }
+                "adapter-prefix" => {
+                    replacement.args([
+                        "__asb-gate",
+                        crate::launch::FORMAT,
+                        "0",
+                        "/bin/true",
+                        "changed-adapter-prefix",
+                    ]);
+                }
+                "short" => {}
+                _ => unreachable!(),
+            }
+            replacement
+        };
+        command
+            .env("ASB_REPLACEMENT_MARKER", &marker)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let target = route.target(&command);
+        let scope = crate::process_cleanup::test_support::Scope::new();
+        let error = run_measured_agent(
+            &mut command,
+            &target,
+            Some(route),
+            None,
+            false,
+            &mut Vec::new(),
+        )
+        .err()
+        .unwrap()
+        .to_string();
+        assert!(
+            error.contains("cannot validate ASB gate launch")
+                && error.contains("without replacing it"),
+            "{variant}: {error}"
+        );
+        assert_eq!(
+            scope.count(),
+            0,
+            "invalid route must not establish a reaper"
+        );
+        assert!(!marker.exists(), "{variant}: replacement command executed");
     }
 }
 
@@ -234,7 +310,7 @@ fn spawn_and_wait_errors_remain_primary_when_failure_markers_also_fail() {
         let error = run_measured_agent(
             &mut command,
             &target,
-            false,
+            None,
             Some(&mut session),
             false,
             &mut Vec::new(),
@@ -420,7 +496,7 @@ fn actual_native_duration_excludes_slow_execution_end_collector_hook() {
     let output = run_measured_agent(
         &mut command,
         &target,
-        false,
+        None,
         Some(&mut session),
         false,
         &mut Vec::new(),
@@ -466,7 +542,7 @@ fn broken_native_terminal_retains_capture_and_finishes_already_admitted_work() {
             .stderr(Stdio::piped());
         let target = crate::launch::TargetLaunch::direct(&command);
         let measured =
-            run_measured_agent(&mut command, &target, false, None, true, &mut writer).unwrap();
+            run_measured_agent(&mut command, &target, None, None, true, &mut writer).unwrap();
         assert_eq!(
             writer.writes, 1,
             "never retry a broken terminal for every chunk/stream"
@@ -519,7 +595,7 @@ fn native_postexecution_event_failure_retains_actual_child_output_and_grade() {
         let measured = run_measured_agent(
             &mut command,
             &target,
-            false,
+            None,
             Some(&mut session),
             false,
             &mut Vec::new(),

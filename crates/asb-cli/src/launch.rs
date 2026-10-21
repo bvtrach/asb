@@ -24,7 +24,22 @@ pub(crate) const FORMAT: &str = "--asb-launch-v1";
 pub(crate) struct CommandRoute {
     program: OsString,
     prefix: usize,
-    pub(crate) gated: bool,
+    gated: bool,
+    #[cfg(target_os = "linux")]
+    carrier: OsString,
+    #[cfg(target_os = "linux")]
+    framing: Vec<OsString>,
+}
+
+/// Validation holds exclusive command access until admission takes custody.
+#[cfg(target_os = "linux")]
+pub(crate) struct ValidatedGate<'a>(&'a mut Command);
+
+#[cfg(target_os = "linux")]
+impl<'a> ValidatedGate<'a> {
+    pub(crate) fn into_command(self) -> &'a mut Command {
+        self.0
+    }
 }
 
 impl ProcessLaunch {
@@ -77,18 +92,53 @@ impl ProcessLaunch {
         } else {
             (self.direct(), 0)
         };
+        #[cfg(target_os = "linux")]
+        let carrier = command.get_program().to_owned();
+        #[cfg(target_os = "linux")]
+        let framing = command.get_args().map(OsStr::to_owned).collect();
         (
             command,
             CommandRoute {
                 program: self.program.clone(),
                 prefix,
                 gated: gate.is_some(),
+                #[cfg(target_os = "linux")]
+                carrier,
+                #[cfg(target_os = "linux")]
+                framing,
             },
         )
     }
 }
 
 impl CommandRoute {
+    pub(crate) fn is_gated(&self) -> bool {
+        self.gated
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn validate_gate<'a>(
+        self,
+        command: &'a mut Command,
+    ) -> std::io::Result<ValidatedGate<'a>> {
+        if !self.gated {
+            return Err(std::io::Error::other(
+                "native gate admission requires a gated launch route",
+            ));
+        }
+        if command.get_program() != self.carrier
+            || !command
+                .get_args()
+                .take(self.framing.len())
+                .eq(self.framing.iter().map(OsString::as_os_str))
+        {
+            return Err(std::io::Error::other(
+                "prepared native command no longer matches its gate executable or target framing; configure the original command without replacing it",
+            ));
+        }
+        Ok(ValidatedGate(command))
+    }
+
     pub(crate) fn target(&self, command: &Command) -> TargetLaunch {
         TargetLaunch::from_parts(&self.program, command.get_args().skip(self.prefix), command)
     }
