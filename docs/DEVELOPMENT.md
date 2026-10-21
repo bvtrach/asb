@@ -227,6 +227,16 @@ Missing-project capability fixtures test the same private initialized-file guard
 used by production, and ancestor discovery uses an owned fixture parent/child.
 They never assume TMPDIR has no real ancestor project or pass one to host setup.
 
+`cargo test --locked --offline --lib project::` includes the shared host-setup
+request/consent/capability policy tests. Fake executors exercise the actual sysctl
+and cgroup orchestration, every prerequisite failure, interactive versus
+passwordless mode, independent group consent, `--yes`, invalid/empty/EOF answers,
+and reader/writer/flush errors. These tests execute no host commands. Existing
+isolated fake-sudo/proc-input fixtures additionally check production argv/stdin
+construction without changing sysctls or cgroups. A prompt or pre-execution
+output failure grants no approval; execution failures remain best-effort and
+never imply rollback of commands that already succeeded.
+
 Token accounting has synthetic, provider-free regression fixtures for all
 registered agent families, plus replay CLI checks for JSON, logs, and
 measurement files. Run the focused checks with `cargo test --offline --locked

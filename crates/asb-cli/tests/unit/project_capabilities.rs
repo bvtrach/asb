@@ -93,6 +93,15 @@ exit 0
                     assert!(!log.contains("sysctl"));
                     assert!(!log.contains("mkdir"));
                 }
+                if case == "helpers" {
+                    assert!(log.contains("sudo [-n] [true]"));
+                    assert!(
+                        log.contains("sudo [-n] [sysctl] [-w] [kernel.fixture_does_not_exist=1]")
+                    );
+                    assert!(log.contains("sudo [sysctl] [-w] [kernel.fixture_does_not_exist=1]"));
+                    assert!(log.contains("sudo [-n] [chmod] [0750] [/never-executed]"));
+                    assert!(log.contains("input [fixture contents]"));
+                }
             }
         }
         fs::remove_dir_all(root).unwrap();
@@ -139,51 +148,9 @@ exit 0
     }
     if case == "invalid" {
         assert!(
-            text.contains("no valid y/n answer") || text.contains("no host settings were changed")
+            text.contains("no valid y/n answer")
+                || (text.matches("already enabled").count() == HOST_SETTINGS.len()
+                    && text.contains("no delegated project cgroup was created"))
         );
     }
-}
-
-#[cfg(target_os = "linux")]
-#[test]
-fn capability_output_errors_and_failed_setting_attempts_are_explicit() {
-    struct Failure;
-    impl Write for Failure {
-        fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
-            Err(std::io::Error::other("fixture output unavailable"))
-        }
-        fn flush(&mut self) -> std::io::Result<()> {
-            Err(std::io::Error::other("fixture output unavailable"))
-        }
-    }
-    assert!(request_sudo_consent(&mut Failure, true).is_err());
-    assert!(request_sudo_consent(&mut Failure, false).is_err());
-    assert!(
-        configure_host_capabilities_with(
-            &mut Failure,
-            false,
-            |_| None,
-            |_| panic!("must not execute")
-        )
-        .is_err()
-    );
-    assert!(configure_host_capabilities_with(&mut Failure, true, |_| None, |_| true).is_err());
-    let mut output = Vec::new();
-    let assignments = std::cell::RefCell::new(Vec::new());
-    configure_host_capabilities_with(
-        &mut output,
-        true,
-        |_| None,
-        |assignment| {
-            assignments.borrow_mut().push(assignment.to_owned());
-            false
-        },
-    )
-    .unwrap();
-    let output = String::from_utf8(output).unwrap();
-    assert_eq!(assignments.borrow().len(), HOST_SETTINGS.len());
-    for assignment in assignments.borrow().iter() {
-        assert!(output.contains(&format!("could not change {assignment}")));
-    }
-    assert!(output.contains("continuing without changing host settings"));
 }
