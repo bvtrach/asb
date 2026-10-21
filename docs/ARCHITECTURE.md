@@ -58,6 +58,12 @@ ASB is deliberately split into a small CLI and a file-backed workload directory:
   executable mismatches or disappearance revoke it and require fresh entry-point
   validation on re-entry. Title changes before initial admission can still leave
   the sampler unavailable; no initial executable-only fallback is guessed.
+  New admissions also require Linux `PF_FORKNOEXEC` to be clear in the
+  generation-checked proc stat read. A pending tool launch can otherwise expose
+  its parent's agent executable and arguments before exec. Fork-without-exec
+  workers are unclassified: passive entry-point inspection cannot distinguish
+  them from pending tool children. This limitation applies to both RSS and
+  worker-count lower bounds; no observation delay or guessed worker is added.
   This is sampled identity, not detection of an exec that preserves both the
   PID lifetime and identical interpreter executable between observations.
   Only matching descendants contribute to aggregate RSS or distinct PID/start-time
@@ -81,7 +87,14 @@ ASB is deliberately split into a small CLI and a file-backed workload directory:
   Average and child-summary rows are excluded. `perf stat` uses the same
   interval contract. Perf scalar counters sum the emitted interval deltas,
   rather than reporting only the final interval. Unsupported counters remain
-  absent, not zero. `ASB_MEASURE_INTERVAL_MS` accepts 100--60000 ms and
+  absent, not zero. Parsing streams the complete stopped perf-stat file before
+  deleting it; the separate 256 KiB diagnostic prefix never supplies totals.
+  Original per-counter timestamps preserve missing intervals, and hybrid CPU
+  core/atom hardware counters are summed at the same observed timestamp.
+  Limits of 256 MiB input, 16 KiB per line and 100,000 points per metric fail
+  the collector without publishing partial counters. Malformed/nonfinite
+  counters and inconsistent timestamps likewise fail rather than invent data.
+  `ASB_MEASURE_INTERVAL_MS` accepts 100--60000 ms and
   defaults to 1000 ms; pidstat rounds sub-second requests to whole seconds,
   while perf supports millisecond periods. Comparisons emit line SVGs for
   series with at least two points and expose the same hover, zoom, pan, reset,
@@ -111,6 +124,12 @@ ASB is deliberately split into a small CLI and a file-backed workload directory:
   are established; it survives deletion of `.asb`. Independent processes wait
   at most fifteen seconds for startup admission, not for another capture to finish.
   Reset rejects active instance leases, including inherited crash-cleanup leases.
+  Normal service destruction joins the owner and verifies every owned daemon
+  is reaped before explicitly unlocking the persistent instance lease. This
+  prevents incidental forked descriptor copies from retaining a finished
+  service's lock. Uncertain cleanup does not explicitly unlock. Owner SIGKILL
+  still skips destruction, so inherited daemon descriptors retain crash-time
+  ownership until shutdown; the lease inode is never unlinked.
   The probes daemon enters an unprivileged private user/mount namespace via
   util-linux `unshare`. An internal native helper rechecks owner/death-signal
   and inherited-lease state, verifies the namespace transition, and binds only
@@ -121,13 +140,19 @@ ASB is deliberately split into a small CLI and a file-backed workload directory:
   Startup also waits for `linux.ftrace` and `linux.process_stats` registration
   through bounded queries to the private service before admitting captures.
   Captures stream compressed data to the artifact every second instead of
-  retaining only the tail of a 64 MiB ring. The delegated instance requests
-  at least 4 MiB per CPU, 100 ms draining and a half-full wakeup threshold;
+  retaining only the tail of a ring. Fast Zstd level 1 and a 128 MiB service
+  buffer per capture provide throughput headroom. The delegated instance requests
+  at least 4 MiB per CPU, 50 ms draining and a half-full wakeup threshold;
   primary tracefs controls remain untouched. Each file is capped at 1 GiB and
   one hour. Post-processing verifies the startup marker, ordered terminal
   boundary and relevant service/kernel loss counters. A limit, missing boundary
   or reported loss marks the collector failed and suppresses scheduler metrics,
   series and timelines; the task's independent official grade is preserved.
+  Only scheduler switch/wakeup and process-lifetime events consumed by the
+  analysis are enabled; redundant `sched_stat_*` events are not collected.
+  Scheduler-state output does not establish exact I/O-wait classification
+  without the optional kernel blocked-reason event. These buffers are per
+  capture/CPU, so operators must bound concurrency for available host memory.
   Init's explicit host-consent flow can create/repair only the selected owned
   instances and grant execute-only parent traversal when necessary; it never
   delegates parent write/list access. Ordinary capture uses no sudo. Upstream's

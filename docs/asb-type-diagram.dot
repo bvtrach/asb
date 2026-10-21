@@ -37,7 +37,7 @@ digraph ASB_Rust_UML {
         "asb-cli_src_collectors_GraphSection" [label="{collectors_GraphSection|+title: &'static str\l+description: &'static str\l}", shape=record];
         "asb-cli_src_collectors_LifecyclePhase" [label="{collectors_LifecyclePhase||+name(self) &'static str\l}", shape=record];
         "asb-cli_src_collectors_PreflightContext" [label="{collectors_PreflightContext|+project_root: Option\<&'a Path\>\l+measurement_dir: &'a Path\l+selected: &'a [String]\l+tool_dir: Option\<&'a Path\>\l+sudo_collectors: &'a mut BTreeSet\<String\>\l}", shape=record];
-        "asb-cli_src_collectors_ProcessContext" [label="{collectors_ProcessContext|+name: &'a str\l+status: ExitStatus\l+stdout: &'a str\l+stderr: &'a str\l}", shape=record];
+        "asb-cli_src_collectors_ProcessContext" [label="{collectors_ProcessContext|+name: &'a str\l+status: ExitStatus\l+stdout: &'a str\l+stderr: &'a str\l+stderr_path: &'a Path\l}", shape=record];
         "asb-cli_src_collectors_ProcessData" [label="{collectors_ProcessData|+status: String\l+metrics: BTreeMap\<String, f64\>\l+series: BTreeMap\<String, Vec\<f64\>\>\l+timestamps: BTreeMap\<String, Vec\<f64\>\>\l+artifact: Option\<String\>\l|+from_output(context: &ProcessContext\<'_\>) Self\l}", shape=record];
         "asb-cli_src_collectors_RunMetrics" [label="{collectors_RunMetrics|+elapsed_ms: u128\l+success_rate: f64\l}", shape=record];
         "asb-cli_src_collectors_RunObservation" [label="{collectors_RunObservation|+elapsed_ms: u128\l+success: bool\l}", shape=record];
@@ -62,6 +62,7 @@ digraph ASB_Rust_UML {
         "asb-cli_src_collectors_adapters_MpstatCollector" [label="{collectors_adapters_MpstatCollector}", shape=record];
         "asb-cli_src_collectors_adapters_NamespaceSample" [label="{collectors_adapters_NamespaceSample|-schema_version: u32\l-identity_available: bool\l-distinct_processes: u64\l-peak_rss_kib: u64\l-samples: u64\l-incomplete: bool\l-sampling_interval_ms: u64\l}", shape=record];
         "asb-cli_src_collectors_adapters_PerfCollector" [label="{collectors_adapters_PerfCollector}", shape=record];
+        "asb-cli_src_collectors_adapters_PerfStat" [label="{collectors_adapters_PerfStat|-metrics: BTreeMap\<String, f64\>\l-series: BTreeMap\<String, Vec\<f64\>\>\l-timestamps: BTreeMap\<String, Vec\<f64\>\>\l}", shape=record];
         "asb-cli_src_collectors_adapters_PerfState" [label="{collectors_adapters_PerfState|-enabled: bool\l}", shape=record];
         "asb-cli_src_collectors_adapters_PerfettoCollector" [label="{collectors_adapters_PerfettoCollector}", shape=record];
         "asb-cli_src_collectors_adapters_PerfettoState" [label="{collectors_adapters_PerfettoState|-service: Option\<Arc\<Service\>\>\l-enabled: bool\l-trace: Option\<PathBuf\>\l-pid: Option\<u32\>\l-trace_marker: Option\<PathBuf\>\l-trace_marker_output: Option\<File\>\l-marker_verified: bool\l-marker_warning: Option\<String\>\l-scope_warning: Option\<String\>\l-capture_warning: Option\<String\>\l-capture_complete: bool\l-tracepoint_count: u64\l-metrics: BTreeMap\<String, f64\>\l}", shape=record];
@@ -199,13 +200,14 @@ digraph ASB_Rust_UML {
         "tests_asb-cli_src_Directory" [label="{tests_Directory||+new() Self\l}", shape=record];
         "tests_asb-cli_src_Drop" [label="{tests_Drop||+drop() void\l+drop() void\l}", shape=record];
         "tests_asb-cli_src_FailedIntent" [label="{tests_FailedIntent||+starting(Option: Option\<&crate::measurements::ExecutionCohort\>) cassette_Result\<(), crate::Error\>\l+completed() cassette_Result\<(), crate::Error\>\l}", shape=record];
-        "tests_asb-cli_src_Failing" [label="{tests_Failing||+id() &'static str\l+requires_pid() bool\l+process() cassette_Result\<collectors::ProcessData, String\>\l}", shape=record];
+        "tests_asb-cli_src_Failing" [label="{tests_Failing||+id() &'static str\l+requires_pid() bool\l+process(context: collectors_ProcessContext\<'_\>) cassette_Result\<collectors::ProcessData, String\>\l}", shape=record];
         "tests_asb-cli_src_FailingWriter" [label="{tests_FailingWriter||+write() cassette_Result\<usize\>\l+flush() cassette_Result\<()\>\l}", shape=record];
         "tests_asb-cli_src_Fixture" [label="{tests_Fixture||+id() &'static str\l+requires_pid() bool\l+process(context: collectors_ProcessContext\<'_\>) cassette_Result\<collectors::ProcessData, String\>\l}", shape=record];
         "tests_asb-cli_src_Write" [label="{tests_Write||+write(bytes: &[u8]) cassette_Result\<usize\>\l+flush() cassette_Result\<()\>\l+write() cassette_Result\<usize\>\l+flush() cassette_Result\<()\>\l}", shape=record];
         "tests_asb-cli_src_collectors_CollectorAdapter" [label="{tests_collectors_CollectorAdapter||+id() &'static str\l}", shape=record];
         "tests_asb-cli_src_collectors_Minimal" [label="{tests_collectors_Minimal}", shape=record];
         "tests_asb-cli_src_collectors_adapters_Drop" [label="{tests_collectors_adapters_Drop||+drop() void\l}", shape=record];
+        "tests_asb-cli_src_collectors_adapters_Fails" [label="{tests_collectors_adapters_Fails||+read() cassette_Result\<usize\>\l}", shape=record];
         "tests_asb-cli_src_collectors_adapters_Guard" [label="{tests_collectors_adapters_Guard}", shape=record];
         "tests_asb-cli_src_collectors_adapters_OwnedChild" [label="{tests_collectors_adapters_OwnedChild}", shape=record];
         "tests_asb-cli_src_collectors_adapters_perfetto_Drop" [label="{tests_collectors_adapters_perfetto_Drop||+drop() void\l}", shape=record];
@@ -722,6 +724,7 @@ digraph ASB_Rust_UML {
     "tests_asb-cli_src_FailingWriter" -> "asb-cli_src_cassette_Result" [arrowhead="vee", style="dashed"];
     "tests_asb-cli_src_Fixture" -> "asb-cli_src_cassette_Result" [arrowhead="vee", style="dashed"];
     "tests_asb-cli_src_Write" -> "asb-cli_src_cassette_Result" [arrowhead="vee", style="dashed"];
+    "tests_asb-cli_src_collectors_adapters_Fails" -> "asb-cli_src_cassette_Result" [arrowhead="vee", style="dashed"];
     "tests_asb-cli_src_compare_Fixture" -> "asb-cli_src_Error" [arrowhead="vee", style="dashed"];
     "tests_asb-cli_src_compare_Fixture" -> "asb-cli_src_cassette_Result" [arrowhead="vee", style="dashed"];
     "tests_asb-cli_src_proxy_ProxyAdapter" -> "asb-cli_src_Error" [arrowhead="vee", style="dashed"];
