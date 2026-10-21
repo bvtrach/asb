@@ -16,8 +16,8 @@ pub(crate) const MAX_PLAN_BYTES: usize = 64 * 1024 * 1024;
 pub(crate) struct SweepPlan {
     schema_version: u32,
     pub run_id: String,
-    #[serde(default = "unknown_mode")]
-    pub execution_mode: String,
+    #[serde(default)]
+    pub execution_mode: SavedExecutionMode,
     #[serde(default)]
     pub respect_record_timings: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -27,8 +27,25 @@ pub(crate) struct SweepPlan {
     pub resources: Option<crate::planning::Resources>,
 }
 
-fn unknown_mode() -> String {
-    "unknown".into()
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum SavedExecutionMode {
+    Live,
+    Record,
+    Replay,
+    #[default]
+    Unknown,
+}
+
+impl SavedExecutionMode {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Live => "live",
+            Self::Record => "record",
+            Self::Replay => "replay",
+            Self::Unknown => "unknown",
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -109,7 +126,7 @@ fn build_with_catalog(
     Ok(SweepPlan {
         schema_version: 1,
         run_id: workloads::TaskIdentity::local("sweep", None).attempt_id,
-        execution_mode: "live".into(),
+        execution_mode: SavedExecutionMode::Live,
         respect_record_timings: false,
         scheduling: None,
         entries,
@@ -223,11 +240,7 @@ impl SweepPlan {
             Error::Input(format!("invalid sweep plan {}: {error}", path.display()))
         })?;
         if plan.schema_version != 1
-            || !matches!(
-                plan.execution_mode.as_str(),
-                "live" | "record" | "replay" | "unknown"
-            )
-            || (plan.respect_record_timings && plan.execution_mode != "replay")
+            || (plan.respect_record_timings && plan.execution_mode != SavedExecutionMode::Replay)
             || plan.run_id.is_empty()
             || plan.run_id.len() > 128
             || !plan
@@ -513,6 +526,59 @@ mod tests {
                 .to_string()
                 .contains("no longer matches")
         );
+    }
+
+    #[test]
+    fn saved_modes_keep_wire_values_legacy_default_and_replay_only_timing() {
+        for (mode, wire) in [
+            (SavedExecutionMode::Live, "live"),
+            (SavedExecutionMode::Record, "record"),
+            (SavedExecutionMode::Replay, "replay"),
+            (SavedExecutionMode::Unknown, "unknown"),
+        ] {
+            assert_eq!(mode.as_str(), wire);
+            assert_eq!(serde_json::to_value(mode).unwrap(), wire);
+            assert_eq!(
+                serde_json::from_value::<SavedExecutionMode>(json!(wire)).unwrap(),
+                mode
+            );
+        }
+        for value in [json!(null), json!("REPLAY"), json!("not-a-mode"), json!(2)] {
+            assert!(serde_json::from_value::<SavedExecutionMode>(value).is_err());
+        }
+        let project = Project::new();
+        let manifest = project.manifest();
+        let plan = project.plan(&manifest);
+        let results = fresh_results(&project.0, "sweep", &plan).unwrap();
+        let mut value = serde_json::to_value(plan).unwrap();
+        value.as_object_mut().unwrap().remove("execution_mode");
+        std::fs::write(
+            results.join("plan.json"),
+            serde_json::to_vec(&value).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            SweepPlan::load(&results, &project.0, &manifest)
+                .unwrap()
+                .unwrap()
+                .execution_mode,
+            SavedExecutionMode::Unknown
+        );
+        for mode in ["live", "record", "replay", "unknown"] {
+            for timing in [false, true] {
+                value["execution_mode"] = json!(mode);
+                value["respect_record_timings"] = json!(timing);
+                std::fs::write(
+                    results.join("plan.json"),
+                    serde_json::to_vec(&value).unwrap(),
+                )
+                .unwrap();
+                assert_eq!(
+                    SweepPlan::load(&results, &project.0, &manifest).is_ok(),
+                    !timing || mode == "replay"
+                );
+            }
+        }
     }
 
     #[test]

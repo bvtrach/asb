@@ -12,10 +12,29 @@ struct Hook {
     pending: bool,
     grader_error: bool,
     cleanup_error: bool,
+    capture_grade: Option<bool>,
 }
 thread_local! { static HOOK: RefCell<Option<Hook>> = const { RefCell::new(None) }; }
 
 pub(crate) struct Scope;
+
+pub(crate) fn module_descriptor(
+    name: &str,
+    mut descriptor: Option<workloads::contracts::ModuleDescriptor>,
+) -> Option<workloads::contracts::ModuleDescriptor> {
+    HOOK.with_borrow(|slot| {
+        if name == "repository-navigation"
+            && slot.as_ref().is_some_and(|hook| hook.native_reward)
+            && let Some(module) = descriptor.as_mut()
+        {
+            // This process-local fixture's declared protocol feeds normal
+            // planning, fingerprints and runtime before any evidence is saved.
+            module.protocol.score_policy = "metric:accuracy@1".into();
+        }
+    });
+    descriptor
+}
+
 impl Scope {
     pub fn new(root: &Path, event: LifecycleEvent, calls: Rc<RefCell<Vec<&'static str>>>) -> Self {
         HOOK.with(|slot| {
@@ -29,6 +48,7 @@ impl Scope {
                 pending: false,
                 grader_error: false,
                 cleanup_error: false,
+                capture_grade: None,
             });
         });
         Self
@@ -51,6 +71,7 @@ impl Scope {
                 pending: false,
                 grader_error: false,
                 cleanup_error: false,
+                capture_grade: None,
             });
         });
         Self
@@ -70,6 +91,9 @@ impl Scope {
                 pending: case.contains("pending"),
                 grader_error: case.contains("grader"),
                 cleanup_error: case.contains("cleanup"),
+                capture_grade: case
+                    .starts_with("capture-")
+                    .then_some(!case.contains("false")),
             });
         });
         Self
@@ -161,18 +185,22 @@ pub(crate) fn observe_workload(
                     hook.pending,
                     hook.grader_error,
                     hook.cleanup_error,
+                    hook.capture_grade,
                 )
             })
     });
     match calls {
-        Some((calls, native_reward, pending, grader_error, cleanup_error)) => Box::new(Observed {
-            inner: workload,
-            calls,
-            native_reward,
-            pending,
-            grader_error,
-            cleanup_error,
-        }),
+        Some((calls, native_reward, pending, grader_error, cleanup_error, capture_grade)) => {
+            Box::new(Observed {
+                inner: workload,
+                calls,
+                native_reward,
+                pending,
+                grader_error,
+                cleanup_error,
+                capture_grade,
+            })
+        }
         None => workload,
     }
 }
@@ -183,6 +211,7 @@ struct Observed {
     pending: bool,
     grader_error: bool,
     cleanup_error: bool,
+    capture_grade: Option<bool>,
 }
 impl workloads::WorkloadSession for Observed {
     fn invocation(&self) -> &workloads::session::TaskInvocation {
@@ -202,9 +231,32 @@ impl workloads::WorkloadSession for Observed {
     }
     fn evaluate(&mut self, response: &str) -> Result<workloads::Evaluation, String> {
         self.calls.borrow_mut().push("evaluate");
+        if let Some(expected) = self.capture_grade
+            && !self.native_reward
+        {
+            let grade =
+                std::fs::read_to_string(self.invocation().workspace.join("fixture-file-grade"))
+                    .unwrap();
+            assert_eq!(grade, if expected { "true" } else { "false" });
+            return Ok(if expected {
+                workloads::Evaluation::Passed
+            } else {
+                workloads::Evaluation::Failed("independent fixture file grade".into())
+            });
+        }
         self.inner.evaluate(response)
     }
     fn evaluate_outcome(&mut self, response: &str) -> workloads::outcome::EvaluationOutcome {
+        if self.capture_grade.is_some() && !self.native_reward {
+            return match self.evaluate(response).unwrap() {
+                workloads::Evaluation::Passed => {
+                    workloads::outcome::EvaluationOutcome::binary(true)
+                }
+                workloads::Evaluation::Failed(_) => {
+                    workloads::outcome::EvaluationOutcome::binary(false)
+                }
+            };
+        }
         self.calls.borrow_mut().push("evaluate");
         if self.pending {
             return workloads::outcome::EvaluationOutcome::Pending {

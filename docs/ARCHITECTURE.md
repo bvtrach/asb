@@ -48,7 +48,36 @@ ASB is deliberately split into a small CLI and a file-backed workload directory:
   configured `tools_dir`, `workloads_dir`, and `workspace_dir`;
   every command resolves relative paths from this project root;
 - `runner`: configuration loading, bounded agent-output logging, and live agent
-  process execution;
+  process execution. Its common child-pipe pump owns both readers without
+  reader threads or an output queue. Each stream retains at most 8 MiB while
+  continuing to drain excess; two 16 KiB read buffers and bounded batches keep
+  aggregate capture/working storage bounded during execution. These are evidence
+  prefixes, not whole-stream totals or diagnostic tails; the existing 1 MiB
+  persisted-log prefix is a separate presentation budget. Interrupted reads retry;
+  permanent read errors are never EOF. Execution, one-second post-exit draining
+  and six-second direct-child cleanup have separate absolute deadlines. The
+  owned child's confirmed exit freezes execution timing before pump drain work;
+  native gates retain their existing quiescence-confirmed exit boundary.
+  Direct-child fallback custody is established before spawn, including for
+  unwinding; uncertain cleanup transfers the owned child rather than waiting
+  indefinitely or dropping it. Native gate admission and descendant ownership
+  remain separate. Incomplete capture is an operational failure that withholds
+  continuation receipts, not a replacement official grade. It suppresses
+  transcript-derived answer/usage/step assertions while retaining independently
+  collected adapter artifacts and actually validated cassette accounting.
+  Unix readers use nonblocking descriptors; Windows has a private-pipe
+  availability pump, source-reviewed but not runtime-qualified on Linux.
+  Other std platforms fail before direct spawn until a cancellable pipe backend
+  exists. Arbitrary borrowed `Write` implementations remain caller-controlled
+  and can block inside a write: there is no claim of hard cancellation there.
+  The Unix quiescent guest route instead owns deadline-aware duplicates of its
+  controller pipe/socket endpoints; it rejects terminals/regular files before
+  changing flags, restores the shared file-description flags on destruction,
+  and cancels on transport failure. The controller owns only the opposite read
+  ends; no unrelated producer shares these private write descriptions. Native
+  presentation errors preserve evidence. Non-Unix guest presentation still has
+  the borrowed-writer limitation. Retained ThroughEvaluation service lifetime
+  and its existing bounded capture/ownership are unchanged;
 - `compare`: offline reports use explicit loaded, globally validated, prepared,
   rendered and published phases. Stable row identities and typed result sources
   bind original evaluation evidence; preparation computes population coverage
@@ -1378,6 +1407,35 @@ The count budget is not a host RAM reservation; task environment CPU/memory/PID
 limits remain adapter-owned, and operators must choose jobs for host capacity.
 Selected scheduling is saved in the plan and disclosed in JSON/HTML reports
 because concurrent configurations share host resources.
+
+Private consuming sweep phases enforce that ordering: `PreparedSweep` owns the
+output lock and validated plan/count/resource admission. Fresh preparation runs
+workload preflight before preserving old output; resumed preparation requires
+validated inputs and continuation state rather than an optional checkpoint.
+Activation creates/binds the result layout. After that boundary, presentation
+failures produce a zero/partial `SettledSweep`, not an early return bypassing
+input settlement and comparison. Only settled, joined execution can finalize;
+the output lock remains owned through final comparison publication. Optional
+fresh input seals still cannot block a fresh grade or authorize reuse.
+
+A sticky presentation writer observes the first permanent write/flush failure
+and performs no further writes to that sink. Interrupted I/O remains transient;
+a nonempty zero-byte write is a real failure. Sequential JSON output failure
+stops before the next configuration, while an already-admitted replica group
+finishes grading and cleanup. Parallel configuration reports carry independent
+spool-failure and spool-creation observations. The scheduler stops its queue in
+the worker before publishing a locally observed spool failure, while already
+admitted workers finish and release count/resource permits. Ordinary benchmark
+errors do not select that stop policy. Post-join cleanup removes only spools
+created by this invocation, never an unadmitted interrupted-resume spool or a
+file whose preservation/creation failed. Failed terminals suppress comparison
+summary bytes through `io::sink`, not artifact generation. Original grades and
+benchmark errors remain primary; reporting/input diagnostics stay ancillary.
+This does not make output preservation or multi-receipt publication transactional.
+Saved execution mode is a lowercase enum with the same live/record/replay/unknown
+wire values, missing historical mode defaults to unknown, and timing remains
+replay-only. Report projections and serialized fingerprint inputs are unchanged.
+
 Parallel terminal output uses private, bounded per-configuration files and is
 drained as whole configuration blocks on completion. Output errors stop new
 admission and join admitted work; owned temporary duplicates are then removed.
@@ -1449,7 +1507,18 @@ its run record is absent. It validates actual identity and slot mapping, rejects
 conflicts with existing measurement records and discloses its result source.
 Grades do not disappear merely because collection was disabled, and missing
 collector/host/time-series data is never fabricated. Outcome reporting does not
-prove resume eligibility or historical integrity. The report links every result artifact and explains the
+prove resume eligibility or historical integrity. If no private outcome was
+published (including incomplete capture), comparison can use the most recent
+bounded schema-2 record from the sweep's fixed isolated replica log. It strips
+transcripts, validates configuration/task/slot/policy bindings and rejects a
+latest-log conflict with a recorded outcome or measurement before publication.
+The original benchmark's configured log location cannot redirect this fallback.
+Log evidence has unknown cleanup confirmation and is explicitly reporting-only:
+it creates no outcome, completion/group receipt or resume permission. A failed
+latest record cannot silently borrow an earlier grade. Explicit imported or
+grade-only recovered outcomes keep their existing unknown-execution policy;
+their interrupted partial logs remain diagnostic and are not promoted by this
+fallback. The report links every result artifact and explains the
 measurement fields. Its dependency-free JavaScript can enable or disable
 benchmarks, agents, providers, models, and workloads without rerunning the
 sweep. Each chart
