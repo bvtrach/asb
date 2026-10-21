@@ -231,23 +231,26 @@ fn daemon_identity_checks_require_inherited_owned_lease_and_a_live_child() {
                 "-c",
                 r#"import json,os,signal,sys,time
 from pathlib import Path
-signal.alarm(10)
+signal.alarm(30)
+identity=None
 try:
     actual=os.fstat(int(sys.argv[1]))
+    identity=[actual.st_dev,actual.st_ino]
     retained=(actual.st_dev,actual.st_ino)==(int(sys.argv[2]),int(sys.argv[3]))
 except OSError:
     retained=False
 receipt=Path(sys.argv[4])
 pending=receipt.with_name(receipt.name+'.pending')
-pending.write_text(json.dumps({'pid':os.getpid(),'retained':retained}))
+pending.write_text(json.dumps({'pid':os.getpid(),'identity':identity,'retained':retained}))
 pending.replace(receipt)
-time.sleep(60)
+sys.stdin.buffer.read(1)
 "#,
             ])
             .arg(lease.as_raw_fd().to_string())
             .arg(expected.dev().to_string())
             .arg(expected.ino().to_string())
-            .arg(&observation);
+            .arg(&observation)
+            .stdin(Stdio::piped());
         if inherited {
             inherit_lease(&mut command, &lease);
         }
@@ -272,6 +275,10 @@ time.sleep(60)
             serde_json::from_str(&fs::read_to_string(observation).unwrap()).unwrap();
         assert_eq!(receipt["pid"], children.lock().unwrap()[0].id());
         assert_eq!(receipt["retained"], inherited);
+        assert_eq!(
+            receipt["identity"] == serde_json::json!([expected.dev(), expected.ino()]),
+            inherited
+        );
         let result = service.check_alive();
         if inherited {
             result.unwrap();
