@@ -58,6 +58,11 @@ also check that bars, series/legends and composition rows carry benchmark groups
 Reserved-`all` tests cover complete registry expansion, enabled/original trial
 populations, catalog-name collisions and provider-scoped model discovery using
 only a bounded loopback HTTP fixture with no real provider credentials.
+The agent endpoint matrix tests every declared interface/authentication pair
+and rejects every undeclared pair before configuration or command mutation.
+These are protocol-only fixtures: no agent/provider is executed. See the
+[independently checked repair ledger](CODE_SMELL_REPAIRS.md) for the broader
+code-smell audit and remaining delivery classes.
 `cargo test --locked cassette::` exercises the provider-free multi-track backend:
 manifest and compatibility bounds, stable seeded choices, selector edge cases,
 bounded metadata inspection, selective corruption checks and durable publication.

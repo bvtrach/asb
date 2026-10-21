@@ -53,7 +53,7 @@ fn prepare_adapter(context: &mut PreparationContext<'_>) -> Result<(), Error> {
                 .env("OPENAI_BASE_PATH", "/v1/chat/completions")
                 .env("OPENAI_API_KEY", key);
         }
-        _ => unreachable!("Goose advertises only chat and messages interfaces"),
+        _ => return Err(context.unsupported_endpoint("goose")),
     }
     Ok(())
 }
