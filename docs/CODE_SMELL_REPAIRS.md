@@ -26,8 +26,8 @@ Both publication and incomplete-capture actual-runner fixtures remain present;
 their private fixture state is independent. Attempt-artifact repair 33 remains
 separate and is not folded into this candidate. The earlier old-base focused
 checks do not qualify this combined tree. Fresh focused checks, independent
-integration review, full offline qualification, hosted/package CI, merge,
-post-merge verification and release remain pending. Windows compilation and
+integration review and full offline qualification are recorded below;
+hosted/package CI, merge, post-merge verification and release remain pending. Windows compilation and
 runtime remain unqualified; the non-Unix controller keeps its documented legacy
 blocking transport limitation.
 
@@ -43,10 +43,23 @@ failure and subsequent layout tuple Clippy failure remain recorded in
 The reviewed named-layout refinement `4a3b8647` is merged without production
 changes; its fresh layout test, strict workspace/all-target/all-feature Clippy
 and formatting check passed (`target/publication32-layout-*.log`). Full
-qualification remains held pending coordinated disk/cache availability.
+qualification initially waited for coordinated disk/cache availability.
 Collector blocking sampler output/join, ignored producer writes and generic
 kill/pkill/wait shutdown remain residuals, not bounded-quiescence claims of this
 publication repair. Native Windows compilation/runtime remain unqualified.
+
+The fresh all-target/all-feature offline suite at frozen `f8139463` passed
+**1,246 tests**, zero failures and 21 explicit optional skips across 22 targets.
+Strict workspace/all-target/all-feature Clippy, formatting and sequential offline
+build/private Rust docs/pinned AutoUML 0.7.2/flows/interactive views/bash and zsh
+completions all passed. Graphviz reported its existing straight-edge layout
+fallback, not a failed gate. The actual executable SHA-256 stayed
+`2589307f67c98fc72da4280bdc6b88ff68a9e8e93e8e1057a4c62e62fa298200`
+before/after runtime tests and after the final build. Logs and hashes are
+`target/publication32-full*`; the source stayed frozen throughout qualification.
+This does not qualify skipped opt-ins, native Windows execution or the separate
+attempt-artifact repair. Hosted/package CI, PR merge, post-merge verification and
+release remain pending.
 
 The [full residual requirement/disposition matrix and ordered plan](CODE_SMELL_REMAINING_AUDIT.md)
 records the read-only 21 October comparison of exact main `4224472f` with
