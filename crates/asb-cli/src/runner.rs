@@ -1,4 +1,9 @@
 //! Live execution of one configured benchmark.
+mod completion;
+pub(crate) mod replica;
+pub(crate) mod reuse;
+#[cfg(target_os = "linux")]
+pub(crate) mod workload_process;
 
 use super::{Error, io_error, read_config};
 use crate::agents;
@@ -41,16 +46,21 @@ fn emit_warning(
 
 #[derive(Serialize)]
 struct RunResult<'a> {
+    replica_index: Option<usize>,
+    execution_cohort: Option<&'a measurements::ExecutionCohort>,
     schema_version: u32,
     status: &'a str,
     agent: &'a str,
     workload: &'a str,
+    task: workloads::TaskIdentity,
     provider: &'a str,
     model: &'a str,
     process_success: bool,
     workload_success: Option<bool>,
     workload_evaluation: &'static str,
     workload_baseline_passed: Option<bool>,
+    workload_baseline: workloads::BaselineEvidence,
+    workload_failure: Option<workloads::EvaluationFailure>,
     failure_kind: Option<&'static str>,
     failure_reason: Option<String>,
     success_rate: Option<f64>,
@@ -68,12 +78,16 @@ struct RunResult<'a> {
 /// Execution choices shared by single runs, replicas, and sweeps.
 #[derive(Clone, Copy, Default)]
 pub(crate) struct RunOptions<'a> {
+    pub execution_cohort: Option<&'a measurements::ExecutionCohort>,
     pub json: bool,
     pub show_output: bool,
     pub measurement_dir: Option<&'a str>,
     pub mode: Option<tape::Mode>,
     pub cassette: Option<&'a str>,
     pub respect_record_timings: bool,
+    pub replica: replica::Identity,
+    pub on_completion: Option<&'a dyn replica::CompletionObserver>,
+    pub reused: Option<&'a std::collections::BTreeMap<usize, serde_json::Value>>,
 }
 
 /// Execute one configured benchmark, optionally through a local llmtape proxy.
@@ -95,7 +109,42 @@ pub(crate) fn run_with_diagnostics(
     let text = read_config(config_path)?;
     let config: BenchmarkConfig = toml::from_str(&text)
         .map_err(|error| Error::Input(format!("cannot parse {path}: {error}")))?;
+    if !options.replica.valid() {
+        return Err(Error::Input("invalid benchmark replica identity".into()));
+    }
+    if let Some(reused) = options.reused {
+        if reused
+            .keys()
+            .any(|index| !(1..=config.concurrency).contains(index))
+        {
+            return Err(Error::Input(
+                "reused replica slots are outside the selected population".into(),
+            ));
+        }
+        if config.concurrency == 1
+            && let Some(summary) = reused.get(&1)
+        {
+            return reuse::render_reused(std::slice::from_ref(summary), options.json, output);
+        }
+    }
+    let cohort = measurements::ExecutionCohort {
+        id: workloads::TaskIdentity::local("execution-cohort", None).attempt_id,
+        selected_replicas: config.concurrency,
+        admitted_slots: (1..=config.concurrency)
+            .filter(|slot| !options.reused.is_some_and(|saved| saved.contains_key(slot)))
+            .collect(),
+    };
+    let options = RunOptions {
+        execution_cohort: Some(&cohort),
+        ..options
+    };
     if let Some(measures) = config.measurements.as_ref().filter(|value| value.enabled) {
+        // Parallel sweep configurations can share project-local tool paths.
+        // Serialize dependency publication, not benchmark execution.
+        static TOOL_PREPARATION: Mutex<()> = Mutex::new(());
+        let _preparation = TOOL_PREPARATION
+            .lock()
+            .map_err(|_| Error::Run("shared tool preparation failed; retry the sweep".into()))?;
         let (root, project_config) = project::load(config_path)?;
         let tools_root = project::resolve(&root, &project_config.tools_dir);
         let mut messages = Vec::new();
@@ -130,14 +179,22 @@ fn run_concurrent(
 ) -> Result<(), Error> {
     let tape_request = options.mode.map(|mode| (mode, options.cassette));
     let mut jobs = Vec::with_capacity(config.concurrency);
+    let mut completed = Vec::with_capacity(config.concurrency);
     for index in 1..=config.concurrency {
-        let mut replica = config.clone();
-        replica.concurrency = 1;
-        replica.workspace = parallel_path(&replica.workspace, index);
-        replica.log_file = parallel_path(&replica.log_file, index);
-        if let Some(measurements) = replica.measurements.as_mut() {
-            measurements.directory = parallel_path(&measurements.directory, index);
+        if let Some(summary) = options.reused.and_then(|reused| reused.get(&index)) {
+            let mut buffer = Vec::new();
+            let result =
+                reuse::render_reused(std::slice::from_ref(summary), options.json, &mut buffer);
+            completed.push((index - 1, result, buffer));
+            continue;
         }
+        let replica = replica::configuration(
+            config,
+            replica::Identity {
+                index,
+                total: config.concurrency,
+            },
+        )?;
         let cassette = tape_request.map(|(mode, requested)| {
             let base = requested
                 .map(PathBuf::from)
@@ -147,37 +204,39 @@ fn run_concurrent(
         let measurement = options
             .measurement_dir
             .map(|path| PathBuf::from(parallel_path(path, index)));
-        jobs.push((replica, measurement, cassette));
+        jobs.push((index - 1, replica, measurement, cassette));
     }
 
-    let mut completed = Vec::with_capacity(jobs.len());
     std::thread::scope(|scope| {
-        let handles =
-            jobs.into_iter()
-                .enumerate()
-                .map(|(index, (replica, measurement, cassette))| {
-                    scope.spawn(move || {
-                        let mut buffer = Vec::new();
-                        let mode = cassette.as_ref().map(|(mode, _)| *mode);
-                        let cassette_path =
-                            cassette.as_ref().map(|(_, path)| path.to_string_lossy());
-                        let cassette_path = cassette_path.as_deref();
-                        let measurement_path = measurement.as_deref().and_then(Path::to_str);
-                        let result = run_mode(
-                            config_path,
-                            replica,
-                            RunOptions {
-                                measurement_dir: measurement_path,
-                                mode,
-                                cassette: cassette_path,
-                                ..options
+        let handles: Vec<_> = jobs
+            .into_iter()
+            .map(|(index, replica, measurement, cassette)| {
+                scope.spawn(move || {
+                    let mut buffer = Vec::new();
+                    let mode = cassette.as_ref().map(|(mode, _)| *mode);
+                    let cassette_path = cassette.as_ref().map(|(_, path)| path.to_string_lossy());
+                    let cassette_path = cassette_path.as_deref();
+                    let measurement_path = measurement.as_deref().and_then(Path::to_str);
+                    let result = run_mode(
+                        config_path,
+                        replica,
+                        RunOptions {
+                            replica: replica::Identity {
+                                index: index + 1,
+                                total: config.concurrency,
                             },
-                            &mut buffer,
-                            warnings,
-                        );
-                        (index, result, buffer)
-                    })
-                });
+                            measurement_dir: measurement_path,
+                            mode,
+                            cassette: cassette_path,
+                            ..options
+                        },
+                        &mut buffer,
+                        warnings,
+                    );
+                    (index, result, buffer)
+                })
+            })
+            .collect();
         for handle in handles {
             completed.push(
                 handle
@@ -287,7 +346,19 @@ fn run_mode(
         mode,
         cassette,
         respect_record_timings,
+        ..
     } = options;
+    if options
+        .execution_cohort
+        .is_some_and(|cohort| !cohort.admits(options.replica.index, options.replica.total))
+    {
+        return Err(Error::Input(
+            "dispatch cohort does not admit the selected replica".into(),
+        ));
+    }
+    if let Some(observer) = options.on_completion {
+        observer.starting(options.replica, options.execution_cohort)?;
+    }
     let tape_request = mode.map(|mode| (mode, cassette));
     let tape_cassette = tape_request.map(|(mode, requested)| {
         (
@@ -421,42 +492,59 @@ fn run_mode(
     let workload_directory = std::env::var_os("ASB_WORKLOAD_DIR")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| project::resolve(&project_root, &project_config.workloads_dir));
-    let (prompt, workload_baseline_passed) = instrument_phase(
+    let allocation = |reference: &workloads::recovery::AttemptReference| {
+        options.on_completion.map_or(Ok(()), |observer| {
+            observer
+                .allocated(options.replica, reference)
+                .map_err(|error| error.to_string())
+        })
+    };
+    let mut workload_session = instrument_phase(
         measurement_session.as_mut(),
         LifecyclePhase::WorkloadPreparation,
         || {
+            workloads::preflight(
+                &config.workload,
+                &workloads::PreflightContext {
+                    project_root: &project_root,
+                    project_config: &project_config,
+                    agent: &config.agent,
+                },
+            )?;
             std::fs::create_dir_all(&workspace).map_err(|error| {
                 Error::Run(format!(
                     "cannot create workspace {}: {error}",
                     workspace.display()
                 ))
             })?;
-            let prompt = workloads::load_trial(
-                &config.workload,
-                config.trial.as_deref(),
-                config.trial_set.as_deref(),
-                &workload_directory,
-            )
-            .map_err(Error::Input)?;
-            workloads::prepare_fixture(&config.workload, &workspace).map_err(Error::Run)?;
-            workloads::prepare_external(&config.workload, &workload_directory, &workspace)
-                .map_err(Error::Run)?;
-            let baseline = workloads::evaluate(&config.workload, &workspace, "")
-                .ok()
-                .map(|evaluation| evaluation == workloads::Evaluation::Passed);
-            Ok((prompt, baseline))
+            workloads::prepare_task(&workloads::PreparationContext {
+                on_allocation: Some(&allocation),
+                workload: &config.workload,
+                trial: config.trial.as_deref(),
+                trial_set: config.trial_set.as_deref(),
+                workload_directory: &workload_directory,
+                workspace: &workspace,
+                project_root: &project_root,
+                project_config: &project_config,
+            })
+            .map_err(Error::Run)
         },
     )?;
+    let prompt = workload_session.invocation().prompt.clone();
+    let workspace = workload_session.invocation().workspace.clone();
+    let workload_baseline = workload_session.baseline_evidence();
+    let workload_baseline_passed = workload_baseline.measured_passed();
     if !json && workload_baseline_passed == Some(true) {
         emit_warning(warnings, output, "The workload already passes before the agent starts. Files are preserved, but this run cannot earn task-resolution credit. Use a fresh workspace for a new benchmark attempt.".into())?;
     }
     if !json
-        && workload_baseline_passed.is_none()
-        && workloads::resolution_eligible(workloads::evaluation_kind(&config.workload, &workspace))
+        && !workload_baseline.supports(workload_session.evaluation_kind())
+        && workload_baseline_passed != Some(true)
+        && workloads::resolution_eligible(workload_session.evaluation_kind())
     {
         emit_warning(warnings, output, "The initial workload baseline could not be verified. This run cannot earn task-resolution credit. Inspect the workload fixture and use a fresh workspace.".into())?;
     }
-    if !json && workloads::evaluation_kind(&config.workload, &workspace) == "adapter-smoke" {
+    if !json && workload_session.evaluation_kind() == "adapter-smoke" {
         emit_warning(warnings, output, "Selected external workload runs only an adapter smoke exercise, not an upstream benchmark task. Benchmark task success will be unavailable; an official dataset and evaluator are not integrated yet.".into())?;
     }
     let mut tape_session = instrument_phase(
@@ -504,146 +592,171 @@ fn run_mode(
             )
         })
         .transpose()?;
-    // Adapters run with the benchmark workspace as their current directory.
-    // Pass the canonical workspace explicitly so a relative configuration
-    // value is not resolved a second time inside that directory (which is
-    // especially important for OpenJiuwen's persistent workspace).
-    let mut command_config = config.clone();
-    command_config.workspace = workspace.to_string_lossy().into_owned();
-    let specification = command_for_with_interface(
-        &command_config,
-        connection
-            .as_ref()
-            .map(|connection| connection.base_url.as_str())
-            .or(provider_endpoint),
-        &prompt,
-        connection.as_ref().map(|connection| connection.interface),
-    )?;
-    let mut program = specification.program;
-    if let Some(local) = agents::resolve(&config.agent, &project_root, &project_config.tools_dir) {
-        program = local;
-    }
     let started = Instant::now();
-    let mut command = agents::find(&config.agent).map_or_else(
-        || Ok(Command::new(&program)),
-        |adapter| adapter.process(&program),
-    )?;
-    project::apply_network_proxy(&mut command, config_path)?;
-    command.args(specification.args);
-    // Do not leak an enclosing Codex session into the benchmark agent. These
-    // variables are host-runner integration state; if inherited, a project
-    // local Codex CLI can advertise the coordinator's tools as an
-    // `additional_tools` request that cli2key does not support.
-    for variable in [
-        "CODEX_REMOTE_PAYLOAD",
-        "CODEX_SESSION_ID",
-        "CODEX_THREAD_ID",
-        "CODEX_PERMISSION_PROFILE",
-        "CODEX_APPLY_PATCH_PRESERVE_LINE_ENDINGS",
-        "CODEX_MANAGED_PACKAGE_ROOT",
-        "CODEX_MANAGED_BY_NPM",
-        "CODEX_MANAGED_BY_BUN",
-        "CODEX_MANAGED_BY_PNPM",
-        "CODEX_MANAGED_BY_VITE_PLUS",
-        "CODEX_CI",
-    ] {
-        command.env_remove(variable);
-    }
-    if specification.append_prompt {
-        command.arg(&prompt);
-    }
-    command
-        .current_dir(&workspace)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    providers::configure(
-        &mut command,
-        &config.provider,
-        &config.model,
-        tape_mode == Some(tape::Mode::Replay),
-    );
-    if tape_mode == Some(tape::Mode::Replay) {
-        agents::mask_replay_credentials(&mut command);
-    }
-    providers::apply_with_tape(
-        &mut command,
-        &config.provider,
-        &config.model,
-        provider_credentials,
-        tape_url,
-        tape_mode == Some(tape::Mode::Replay),
-    )?;
-    // Agent state must not appear inside the workload checkout, where it can
-    // affect git status, tools, and therefore the recorded agent trajectory.
-    let mut runtime_path = workspace.as_os_str().to_os_string();
-    runtime_path.push(".asb-agent-runtime");
-    let runtime_path = PathBuf::from(runtime_path);
-    // Run-specific agent artifacts must not be confused with earlier runs or
-    // simultaneous replicas, including after process IDs are reused.
-    static RUN_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let run_dir = runtime_path.join("runs").join(format!(
-        "{}-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos(),
-        RUN_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
-    ));
-    instrument_phase(
-        measurement_session.as_mut(),
-        LifecyclePhase::AgentPreparation,
-        || {
-            if let Some(connection) = connection.as_ref() {
-                agents::prepare(
-                    &config.agent,
-                    &mut agents::PreparationContext {
-                        command: &mut command,
-                        model: &config.model,
-                        connection,
-                        runtime_dir: &runtime_path,
-                        run_dir: &run_dir,
-                    },
-                )?;
-            }
-            Ok(())
+    let isolated = workload_session.execute(
+        &mut workloads::ExecutionContext {
+            config: &config,
+            connection: connection.as_ref(),
+            project_root: &project_root,
+            project_config: &project_config,
+            replay: tape_mode == Some(tape::Mode::Replay),
+            measurements: measurement_session.as_mut(),
+            show_output,
         },
-    )?;
-    if let Some(url) = tape_url {
-        providers::configure_tape(
+        output,
+    );
+    let (child, run_dir, guest, execution_elapsed_ms, runtime_output) = if let Some(result) =
+        isolated
+    {
+        let result = result.map_err(Error::Run)?;
+        (
+            result.output,
+            PathBuf::new(),
+            Some(result.metadata),
+            result.elapsed_ms,
+            None,
+        )
+    } else {
+        // Adapters run with the benchmark workspace as their current directory.
+        // Pass the canonical workspace explicitly so a relative configuration
+        // value is not resolved a second time inside that directory (which is
+        // especially important for OpenJiuwen's persistent workspace).
+        let mut command_config = config.clone();
+        command_config.workspace = workspace.to_string_lossy().into_owned();
+        let specification = command_for_with_interface(
+            &command_config,
+            connection
+                .as_ref()
+                .map(|connection| connection.base_url.as_str())
+                .or(provider_endpoint),
+            &prompt,
+            connection.as_ref().map(|connection| connection.interface),
+        )?;
+        let mut program = specification.program;
+        if let Some(local) =
+            agents::resolve(&config.agent, &project_root, &project_config.tools_dir)
+        {
+            program = local;
+        }
+        let mut command = agents::find(&config.agent).map_or_else(
+            || Ok(Command::new(&program)),
+            |adapter| adapter.process(&program),
+        )?;
+        project::apply_network_proxy(&mut command, config_path)?;
+        command.args(specification.args);
+        // Do not leak an enclosing Codex session into the benchmark agent. These
+        // variables are host-runner integration state; if inherited, a project
+        // local Codex CLI can advertise the coordinator's tools as an
+        // `additional_tools` request that cli2key does not support.
+        agents::driver::isolate_parent_state(&mut command);
+        if specification.append_prompt {
+            command.arg(&prompt);
+        }
+        command
+            .current_dir(&workspace)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        providers::configure(
             &mut command,
             &config.provider,
-            url,
-            tape_mode.expect("tape URL implies tape mode"),
+            &config.model,
+            tape_mode == Some(tape::Mode::Replay),
         );
-    }
-    if tape_mode == Some(tape::Mode::Replay) {
-        apply_replay_network_guard(&mut command);
-    }
-    project::apply_python_path(&mut command, &project_root, Path::new(&program))?;
-    // The process gate must execute the fully prepared command, not the
-    // adapter's original executable. Some adapters (for example OpenJiuwen)
-    // install a process wrapper that carries compatibility and output fixes;
-    // bypassing it at the gate would silently undo those fixes while still
-    // appearing to attach collectors correctly.
-    let gate_program = command.get_program().to_string_lossy().into_owned();
-    let gate_args = command
-        .get_args()
-        .map(|value| value.to_string_lossy().into_owned())
-        .collect::<Vec<_>>();
-    let child = run_measured_agent(
-        &mut command,
-        &gate_program,
-        Some(&gate_args),
-        measurement_session.as_mut(),
-        show_output,
-        output,
-    )?;
-    let mut run_error = tape_session
-        .take()
-        .and_then(|session| session.stop().err())
-        .map(|error| error.to_string());
+        if tape_mode == Some(tape::Mode::Replay) {
+            agents::mask_replay_credentials(&mut command);
+        }
+        providers::apply_with_tape(
+            &mut command,
+            &config.provider,
+            &config.model,
+            provider_credentials,
+            tape_url,
+            tape_mode == Some(tape::Mode::Replay),
+        )?;
+        // Agent state must not appear inside the workload checkout, where it can
+        // affect git status, tools, and therefore the recorded agent trajectory.
+        let runtime_path = replica::runtime_path(&workspace);
+        // Run-specific agent artifacts must not be confused with earlier runs or
+        // simultaneous replicas, including after process IDs are reused.
+        static RUN_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let run_dir = runtime_path.join("runs").join(format!(
+            "{}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos(),
+            RUN_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        ));
+        instrument_phase(
+            measurement_session.as_mut(),
+            LifecyclePhase::AgentPreparation,
+            || {
+                if let Some(connection) = connection.as_ref() {
+                    agents::prepare(
+                        &config.agent,
+                        &mut agents::PreparationContext {
+                            command: &mut command,
+                            model: &config.model,
+                            connection,
+                            runtime_dir: &runtime_path,
+                            run_dir: &run_dir,
+                        },
+                    )?;
+                }
+                Ok(())
+            },
+        )?;
+        if let Some(url) = tape_url {
+            providers::configure_tape(
+                &mut command,
+                &config.provider,
+                url,
+                tape_mode.expect("tape URL implies tape mode"),
+            );
+        }
+        if tape_mode == Some(tape::Mode::Replay) {
+            apply_replay_network_guard(&mut command);
+        }
+        project::apply_python_path(&mut command, &project_root, Path::new(&program))?;
+        crate::tools::apply_runtime_path(&mut command, &project_root, &project_config.tools_dir)?;
+        // The process gate must execute the fully prepared command, not the
+        // adapter's original executable. Some adapters (for example OpenJiuwen)
+        // install a process wrapper that carries compatibility and output fixes;
+        // bypassing it at the gate would silently undo those fixes while still
+        // appearing to attach collectors correctly.
+        let gate_program = command.get_program().to_string_lossy().into_owned();
+        let gate_args = command
+            .get_args()
+            .map(|value| value.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        let child = run_measured_agent(
+            &mut command,
+            &gate_program,
+            Some(&gate_args),
+            measurement_session.as_mut(),
+            show_output,
+            output,
+        )?;
+        (child, run_dir, None, None, Some(runtime_path))
+    };
+    let (proxy_evidence, mut run_error) = match tape_session.take() {
+        Some(session) => {
+            let completed = session.finish();
+            (
+                completed.evidence,
+                completed.result.err().map(|error| error.to_string()),
+            )
+        }
+        None => (
+            crate::proxy::Evidence {
+                output_files: Vec::new(),
+                cleanup_confirmed: true,
+            },
+            None,
+        ),
+    };
     // A failed replay can have served only part of the recording. Its full
     // cassette is not evidence of this attempt's token usage. Keep native
     // usage available, but trust cassette totals only after proxy validation.
@@ -665,13 +778,26 @@ fn run_mode(
             }
         }
     }
-    let elapsed_ms = started.elapsed().as_millis();
+    let elapsed_ms = execution_elapsed_ms.unwrap_or_else(|| started.elapsed().as_millis());
     // Prefer the agent's structured final response when deciding whether a
     // zero-exit process succeeded. Tool output can legitimately contain a
     // transient failed command that the agent repairs before its final answer;
     // scanning that whole transcript would incorrectly fail the run.
-    let final_response = agents::final_response(&config.agent, &bounded(&child.stdout), &workspace);
-    let agent_failure = if config.agent == "openjiuwen" && final_response.is_none() {
+    let final_response = match guest.as_ref() {
+        Some(metadata) => metadata.final_response.clone(),
+        None => agents::final_response(&config.agent, &bounded(&child.stdout), &workspace),
+    };
+    let adapter_failure = guest
+        .as_ref()
+        .and_then(|metadata| metadata.execution_failure.clone())
+        .or_else(|| {
+            agents::find(&config.agent).and_then(|adapter| {
+                adapter.execution_failure(&bounded(&child.stdout), &bounded(&child.stderr))
+            })
+        });
+    let agent_failure = if adapter_failure.is_some() {
+        adapter_failure
+    } else if config.agent == "openjiuwen" && final_response.is_none() {
         Some("OpenJiuwen exited without a final response; the last event appears to be an unexecuted tool call. Retry with a compatible OpenJiuwen client or inspect the benchmark log.".into())
     } else {
         process_failure_reason(
@@ -682,17 +808,13 @@ fn run_mode(
         )
     };
     let process_success = agent_failure.is_none();
-    let (workload_success, grading_failure) = if process_success && run_error.is_none() {
+    // A usable submission can survive a failed client or proxy teardown.
+    // Evaluator errors and process failures are recorded independently.
+    let (workload_success, grading_failure) = {
         match instrument_operation(
             measurement_session.as_mut(),
             LifecyclePhase::WorkloadEvaluation,
-            || {
-                workloads::evaluate(
-                    &config.workload,
-                    &workspace,
-                    final_response.as_deref().unwrap_or_default(),
-                )
-            },
+            || workload_session.evaluate(final_response.as_deref().unwrap_or_default()),
         )? {
             Ok(workloads::Evaluation::Passed) => (Some(true), None),
             Ok(workloads::Evaluation::Failed(reason)) => {
@@ -719,10 +841,31 @@ fn run_mode(
                 )),
             ),
         }
-    } else {
-        (None, None)
     };
+    let cleanup = instrument_operation(
+        measurement_session.as_mut(),
+        LifecyclePhase::WorkloadCleanup,
+        || workload_session.finish(),
+    )?;
+    let workload_cleanup_confirmed = cleanup.is_ok();
+    if let Err(error) = cleanup {
+        let message = format!("workload cleanup failed: {error}");
+        match run_error.as_mut() {
+            Some(previous) => {
+                previous.push_str("; ");
+                previous.push_str(&message);
+            }
+            None => run_error = Some(message),
+        }
+    }
     let success = run_error.is_none() && process_success && workload_success == Some(true);
+    let workload_failure =
+        grading_failure
+            .as_ref()
+            .map(|(kind, reason)| workloads::EvaluationFailure {
+                kind,
+                reason: reason.clone(),
+            });
     let failure = if let Some(error) = run_error.as_ref() {
         Some(("run_error", error.clone()))
     } else if let Some(error) = agent_failure {
@@ -730,7 +873,10 @@ fn run_mode(
     } else {
         grading_failure
     };
-    let adapter_artifacts = agents::find(&config.agent)
+    let adapter_artifacts = guest
+        .is_none()
+        .then(|| agents::find(&config.agent))
+        .flatten()
         .map(|adapter| {
             adapter.collect(&agents::CollectionContext {
                 workspace: &workspace,
@@ -742,7 +888,7 @@ fn run_mode(
             })
         })
         .unwrap_or_default();
-    let mut token_usage = measurements::token_usage_from_sources(
+    let token_usage = measurements::token_usage_from_sources(
         &config.provider,
         &config.agent,
         &String::from_utf8_lossy(&child.stdout),
@@ -752,33 +898,25 @@ fn run_mode(
             .filter(|_| cassette_usage_verified)
             .map(|(_, cassette)| cassette.as_path()),
     );
-    if let Some(artifact_usage) = adapter_artifacts.token_usage {
-        let artifact_complete =
-            artifact_usage.input_tokens.is_some() && artifact_usage.output_tokens.is_some();
-        match token_usage.source.as_deref() {
-            Some(source) if source.contains("cassette") => {}
-            None | Some("agent-output") if artifact_complete => {
-                token_usage = measurements::TokenUsage::default()
-                    .merge_with_source(artifact_usage, "agent-artifact")
-                    .with_derived_total();
-            }
-            _ => {
-                token_usage = token_usage
-                    .merge_with_source(artifact_usage, "agent-artifact")
-                    .with_derived_total();
-            }
-        }
-    }
+    let token_usage = measurements::with_artifact_usage(token_usage, adapter_artifacts.token_usage);
+    let token_usage = measurements::with_artifact_usage(
+        token_usage,
+        guest.as_ref().map(|metadata| metadata.token_usage.clone()),
+    );
     for path in adapter_artifacts.cleanup_paths {
         let _ = std::fs::remove_file(path);
     }
-    let steps = adapter_artifacts.steps.or_else(|| {
-        measurements::steps_from_sources(
-            &config.agent,
-            &bounded(&child.stdout),
-            &bounded(&child.stderr),
-        )
-    });
+    let steps = if let Some(metadata) = guest.as_ref() {
+        metadata.steps
+    } else {
+        adapter_artifacts.steps.or_else(|| {
+            measurements::steps_from_sources(
+                &config.agent,
+                &bounded(&child.stdout),
+                &bounded(&child.stderr),
+            )
+        })
+    };
     let mut stderr = bounded(&child.stderr);
     if let Some(error) = run_error.as_deref() {
         stderr.push_str("\nASB run error: ");
@@ -796,10 +934,12 @@ fn run_mode(
         elapsed_ms,
         success,
     });
-    let configured_kind = workloads::evaluation_kind(&config.workload, &workspace);
-    let evaluation_kind = workloads::scored_kind(configured_kind, workload_baseline_passed);
+    let configured_kind = workload_session.evaluation_kind();
+    let evaluation_kind = workloads::scored_kind(configured_kind, &workload_baseline);
     let resolution_eligible = workloads::resolution_eligible(evaluation_kind);
     let result = RunResult {
+        replica_index: Some(options.replica.index),
+        execution_cohort: options.execution_cohort,
         schema_version: 2,
         status: if success && evaluation_kind == "invalid-baseline" {
             "unscored"
@@ -812,15 +952,22 @@ fn run_mode(
         },
         agent: &config.agent,
         workload: &config.workload,
+        task: workload_session.invocation().identity.clone(),
         provider: &config.provider,
         model: &config.model,
         process_success,
         workload_success: resolution_eligible.then_some(workload_success).flatten(),
         workload_evaluation: evaluation_kind,
         workload_baseline_passed,
+        workload_baseline,
+        workload_failure,
         failure_kind: failure.as_ref().map(|(kind, _)| *kind),
         failure_reason: failure.as_ref().map(|(_, reason)| reason.clone()),
-        success_rate: resolution_eligible.then_some(run_metrics.success_rate),
+        success_rate: resolution_eligible.then_some(if workload_success == Some(true) {
+            1.0
+        } else {
+            0.0
+        }),
         adapter_smoke_success: (evaluation_kind == "adapter-smoke").then_some(success),
         elapsed_ms: run_metrics.elapsed_ms,
         exit_code: child.status.code(),
@@ -844,6 +991,8 @@ fn run_mode(
             .event(LifecycleEvent::RunFinishing)
             .map_err(Error::Run)?;
         let measured = measurements::RunMeasurement {
+            replica_index: result.replica_index,
+            execution_cohort: result.execution_cohort,
             schema_version: 2,
             run_id: format!("{}-{}", result.workload, result.elapsed_ms),
             status: result.status,
@@ -854,10 +1003,13 @@ fn run_mode(
             failure_reason: result.failure_reason.as_deref(),
             workload_evaluation: result.workload_evaluation,
             workload_baseline_passed: result.workload_baseline_passed,
+            workload_baseline: Some(&result.workload_baseline),
+            workload_failure: result.workload_failure.as_ref(),
             adapter_smoke_success: result.adapter_smoke_success,
             success_rate: result.success_rate,
             agent: result.agent,
             workload: result.workload,
+            task: Some(&result.task),
             provider: result.provider,
             model: result.model,
             elapsed_ms,
@@ -867,6 +1019,31 @@ fn run_mode(
             started_unix_ms: session.started_unix_ms(),
         };
         session.finish(measured).map_err(Error::Run)?;
+    }
+    // This private record preserves evaluator outcomes, including unresolved
+    // tasks. Its absence never changes a benchmark grade or blocks execution;
+    // a future continuation must also validate its input and evidence seals.
+    let mut completion_outputs = vec![workspace.clone()];
+    if let Some(path) = measurement_path.as_ref() {
+        completion_outputs.push(path.clone());
+    }
+    if let Some(path) = runtime_output {
+        completion_outputs.push(path);
+    }
+    if let Ok(record) = completion::persist(
+        config_path,
+        &config.log_file,
+        &result,
+        workload_cleanup_confirmed,
+        &workload_session.checkpoint_evidence(),
+        &proxy_evidence,
+        &completion::Context {
+            replica: options.replica,
+            outputs: &completion_outputs,
+        },
+    ) && let Some(observer) = options.on_completion
+    {
+        let _ = observer.completed(options.replica, &record);
     }
     if json {
         render_json(&result, output)?;
@@ -946,22 +1123,20 @@ fn run_measured_agent(
     output: &mut dyn Write,
 ) -> Result<Output, Error> {
     if let Some(session) = session.as_deref_mut() {
-        let args = command
-            .get_args()
-            .map(|arg| arg.to_string_lossy().into_owned())
-            .collect::<Vec<_>>();
-        session.agent_launch(program, &args);
+        session.agent_launch_prepared(command);
     }
+    let mut gated = false;
     #[cfg(unix)]
-    if session.is_some()
+    if (session.is_some() || cfg!(target_os = "linux"))
         && let Some(target_args) = target_args
         && gate_target_available(program)
     {
-        let executable = std::env::current_exe()
+        let executable = crate::process_gate::executable()
             .map_err(|error| Error::Run(format!("cannot resolve ASB process gate: {error}")))?;
         crate::process_gate::install(command, &executable, program, target_args);
+        gated = true;
     }
-    let child = {
+    let mut child = {
         let mut emit = |event| {
             if let Some(session) = session.as_deref_mut() {
                 session.event(event).map_err(Error::Run)?;
@@ -972,7 +1147,7 @@ fn run_measured_agent(
         emit(LifecycleEvent::AgentSpawn)?;
         emit(LifecycleEvent::AgentExecuteBegin)?;
         let child = match command.spawn() {
-            Ok(child) => OwnedChild(child),
+            Ok(child) => OwnedChild(child, gated),
             Err(error) => {
                 emit(LifecycleEvent::AgentExecuteEnd)?;
                 emit(LifecycleEvent::AgentSpawnFailed)?;
@@ -994,8 +1169,8 @@ fn run_measured_agent(
         return Err(Error::Run(error));
     }
     #[cfg(unix)]
-    if session.is_some() && target_args.is_some() {
-        crate::process_gate::resume(child.id()).map_err(|error| {
+    if gated {
+        crate::process_gate::resume(&mut child.0).map_err(|error| {
             Error::Run(format!("could not resume measured agent process: {error}"))
         })?;
     }
@@ -1112,11 +1287,20 @@ fn resolve_log_path(config_path: &Path, configured_path: &str) -> PathBuf {
 
 fn render_json(result: &RunResult<'_>, output: &mut dyn Write) -> Result<(), Error> {
     let summary = serde_json::json!({
+        "replica_index": result.replica_index,
+        "execution_cohort": result.execution_cohort,
         "schema_version": result.schema_version,
+        "agent": result.agent,
+        "workload": result.workload,
+        "provider": result.provider,
+        "model": result.model,
+        "task": result.task,
         "process_success": result.process_success,
         "workload_success": result.workload_success,
         "workload_evaluation": result.workload_evaluation,
         "workload_baseline_passed": result.workload_baseline_passed,
+        "workload_baseline": result.workload_baseline,
+        "workload_failure": result.workload_failure,
         "adapter_smoke_success": result.adapter_smoke_success,
         "failure_kind": result.failure_kind,
         "failure_reason": result.failure_reason,
@@ -1267,7 +1451,18 @@ enum OutputChunk {
 
 // std::process::Child does not stop a process on drop. Own it from spawn
 // through all collector attachment, output and wait error paths.
-struct OwnedChild(Child);
+struct OwnedChild(Child, bool);
+
+impl OwnedChild {
+    fn stop(&mut self) -> std::io::Result<std::process::ExitStatus> {
+        #[cfg(target_os = "linux")]
+        if self.1 {
+            return crate::process_gate::cancel_gate(&mut self.0);
+        }
+        let _ = self.0.kill();
+        self.0.wait()
+    }
+}
 
 impl std::ops::Deref for OwnedChild {
     type Target = Child;
@@ -1286,7 +1481,7 @@ impl std::ops::DerefMut for OwnedChild {
 impl Drop for OwnedChild {
     fn drop(&mut self) {
         if self.0.try_wait().ok().flatten().is_none() {
-            let _ = self.0.kill();
+            let _ = self.stop();
         }
         let _ = self.0.wait();
     }
@@ -1297,9 +1492,49 @@ impl Drop for OwnedChild {
 /// stdout or stderr pipe. The complete bounded-by-the-existing-runner capture
 /// is still returned for logging and token parsing.
 fn wait_with_output(
+    child: OwnedChild,
+    show_output: bool,
+    output: &mut dyn Write,
+) -> std::io::Result<Output> {
+    wait_with_output_streams(
+        child,
+        show_output,
+        output,
+        None,
+        MAX_AGENT_RUNTIME,
+        &mut || Ok(()),
+    )
+}
+
+pub(crate) fn run_guest_process(
+    command: &mut Command,
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+    runtime: Duration,
+) -> Result<Output, Error> {
+    #[cfg(target_os = "linux")]
+    let mut descendants = crate::process_gate::DescendantScope::new()
+        .map_err(|error| Error::Run(format!("cannot retain guest agent descendants: {error}")))?;
+    let child = command
+        .spawn()
+        .map(|child| OwnedChild(child, false))
+        .map_err(|error| Error::Run(format!("cannot start guest agent: {error}")))?;
+    wait_with_output_streams(child, true, stdout, Some(stderr), runtime, &mut || {
+        #[cfg(target_os = "linux")]
+        return descendants.quiesce();
+        #[cfg(not(target_os = "linux"))]
+        Ok(())
+    })
+    .map_err(|error| Error::Run(format!("cannot wait for guest agent: {error}")))
+}
+
+fn wait_with_output_streams(
     mut child: OwnedChild,
     show_output: bool,
     output: &mut dyn Write,
+    mut error_output: Option<&mut dyn Write>,
+    runtime: Duration,
+    after_exit: &mut dyn FnMut() -> std::io::Result<()>,
 ) -> std::io::Result<Output> {
     let stdout = child
         .stdout
@@ -1318,7 +1553,8 @@ fn wait_with_output(
     let mut stderr_capture = Vec::new();
     let mut finished_streams = 0;
     let mut status = None;
-    let deadline = Instant::now() + MAX_AGENT_RUNTIME;
+    let mut quiesced = false;
+    let deadline = Instant::now() + runtime;
     let mut timed_out = false;
     while (finished_streams < 2 || status.is_none()) && !timed_out {
         match receiver.recv_timeout(Duration::from_millis(50)) {
@@ -1331,8 +1567,13 @@ fn wait_with_output(
             }
             Ok(OutputChunk::Stderr(chunk)) => {
                 if show_output {
-                    output.write_all(&chunk)?;
-                    output.flush()?;
+                    if let Some(error_output) = error_output.as_deref_mut() {
+                        error_output.write_all(&chunk)?;
+                        error_output.flush()?;
+                    } else {
+                        output.write_all(&chunk)?;
+                        output.flush()?;
+                    }
                 }
                 stderr_capture.extend_from_slice(&chunk);
             }
@@ -1342,19 +1583,27 @@ fn wait_with_output(
         }
         if status.is_none() {
             status = child.try_wait()?;
+            if status.is_some() {
+                after_exit()?;
+                quiesced = true;
+            }
         }
         if status.is_none() && Instant::now() >= deadline {
             timed_out = true;
-            let _ = child.kill();
-            status = Some(child.wait()?);
+            status = Some(child.stop()?);
+            after_exit()?;
+            quiesced = true;
         }
     }
     let status = status.unwrap_or(child.wait()?);
+    if !quiesced {
+        after_exit()?;
+    }
     if timed_out {
         stderr_capture.extend_from_slice(
             format!(
                 "agent execution exceeded {} seconds\n",
-                MAX_AGENT_RUNTIME.as_secs()
+                runtime.as_secs_f64()
             )
             .as_bytes(),
         );
@@ -1450,6 +1699,59 @@ mod tests {
     };
     use crate::benchmark::BenchmarkConfig;
     use crate::measurements::TokenUsage;
+
+    #[test]
+    fn intent_publication_failure_stops_before_provider_workload_or_measurement_startup() {
+        struct FailedIntent;
+        impl super::replica::CompletionObserver for FailedIntent {
+            fn starting(
+                &self,
+                _: super::replica::Identity,
+                _: Option<&crate::measurements::ExecutionCohort>,
+            ) -> Result<(), crate::Error> {
+                Err(crate::Error::Io("fixture intent publication failed".into()))
+            }
+            fn completed(
+                &self,
+                _: super::replica::Identity,
+                _: &std::path::Path,
+            ) -> Result<(), crate::Error> {
+                panic!("no attempt should have started")
+            }
+        }
+        let root = std::env::temp_dir()
+            .join(crate::workloads::TaskIdentity::local("failed-intent", None).attempt_id);
+        std::fs::create_dir_all(&root).unwrap();
+        let config = root.join("benchmark.toml");
+        std::fs::write(
+            &config,
+            "agent='fixture'\nworkload='bug-fix'\nprovider='fixture'\nmodel='fixture'\n",
+        )
+        .unwrap();
+        let mut output = Vec::new();
+        let error = super::run_with_diagnostics(
+            config.to_str().unwrap(),
+            super::RunOptions {
+                on_completion: Some(&FailedIntent),
+                ..Default::default()
+            },
+            &mut output,
+            &std::sync::Mutex::new(Default::default()),
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("fixture intent publication failed")
+        );
+        assert!(output.is_empty());
+        assert_eq!(
+            std::fs::read_dir(&root).unwrap().count(),
+            1,
+            "no workspace, measurements or project state may be created"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn replica_failures_group_only_exact_matches() {
@@ -1667,6 +1969,8 @@ mod tests {
         assert!(output.status.success());
         session
             .finish(crate::measurements::RunMeasurement {
+                replica_index: None,
+                execution_cohort: None,
                 schema_version: 1,
                 run_id: "test".into(),
                 status: "completed",
@@ -1679,8 +1983,11 @@ mod tests {
                 adapter_smoke_success: None,
                 agent: "fixture",
                 workload: "fixture",
+                task: None,
                 workload_evaluation: "fixture",
                 workload_baseline_passed: Some(false),
+                workload_baseline: None,
+                workload_failure: None,
                 provider: "fixture",
                 model: "fixture",
                 elapsed_ms: 200,
@@ -1729,7 +2036,7 @@ mod tests {
             .spawn()
             .unwrap();
         let pid = child.id();
-        let owned = super::OwnedChild(child);
+        let owned = super::OwnedChild(child, false);
         // Simulate returning from the runner after attachment fails.
         drop(owned);
         assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists());
@@ -1754,8 +2061,9 @@ mod tests {
             .spawn()
             .unwrap();
         let pid = child.id();
-        let error = super::wait_with_output(super::OwnedChild(child), true, &mut FailingWriter)
-            .unwrap_err();
+        let error =
+            super::wait_with_output(super::OwnedChild(child, false), true, &mut FailingWriter)
+                .unwrap_err();
         assert!(error.to_string().contains("fixture output failure"));
         assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists());
     }
@@ -1813,18 +2121,126 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
+    #[test]
+    fn completion_records_preserve_unresolved_outcomes_cleanup_and_private_evidence() {
+        use super::completion;
+        use crate::workloads;
+        let root = std::env::temp_dir()
+            .join(workloads::TaskIdentity::local("completion-record-test", None).attempt_id);
+        std::fs::create_dir_all(&root).unwrap();
+        let config = root.join("benchmark.toml");
+        let mut result = result();
+        result.stdout = "private agent transcript must not enter checkpoint".into();
+        result.stderr = "private agent stderr must not enter checkpoint".into();
+        let evidence = vec![root.join("official-evaluator-evidence")];
+        for resolved in [true, false] {
+            result.workload_success = Some(resolved);
+            result.success_rate = Some(if resolved { 1.0 } else { 0.0 });
+            completion::persist(
+                &config,
+                "run.log",
+                &result,
+                resolved,
+                &evidence,
+                &crate::proxy::Evidence {
+                    output_files: Vec::new(),
+                    cleanup_confirmed: true,
+                },
+                &Default::default(),
+            )
+            .unwrap();
+        }
+        let directory = root.join(".asb-completions");
+        let files: Vec<_> = std::fs::read_dir(&directory)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect();
+        assert_eq!(files.len(), 2, "outcomes must not overwrite one another");
+        let mut outcomes = Vec::new();
+        for file in files {
+            assert_eq!(file.extension().unwrap(), "json");
+            let bytes = std::fs::read(&file).unwrap();
+            let text = String::from_utf8(bytes.clone()).unwrap();
+            assert!(!text.contains("private agent"));
+            let record: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(record["schema_version"], 2);
+            assert_eq!(record["replica"], serde_json::json!({"index":1,"total":1}));
+            assert_eq!(record["outputs"], serde_json::json!([root.join("run.log")]));
+            assert_eq!(record["scope"], "task-outcome-not-yet-a-resume-receipt");
+            assert_eq!(
+                record["summary"]["task"]["attempt_id"],
+                result.task.attempt_id
+            );
+            assert_eq!(
+                record["workload_evidence"][0],
+                evidence[0].to_str().unwrap()
+            );
+            let resolved = record["summary"]["workload_success"].as_bool().unwrap();
+            assert_eq!(record["workload_cleanup_confirmed"], resolved);
+            assert_eq!(record["proxy_cleanup_confirmed"], true);
+            assert_eq!(record["proxy_evidence"], serde_json::json!([]));
+            outcomes.push(resolved);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                assert_eq!(
+                    std::fs::metadata(file).unwrap().permissions().mode() & 0o777,
+                    0o600
+                );
+            }
+        }
+        outcomes.sort();
+        assert_eq!(outcomes, [false, true]);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&directory).unwrap().permissions().mode() & 0o777,
+                0o700
+            );
+            let other = root.join("other");
+            std::fs::create_dir(&other).unwrap();
+            std::os::unix::fs::symlink(&other, root.join("redirect")).unwrap();
+            std::os::unix::fs::symlink(&other, other.join(".asb-completions")).unwrap();
+            assert!(
+                completion::persist(
+                    &root.join("redirect/benchmark.toml"),
+                    "run.log",
+                    &result,
+                    true,
+                    &[],
+                    &crate::proxy::Evidence {
+                        output_files: Vec::new(),
+                        cleanup_confirmed: true
+                    },
+                    &Default::default(),
+                )
+                .is_err()
+            );
+            assert_eq!(std::fs::read_dir(&other).unwrap().count(), 1);
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     fn result<'a>() -> RunResult<'a> {
         RunResult {
+            replica_index: None,
+            execution_cohort: None,
             schema_version: 2,
             status: "completed",
             agent: "codex",
             workload: "bug-fix",
+            task: crate::workloads::TaskIdentity::local("bug-fix", None),
             provider: "openrouter",
             model: "test-model",
             process_success: true,
             workload_success: Some(true),
             workload_evaluation: "bundled-fixture",
             workload_baseline_passed: Some(false),
+            workload_baseline: crate::workloads::BaselineEvidence::Measured {
+                passed: Some(false),
+            },
+            workload_failure: None,
             failure_kind: None,
             failure_reason: None,
             success_rate: Some(1.0),
@@ -1869,6 +2285,11 @@ mod tests {
         assert_eq!(value["steps"], 2);
         assert_eq!(value["token_usage"]["total_tokens"], 7);
         assert_eq!(value["token_usage"]["cached_tokens"], 1);
+        let expected = result();
+        assert_eq!(value["agent"], expected.agent);
+        assert_eq!(value["workload"], expected.workload);
+        assert_eq!(value["provider"], expected.provider);
+        assert_eq!(value["model"], expected.model);
         assert!(value.get("stdout").is_none());
         assert_eq!(output.iter().filter(|byte| **byte == b'\n').count(), 1);
     }

@@ -1,7 +1,8 @@
 //! Agent/provider-independent negotiation of API interfaces.
 
 /// A wire-level API, not a provider or an agent identifier.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub(crate) enum Interface {
     OpenAiResponses,
     OpenAiChat,
@@ -9,7 +10,8 @@ pub(crate) enum Interface {
     Gemini,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub(crate) enum Authentication {
     Bearer,
     ApiKey,
@@ -81,6 +83,7 @@ pub(crate) fn select(supported: &[Support], offered: &[Offer]) -> Option<Offer> 
     })
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub(crate) struct Connection {
     pub interface: Interface,
     pub base_url: String,

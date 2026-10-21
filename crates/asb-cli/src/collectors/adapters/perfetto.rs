@@ -149,6 +149,7 @@ fn finish(session: &mut measurements::Session) -> Result<(), String> {
             "trace": state.trace.as_ref().map(|path| measurements::file_name(path)),
             "marker_verified": state.marker_verified,
             "marker_warning": state.marker_warning,
+            "scope_warning": state.scope_warning,
         }),
     )?;
     write_perfetto_metric_svgs(
@@ -288,6 +289,7 @@ struct PerfettoState {
     trace_marker_output: Option<File>,
     marker_verified: bool,
     marker_warning: Option<String>,
+    scope_warning: Option<String>,
     tracepoint_count: u64,
     metrics: BTreeMap<String, f64>,
 }
@@ -479,6 +481,16 @@ impl measurements::Session {
         };
         let processor = tool_dir.join("perfetto/bin/trace_processor_shell");
         if !processor.is_file() {
+            return metrics;
+        }
+        let valid = state.pid.and_then(|pid| {
+            let query = format!("{} SELECT COUNT(*) FROM root CROSS JOIN bounds WHERE bounds.start_ts IS NOT NULL AND bounds.end_ts>bounds.start_ts", perfetto_scope_sql(pid, &self.trace_id));
+            processor_query(&processor, trace, &query).ok().filter(|output| output.status.success())
+                .and_then(|output| bounded(&output.stdout).lines().rev().find_map(parse_float))
+        }) == Some(1.0);
+        if !valid {
+            drop(state);
+            self.state::<PerfettoState>().borrow_mut().scope_warning = Some("Cannot uniquely identify the benchmark process lifetime and interval in this trace; scheduler metrics are unavailable rather than unscoped or zero. Inspect the retained trace and lifecycle markers.".into());
             return metrics;
         }
         for (metric, query) in perfetto_metric_queries(state.pid, &self.trace_id) {
@@ -910,16 +922,16 @@ pub(crate) fn perfetto_metric_queries(pid: Option<u32>, trace_id: &str) -> Vec<(
         (
             "perfetto.scheduler_events".into(),
             format!(
-                "{scope} SELECT COUNT(*) FROM sched s JOIN thread th ON s.utid=th.utid CROSS JOIN bounds WHERE th.upid IN tree AND s.ts >= bounds.start_ts AND s.ts < bounds.end_ts"
+                "{scope} SELECT COUNT(*) FROM sched s JOIN thread th ON s.utid=th.utid CROSS JOIN bounds WHERE th.upid IN tree AND s.ts >= bounds.start_ts AND s.ts < bounds.end_ts HAVING {VALID_SCOPE}"
             ),
         ),
         (
             "perfetto.processes".into(),
-            format!("{scope} SELECT COUNT(*) FROM process WHERE upid IN tree"),
+            format!("{scope} SELECT COUNT(*) FROM process WHERE upid IN tree HAVING {VALID_SCOPE}"),
         ),
         (
             "perfetto.threads".into(),
-            format!("{scope} SELECT COUNT(*) FROM thread WHERE upid IN tree"),
+            format!("{scope} SELECT COUNT(*) FROM thread WHERE upid IN tree HAVING {VALID_SCOPE}"),
         ),
     ]
 }
@@ -939,17 +951,20 @@ pub(crate) fn perfetto_series_queries(pid: Option<u32>, trace_id: &str) -> Vec<(
         (
             "perfetto.scheduler_duration_ms_per_s".into(),
             format!(
-                "{scope}, relevant AS (SELECT s.ts, s.dur FROM sched s JOIN thread th ON s.utid=th.utid CROSS JOIN bounds WHERE th.upid IN tree AND s.ts < bounds.end_ts AND s.ts+s.dur > bounds.start_ts), bucket_ranges(bucket) AS (SELECT 0 UNION ALL SELECT bucket+1 FROM bucket_ranges CROSS JOIN bounds WHERE bounds.start_ts+(bucket+1)*1000000000 < bounds.end_ts) SELECT bucket_ranges.bucket AS timestamp_s, COALESCE(SUM(MAX(0, MIN(r.ts+r.dur,bounds.start_ts+(bucket_ranges.bucket+1)*1000000000)-MAX(r.ts,bounds.start_ts+bucket_ranges.bucket*1000000000)))/1000000.0,0) AS value FROM bucket_ranges CROSS JOIN bounds LEFT JOIN relevant r ON r.ts < bounds.start_ts+(bucket_ranges.bucket+1)*1000000000 AND r.ts+r.dur > bounds.start_ts+bucket_ranges.bucket*1000000000 GROUP BY bucket_ranges.bucket ORDER BY bucket_ranges.bucket"
+                "{scope}, relevant AS (SELECT s.ts, s.dur FROM sched s JOIN thread th ON s.utid=th.utid CROSS JOIN bounds WHERE th.upid IN tree AND s.ts < bounds.end_ts AND s.ts+s.dur > bounds.start_ts), bucket_ranges(bucket) AS (SELECT 0 WHERE {VALID_SCOPE} UNION ALL SELECT bucket+1 FROM bucket_ranges CROSS JOIN bounds WHERE bounds.start_ts+(bucket+1)*1000000000 < bounds.end_ts) SELECT bucket_ranges.bucket AS timestamp_s, COALESCE(SUM(MAX(0, MIN(r.ts+r.dur,bounds.start_ts+(bucket_ranges.bucket+1)*1000000000)-MAX(r.ts,bounds.start_ts+bucket_ranges.bucket*1000000000)))/1000000.0,0) AS value FROM bucket_ranges CROSS JOIN bounds LEFT JOIN relevant r ON r.ts < bounds.start_ts+(bucket_ranges.bucket+1)*1000000000 AND r.ts+r.dur > bounds.start_ts+bucket_ranges.bucket*1000000000 GROUP BY bucket_ranges.bucket ORDER BY bucket_ranges.bucket"
             ),
         ),
     ]
 }
 
+const VALID_SCOPE: &str = "(SELECT COUNT(*) FROM root CROSS JOIN bounds WHERE bounds.start_ts IS NOT NULL AND bounds.end_ts>bounds.start_ts)=1";
+
 pub(crate) fn perfetto_scope_sql(pid: u32, trace_id: &str) -> String {
-    // Prefer explicit ASB lifecycle markers when tracefs captured them, and
-    // fall back to the process tree's lifetime when markers are unavailable.
+    // A numeric PID may have several UPIDs in a long trace. Select only the
+    // unique generation alive at the agent-start marker. Without a marker,
+    // a unique PID generation is required; ambiguity must not become zero data.
     format!(
-        "WITH RECURSIVE tree(upid) AS (SELECT upid FROM process WHERE pid={pid} UNION ALL SELECT p.upid FROM process p JOIN tree t ON p.parent_upid=t.upid), process_bounds AS (SELECT MIN(start_ts) AS process_start, MAX(COALESCE(end_ts,(SELECT MAX(ts+dur) FROM sched))) AS process_end FROM process WHERE upid IN tree), marker_bounds AS (SELECT MIN(ts) FILTER (WHERE name='asb.agent.started.{trace_id}') AS marker_start, MAX(ts) FILTER (WHERE name='asb.agent.exited.{trace_id}') AS marker_end FROM slice), bounds AS (SELECT COALESCE(marker_start,process_start) AS start_ts, COALESCE(marker_end,process_end) AS end_ts FROM process_bounds CROSS JOIN marker_bounds)",
+        "WITH RECURSIVE tree(upid) AS (SELECT upid FROM root UNION ALL SELECT p.upid FROM process p JOIN tree t ON p.parent_upid=t.upid), marker_bounds AS (SELECT MIN(ts) FILTER (WHERE name='asb.agent.started.{trace_id}') AS marker_start, MAX(ts) FILTER (WHERE name='asb.agent.exited.{trace_id}') AS marker_end FROM slice), root_candidates AS (SELECT p.upid,p.start_ts,p.end_ts,COALESCE(p.start_ts,(SELECT MIN(s.ts) FROM sched s JOIN thread th ON s.utid=th.utid WHERE th.upid=p.upid)) AS first_seen FROM process p WHERE p.pid={pid}), eligible_roots AS (SELECT r.upid FROM root_candidates r CROSS JOIN marker_bounds m WHERE (m.marker_start IS NOT NULL AND r.first_seen <= m.marker_start AND (r.end_ts IS NULL OR r.end_ts >= m.marker_start)) OR (m.marker_start IS NULL AND (SELECT COUNT(*) FROM root_candidates)=1)), root AS (SELECT upid FROM eligible_roots WHERE (SELECT COUNT(*) FROM eligible_roots)=1), process_bounds AS (SELECT MIN(start_ts) AS process_start, MAX(COALESCE(end_ts,(SELECT MAX(ts+dur) FROM sched))) AS process_end FROM process WHERE upid IN tree), bounds AS (SELECT COALESCE(marker_start,process_start) AS start_ts, COALESCE(marker_end,process_end) AS end_ts FROM process_bounds CROSS JOIN marker_bounds)",
     )
 }
 
@@ -1080,6 +1095,73 @@ pub(crate) fn perfetto_tracefs_error() -> String {
 #[cfg(test)]
 mod marker_tests {
     use super::*;
+
+    fn scope_fixture_query(query: &str, scenario: &str) -> serde_json::Value {
+        let script = r#"import json,sqlite3,sys
+c=sqlite3.connect(':memory:')
+c.executescript('''CREATE TABLE process(upid INTEGER,pid INTEGER,parent_upid INTEGER,start_ts INTEGER,end_ts INTEGER);
+CREATE TABLE thread(utid INTEGER,upid INTEGER);
+CREATE TABLE sched(utid INTEGER,ts INTEGER,dur INTEGER);
+CREATE TABLE slice(name TEXT,ts INTEGER);
+INSERT INTO process VALUES(1,42,NULL,0,50),(2,42,NULL,60,150),(3,42,NULL,170,300),(4,77,2,80,140),(5,88,1,10,40);
+INSERT INTO thread VALUES(1,1),(2,2),(3,3),(4,4),(5,5);
+INSERT INTO sched VALUES(1,20,5),(2,90,1),(2,110,10),(3,180,10),(4,120,10),(5,25,2);
+INSERT INTO slice VALUES('asb.agent.started.fixture',100),('asb.agent.exited.fixture',200);''')
+case=sys.argv[2]
+if case in ('no-markers','unique-legacy'): c.execute('DELETE FROM slice')
+if case=='unique-legacy': c.execute('DELETE FROM process WHERE upid!=2')
+if case=='ambiguous': c.execute('UPDATE process SET end_ts=NULL WHERE upid=1')
+if case=='unknown-start': c.execute('UPDATE process SET start_ts=NULL WHERE upid IN (2,3)')
+if case=='invalid-bounds': c.execute("UPDATE slice SET ts=80 WHERE name='asb.agent.exited.fixture'")
+print(json.dumps(c.execute(sys.argv[1]).fetchall()))
+"#;
+        let output = Command::new("python3")
+            .args(["-c", script, query, scenario])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        serde_json::from_slice(&output.stdout).unwrap()
+    }
+
+    #[test]
+    fn reused_perfetto_pids_select_only_the_unique_generation_at_agent_start() {
+        let scope = perfetto_scope_sql(42, "fixture");
+        for scenario in ["normal", "unknown-start"] {
+            assert_eq!(
+                scope_fixture_query(
+                    &format!("{scope} SELECT upid FROM tree ORDER BY upid"),
+                    scenario
+                ),
+                serde_json::json!([[2], [4]])
+            );
+            for (_, query) in perfetto_metric_queries(Some(42), "fixture") {
+                assert_eq!(
+                    scope_fixture_query(&query, scenario),
+                    serde_json::json!([[2]])
+                );
+            }
+        }
+        for scenario in ["no-markers", "ambiguous", "invalid-bounds"] {
+            for (_, query) in perfetto_metric_queries(Some(42), "fixture") {
+                assert_eq!(
+                    scope_fixture_query(&query, scenario),
+                    serde_json::json!([]),
+                    "ambiguous lifetime must be missing, not zero: {scenario}"
+                );
+            }
+            for (_, query) in perfetto_series_queries(Some(42), "fixture") {
+                assert_eq!(scope_fixture_query(&query, scenario), serde_json::json!([]));
+            }
+        }
+        assert_eq!(
+            scope_fixture_query(&format!("{scope} SELECT upid FROM root"), "unique-legacy"),
+            serde_json::json!([[2]])
+        );
+    }
 
     #[test]
     fn permission_failure_has_persistent_scoped_remediation() {
@@ -1355,6 +1437,20 @@ mod marker_tests {
         let trace =
             Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/perfetto-marker.trace");
         verify_trace_marker_capture(&processor, &trace, "42-1").unwrap();
+        let scoped = processor_query(
+            &processor,
+            &trace,
+            &format!(
+                "{} SELECT COUNT(*) FROM root",
+                perfetto_scope_sql(42, "42-1")
+            ),
+        )
+        .unwrap();
+        assert!(
+            scoped.status.success(),
+            "{}",
+            String::from_utf8_lossy(&scoped.stderr)
+        );
         let error = verify_trace_marker_capture(&processor, &trace, "42-2").unwrap_err();
         assert!(error.contains("did not capture"), "{error}");
     }

@@ -79,6 +79,84 @@ pub(crate) enum Recipe {
     Goose,
 }
 
+impl Recipe {
+    pub(crate) fn runtime_inputs(self, root: &Path) -> Vec<crate::runtime_inputs::Dependency> {
+        match self {
+            Self::Python { .. } => vec![crate::runtime_inputs::Dependency::Python {
+                path: root.join("venv/bin/python"),
+                site: true,
+            }],
+            _ => Vec::new(),
+        }
+    }
+    fn guest_runtimes(self) -> &'static [&'static str] {
+        match self {
+            Self::Npm { .. } => &["node"],
+            Self::Python { .. } => &["uv"],
+            Self::Goose | Self::Host { .. } | Self::Custom { .. } => &[],
+        }
+    }
+}
+
+#[derive(serde::Serialize)]
+pub(crate) struct GuestBootstrap {
+    runtime_tools: Vec<&'static str>,
+    assets: Vec<tools::GuestAsset>,
+    public_package_cache: bool,
+}
+
+/// Prefetch primary-source artifacts on the host, not via a task image's curl.
+/// The owning recipes still perform extraction/package installation in guest.
+pub(crate) fn guest_bootstrap(
+    id: &str,
+    project_root: &Path,
+    tools_root: &Path,
+) -> Result<GuestBootstrap, Error> {
+    let adapter = agents::find(id)
+        .ok_or_else(|| Error::Input("selected agent has no installation adapter".into()))?;
+    let recipe = adapter.recipe();
+    fs::create_dir_all(tools_root).map_err(|error| Error::Io(error.to_string()))?;
+    let lock = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(tools_root.join(".asb-guest-bootstrap.lock"))
+        .map_err(|error| Error::Io(format!("cannot reserve guest bootstrap: {error}")))?;
+    lock.lock()
+        .map_err(|error| Error::Io(format!("cannot lock project bootstrap cache: {error}")))?;
+    let _network = project::network_project(project_root);
+    let mut progress = |_percent: u8, _stage: &str| {};
+    let mut plan = GuestBootstrap {
+        runtime_tools: recipe.guest_runtimes().to_vec(),
+        assets: Vec::new(),
+        public_package_cache: matches!(recipe, Recipe::Npm { .. }),
+    };
+    for id in &plan.runtime_tools {
+        let tool = tools::find(id)
+            .ok_or_else(|| Error::Input("guest runtime is not registered".into()))?;
+        let root = tools_root.join(id);
+        // Prefetch archives without replacing any host runtime executables.
+        for mut asset in tool.guest_assets(&root)? {
+            if let Some((url, checksum)) = asset.distribution {
+                tools::runtime::cached_archive(&asset.source, url, checksum, &mut progress)?;
+            }
+            asset.target = Path::new(id).join(asset.target);
+            plan.assets.push(asset);
+        }
+    }
+    if matches!(recipe, Recipe::Goose) {
+        let archive = goose_archive(&tools_root.join(id), &mut progress)?;
+        plan.assets.push(tools::GuestAsset {
+            source: archive,
+            target: Path::new(id).join("cache/goose.tar.gz"),
+            distribution: None,
+        });
+    }
+    Ok(plan)
+}
+
+#[derive(Clone, Copy)]
 struct ExternalWorkload {
     name: &'static str,
     source: &'static str,
@@ -161,20 +239,32 @@ const EXTERNAL_WORKLOADS: &[ExternalWorkload] = &[
     },
 ];
 
-fn external_workload(name: &str) -> Option<&'static ExternalWorkload> {
+fn external_workload(name: &str) -> Option<ExternalWorkload> {
     EXTERNAL_WORKLOADS
         .iter()
         .find(|workload| workload.name == name)
+        .copied()
+        .or_else(|| {
+            workloads::registered_sources()
+                .find(|(id, _)| *id == name)
+                .map(|(name, source)| ExternalWorkload { name, source })
+        })
 }
 
 /// Return the pinned external workloads that the TUIs can offer for install.
 pub fn external_workload_names() -> impl Iterator<Item = &'static str> {
-    EXTERNAL_WORKLOADS.iter().map(|workload| workload.name)
+    EXTERNAL_WORKLOADS
+        .iter()
+        .map(|workload| workload.name)
+        .chain(workloads::registered_sources().map(|(id, _)| id))
 }
 
 /// Check whether an external workload has its runnable local bundle and
 /// prompt. This is side-effect free and safe to call while rendering a TUI.
 pub fn workload_available(name: &str, directory: &Path) -> bool {
+    if let Some(available) = workloads::installed_available(name, directory) {
+        return available;
+    }
     if bundle_spec(name).is_some() {
         directory.join(name).join("ASB-BUNDLE").is_file()
             && directory.join(name).join("source").is_dir()
@@ -195,11 +285,6 @@ pub fn workload_available(name: &str, directory: &Path) -> bool {
 
 fn bundle_spec(name: &str) -> Option<BundleSpec> {
     match name {
-        "swe-bench" => Some(BundleSpec {
-            archive: "https://github.com/SWE-bench/SWE-bench/archive/02e7a74ffd0b707aab73d203fe87bdc7c76afc8e.tar.gz",
-            marker: "swe-bench/SWE-bench@02e7a74ffd0b707aab73d203fe87bdc7c76afc8e",
-            prompt: "Use the installed upstream SWE-bench checkout in `external-workload`. Inspect its README and package metadata, select a concrete SWE-bench task or dataset-backed command available in this checkout, make the requested change, and run the narrowest applicable tests. Keep all changes inside this local checkout and do not download additional data during the run.\n",
-        }),
         "terminal-bench" => Some(BundleSpec {
             archive: "https://github.com/harbor-framework/terminal-bench/archive/452bf305c6daa62fc59061d22133a7cbc7c1572e.tar.gz",
             marker: "terminal-bench/terminal-bench@452bf305c6daa62fc59061d22133a7cbc7c1572e",
@@ -525,6 +610,23 @@ pub fn workload_with_progress(
     progress(2, "preparing");
     fs::create_dir_all(&directory)
         .map_err(|error| Error::Io(format!("cannot create {}: {error}", directory.display())))?;
+    // A custom prompt with a coincidentally matching destination name is not
+    // an upstream dataset installation.
+    if external_workload(&requested).is_some() && name == requested {
+        let tools_root = project::resolve(&project_root, &project_config.tools_dir);
+        if workloads::install_registered(
+            &name,
+            &workloads::InstallationContext {
+                project_root: &project_root,
+                tools_root: &tools_root,
+                workloads_root: &directory,
+            },
+            output,
+            progress,
+        )? {
+            return Ok(());
+        }
+    }
     if let Some(bundle) = bundle_spec(&name) {
         install_bundle(&name, bundle, &directory, output, progress)?;
         return Ok(());
@@ -739,8 +841,8 @@ pub fn workload_list(
         }
     }
     writeln!(output, "Installable external workloads:").map_err(super::io_error)?;
-    for workload in EXTERNAL_WORKLOADS {
-        writeln!(output, "  {}", workload.name).map_err(super::io_error)?;
+    for workload in external_workload_names() {
+        writeln!(output, "  {workload}").map_err(super::io_error)?;
     }
     Ok(())
 }
@@ -756,6 +858,7 @@ fn install_recipe(
         .map_err(|error| Error::Io(format!("cannot create {}: {error}", root.display())))?;
     let status = match recipe {
         Recipe::Npm { package, .. } => {
+            ensure_runtime_dependency("node", project_root, root.parent().expect("tool parent"), output, progress)?;
             let manifest = root.join("package.json");
             if !manifest.exists() {
                 fs::write(&manifest, NPM_INSTALL_MANIFEST).map_err(|error| {
@@ -763,10 +866,12 @@ fn install_recipe(
                 })?;
             }
             progress(15, "installing npm package");
-            Command::new("npm")
-                .args(["install", "--prefix"])
+            let mut command = Command::new("npm");
+            tools::apply_runtime_path(&mut command, project_root, &root.parent().expect("tool parent").to_string_lossy())?;
+            command.args(["install", "--prefix"])
                 .arg(root)
                 .args(["--no-save", package])
+                .env("NPM_CONFIG_CACHE", project_root.join(".asb-cache/npm"))
                 .logged_status()
         }
         Recipe::Python {
@@ -860,7 +965,33 @@ fn install_recipe(
     Ok(executable)
 }
 
-fn install_goose(root: &Path, progress: &mut dyn FnMut(u8, &str)) -> Result<PathBuf, Error> {
+/// Reuse a compatible host runtime or install its registered project-local recipe.
+pub(crate) fn ensure_runtime_dependency(
+    id: &str,
+    project_root: &Path,
+    tools_root: &Path,
+    output: &mut dyn std::io::Write,
+    progress: &mut dyn FnMut(u8, &str),
+) -> Result<(), Error> {
+    let tool = tools::find(id)
+        .ok_or_else(|| Error::Input(format!("runtime dependency `{id}` is not registered")))?;
+    if tool_installed_locally(id, tools_root) || tool.host_runtime_usable() {
+        return Ok(());
+    }
+    let destination = install_recipe(
+        tool.recipe(),
+        &tools_root.join(id),
+        project_root,
+        output,
+        progress,
+    )?;
+    tool.post_install(&destination, progress, output)?;
+    writeln!(output, "Installed required runtime {id} for this project.")
+        .map_err(crate::io_error)?;
+    Ok(())
+}
+
+fn goose_archive(root: &Path, progress: &mut dyn FnMut(u8, &str)) -> Result<PathBuf, Error> {
     let (url, checksum) = match std::env::consts::ARCH {
         "x86_64" => (GOOSE_X86_64_URL, GOOSE_X86_64_SHA256),
         "aarch64" => (GOOSE_AARCH64_URL, GOOSE_AARCH64_SHA256),
@@ -870,14 +1001,15 @@ fn install_goose(root: &Path, progress: &mut dyn FnMut(u8, &str)) -> Result<Path
             )));
         }
     };
-    let archive = root.join("goose.tar.gz");
-    let extract = root.join("extract");
-    fs::create_dir_all(&extract)
+    let archive = root.join("cache/goose.tar.gz");
+    tools::runtime::cached_archive(&archive, url, checksum, progress)
+}
+
+fn install_goose(root: &Path, progress: &mut dyn FnMut(u8, &str)) -> Result<PathBuf, Error> {
+    let archive = goose_archive(root, progress)?;
+    let extract = root.join(format!("extract-{}", tools::runtime::unique_id()));
+    fs::create_dir(&extract)
         .map_err(|error| Error::Io(format!("cannot create Goose extraction directory: {error}")))?;
-    progress(20, "downloading pinned Goose binary");
-    install_source(url, &archive, "Goose binary")?;
-    progress(45, "verifying Goose checksum");
-    verify_sha256(&archive, checksum, "Goose binary")?;
     progress(60, "extracting Goose binary");
     let status = Command::new("tar")
         .args(["--extract", "--gzip", "--file"])
@@ -907,7 +1039,6 @@ fn install_goose(root: &Path, progress: &mut dyn FnMut(u8, &str)) -> Result<Path
         ))
     })?;
     make_executable(&destination)?;
-    let _ = fs::remove_file(archive);
     let _ = fs::remove_dir_all(extract);
     progress(100, "ready");
     Ok(destination)
@@ -918,6 +1049,24 @@ pub(crate) fn verify_sha256(
     expected_hash: &str,
     label: &str,
 ) -> Result<(), Error> {
+    verify_sha256_inner(destination, expected_hash, label, true)
+}
+
+/// Inspect cached inputs without destroying evidence needed for repair.
+pub(crate) fn verify_sha256_preserving(
+    destination: &Path,
+    expected_hash: &str,
+    label: &str,
+) -> Result<(), Error> {
+    verify_sha256_inner(destination, expected_hash, label, false)
+}
+
+fn verify_sha256_inner(
+    destination: &Path,
+    expected_hash: &str,
+    label: &str,
+    remove_invalid: bool,
+) -> Result<(), Error> {
     let digest = command_output(
         &PathBuf::from("sha256sum"),
         &[destination.to_string_lossy().as_ref()],
@@ -925,7 +1074,9 @@ pub(crate) fn verify_sha256(
     )?;
     let actual_hash = digest.split_whitespace().next().unwrap_or_default();
     if actual_hash != expected_hash {
-        let _ = fs::remove_file(destination);
+        if remove_invalid {
+            let _ = fs::remove_file(destination);
+        }
         return Err(Error::Io(format!(
             "{label} checksum mismatch: expected {expected_hash}, got {actual_hash}"
         )));
@@ -1039,10 +1190,7 @@ fn workload_source(
         && valid_name(requested)
         && !Path::new(requested).is_file()
     {
-        let aliases = EXTERNAL_WORKLOADS
-            .iter()
-            .map(|workload| workload.name)
-            .collect::<Vec<_>>();
+        let aliases = external_workload_names().collect::<Vec<_>>();
         if let Some(candidate) = suggestions::closest(requested, &aliases) {
             return Err(Error::Input(format!(
                 "workload source `{requested}` was not found; did you mean external workload `{candidate}`?"
@@ -1094,22 +1242,54 @@ fn missing_dependency(tool: &str, operation: &str, error: std::io::Error) -> Err
 }
 
 pub(crate) fn install_source(source: &str, destination: &Path, kind: &str) -> Result<(), Error> {
+    install_source_with_limit(source, destination, kind, None)
+}
+
+pub(crate) fn install_runtime_source(source: &str, destination: &Path) -> Result<(), Error> {
+    install_source_with_limit(
+        source,
+        destination,
+        "runtime archive",
+        Some(256 * 1024 * 1024),
+    )
+}
+
+fn install_source_with_limit(
+    source: &str,
+    destination: &Path,
+    kind: &str,
+    limit: Option<u64>,
+) -> Result<(), Error> {
     if source.starts_with("https://") || source.starts_with("http://") {
-        let status = Command::new("curl")
-            .args([
-                "--fail",
-                "--location",
-                "--silent",
-                "--show-error",
-                "--output",
-            ])
-            .arg(destination)
+        let mut command = Command::new("curl");
+        command.args([
+            "--fail",
+            "--location",
+            "--silent",
+            "--show-error",
+            "--output",
+        ]);
+        command.arg(destination);
+        if let Some(limit) = limit {
+            command.args(["--max-time", "300", "--max-filesize", &limit.to_string()]);
+        }
+        let status = command
             .arg(source)
             .logged_status()
             .map_err(|error| missing_dependency("curl", kind, error))?;
         if !status.success() {
             return Err(Error::Io(format!(
                 "could not download {kind} from {source}"
+            )));
+        }
+        if let Some(limit) = limit
+            && fs::metadata(destination)
+                .map_err(|error| Error::Io(error.to_string()))?
+                .len()
+                > limit
+        {
+            return Err(Error::Input(format!(
+                "{kind} exceeds the installation size limit"
             )));
         }
         return Ok(());
@@ -1120,6 +1300,11 @@ pub(crate) fn install_source(source: &str, destination: &Path, kind: &str) -> Re
     if !metadata.is_file() {
         return Err(Error::Input(format!(
             "{kind} source is not a file: {source}"
+        )));
+    }
+    if limit.is_some_and(|limit| metadata.len() > limit) {
+        return Err(Error::Input(format!(
+            "{kind} exceeds the installation size limit"
         )));
     }
     fs::copy(source_path, destination).map_err(|error| {
@@ -1152,6 +1337,54 @@ pub(crate) fn make_executable(path: &Path) -> Result<(), Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn guest_runtime_requirements_come_from_every_registered_agent_recipe() {
+        for id in agents::names() {
+            let recipe = agents::find(id).unwrap().recipe();
+            let expected: &[&str] = match recipe {
+                Recipe::Npm { .. } => &["node"],
+                Recipe::Python { .. } => &["uv"],
+                Recipe::Goose => &[],
+                _ => panic!("registered agent {id} needs an explicit guest bootstrap recipe"),
+            };
+            assert_eq!(recipe.guest_runtimes(), expected);
+            for runtime in expected {
+                let tool = tools::find(runtime).unwrap();
+                let assets = tool
+                    .guest_assets(Path::new("/fixture/tools/runtime"))
+                    .unwrap();
+                assert!(!assets.is_empty());
+                for asset in assets {
+                    assert!(asset.source.starts_with("/fixture/tools/runtime"));
+                    assert!(!asset.target.is_absolute());
+                    assert!(asset.target.starts_with("cache"));
+                    let (url, hash) = asset
+                        .distribution
+                        .expect("runtime archive has no primary source");
+                    assert!(url.starts_with("https://"));
+                    assert_eq!(hash.len(), 64);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn bounded_runtime_copy_rejects_oversized_input_without_touching_existing_output() {
+        let root =
+            std::env::temp_dir().join(format!("asb-copy-bound-{}", tools::runtime::unique_id()));
+        fs::create_dir(&root).unwrap();
+        let source = root.join("source");
+        let destination = root.join("destination");
+        fs::write(&source, b"four").unwrap();
+        fs::write(&destination, b"preserved").unwrap();
+        assert!(
+            install_source_with_limit(source.to_str().unwrap(), &destination, "fixture", Some(3))
+                .is_err()
+        );
+        assert_eq!(fs::read(&destination).unwrap(), b"preserved");
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn npm_install_manifest_pins_published_aws_sdk_artifacts() {
@@ -1375,13 +1608,10 @@ mod tests {
             external_workload("swe-bench").map(|item| item.name),
             Some("swe-bench")
         );
-        assert!(bundle_spec("swe-bench").is_some());
+        assert!(bundle_spec("swe-bench").is_none());
         assert!(bundle_spec("terminal-bench").is_some());
         assert!(external_workload("methodology-only").is_none());
-        let installed = EXTERNAL_WORKLOADS
-            .iter()
-            .map(|workload| workload.name)
-            .collect::<std::collections::BTreeSet<_>>();
+        let installed = external_workload_names().collect::<std::collections::BTreeSet<_>>();
         let adapters =
             workloads::external_adapter_names().collect::<std::collections::BTreeSet<_>>();
         assert_eq!(
@@ -1395,15 +1625,21 @@ mod tests {
         let directory =
             std::env::temp_dir().join(format!("asb-external-bundle-{}", std::process::id()));
         let _ = fs::remove_dir_all(&directory);
-        let bundle_dir = directory.join("swe-bench");
+        let bundle_dir = directory.join("terminal-bench");
         fs::create_dir_all(bundle_dir.join("source")).unwrap();
         fs::write(bundle_dir.join("source/README.md"), "local source").unwrap();
-        let spec = bundle_spec("swe-bench").unwrap();
+        let spec = bundle_spec("terminal-bench").unwrap();
         fs::write(bundle_dir.join("ASB-BUNDLE"), spec.marker).unwrap();
         let mut output = Vec::new();
         let mut progress = |_percent: u8, _stage: &str| {};
-        install_bundle("swe-bench", spec, &directory, &mut output, &mut progress)
-            .expect("existing bundle is reused");
+        install_bundle(
+            "terminal-bench",
+            spec,
+            &directory,
+            &mut output,
+            &mut progress,
+        )
+        .expect("existing bundle is reused");
         assert!(
             String::from_utf8(output)
                 .unwrap()

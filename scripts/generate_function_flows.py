@@ -60,6 +60,7 @@ def brace_body(lines: list[str], start: int) -> str:
 
 
 def collect(source_root: Path) -> list[Function]:
+    source_root = source_root.resolve()
     functions: list[Function] = []
     for path in sorted(source_root.rglob("*.rs")):
         lines = path.read_text(encoding="utf-8").splitlines()
@@ -76,7 +77,7 @@ def collect(source_root: Path) -> list[Function]:
                     ident=f"F{len(functions):04d}",
                     name=match.group(1),
                     module=module,
-                    file=str(path.relative_to(source_root.parent.parent)),
+                    file=str(path.relative_to(source_root.parent)),
                     line=index + 1,
                     body=brace_body(lines, index),
                     public=public,
@@ -113,10 +114,17 @@ def render(functions: list[Function], relations: set[tuple[str, str, str]], kind
         groups[function.module].append(function)
     lines = [
         f"digraph ASB_{kind.title()}_Flow {{",
-        '    graph [bgcolor="white", compound=true, fontname="Helvetica", '
+        '    graph [bgcolor="white", compound=false, layout=osage, fontname="Helvetica", '
         f'fontsize=18, label="ASB {kind} flow (Rust functions)", labelloc=t, '
-        'newrank=true, nodesep=0.18, pad=0.25, rankdir=LR, ranksep=0.8, '
-        'splines=polyline, concentrate=true];',
+        # Packed module layout handles arbitrary inter-module call cycles.
+        # Graphviz 2.43's hierarchical dot ranking can fail init_rank and spin
+        # indefinitely on the full graph. Preserve every node, module box,
+        # directed edge and label instead of pruning the graph to fit dot.
+        'newrank=false, nodesep=0.18, pad=0.25, rankdir=LR, ranksep=0.8, forcelabels=true, '
+        # Edge concentration can corrupt clustered layouts in Graphviz 2.43
+        # (contain_nodes/rebuild_vlists errors and a segmentation fault).
+        # Keep each call edge explicit; this also preserves its hover label.
+        'splines=polyline, concentrate=false];',
         '    node [color="#64748b", fillcolor="#f8fafc", fontname="Helvetica", '
         'fontsize=8, shape=box, style="filled,rounded"];',
         '    edge [color="#94a3b8", fontname="Helvetica", fontsize=7, arrowsize=0.55];',
@@ -144,19 +152,23 @@ def render(functions: list[Function], relations: set[tuple[str, str, str]], kind
         callee = by_id[target]
         style = "solid" if kind == "dataflow" else "dashed"
         label = f"{caller.name}() -> {callee.name}()" if kind == "dataflow" else f"calls {callee.name}()"
-        lines.append(f'    {source} -> {target} [label="{label}", style="{style}"];')
+        # External labels do not create synthetic nodes in rank assignment.
+        # Ordinary edge labels made the complete clustered graph time out or
+        # fail init_rank on Graphviz 2.43 as a few adapter functions were added.
+        # Keep every relation and force all labels to remain visible; neither
+        # graph pruning nor a longer timeout is necessary.
+        lines.append(f'    {source} -> {target} [xlabel="{label}", style="{style}"];')
 
     if kind == "control":
         roots = sorted({function.ident for function in functions} - {target for _, target, _ in relations})
         leaves = sorted({function.ident for function in functions} - {source for source, _, _ in relations})
-        lines.extend([
-            '    entry [label="entry points", shape=oval, fillcolor="#dcfce7"];',
-            '    exit [label="terminal functions", shape=oval, fillcolor="#fee2e2"];',
-        ])
+        # Annotate actual roots/leaves instead of adding global synthetic
+        # entry/exit edges across every module cluster. Those edges are not
+        # function calls and destabilize rank assignment on older Graphviz.
         for ident in roots:
-            lines.append(f'    entry -> {ident} [color="#16a34a", style=dotted];')
+            lines.append(f'    {ident} [color="#16a34a", penwidth=2];')
         for ident in leaves:
-            lines.append(f'    {ident} -> exit [color="#dc2626", style=dotted];')
+            lines.append(f'    {ident} [color="#dc2626", penwidth=2];')
     lines.append("}")
     return "\n".join(lines) + "\n"
 

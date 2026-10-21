@@ -7,10 +7,34 @@ import { PassThrough, Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
 
 const children = new Set();
+let closing = false;
 const scratchRoot = dirname(fileURLToPath(import.meta.url));
 
 export function cancelNetworkRequests() {
   for (const child of children) child.kill("SIGTERM");
+}
+
+// Only children created by this module are signalled. Wait for actual close
+// events so the sidecar does not exit first and orphan a resistant curl.
+export async function quiesceNetworkRequests() {
+  closing = true;
+  const pending = [...children];
+  await Promise.all(pending.map((child) => new Promise((resolve, reject) => {
+    if (!children.has(child)) { resolve(); return; }
+    let terminate, deadline;
+    const done = () => {
+      clearTimeout(terminate);
+      clearTimeout(deadline);
+      resolve();
+    };
+    child.once("close", done);
+    child.kill("SIGTERM");
+    terminate = setTimeout(() => child.kill("SIGKILL"), 300);
+    deadline = setTimeout(() => {
+      child.removeListener("close", done);
+      reject(new Error("outbound subprocess cleanup deadline exceeded"));
+    }, 1000);
+  })));
 }
 
 function quoted(value) {
@@ -24,6 +48,7 @@ function anyProxy() {
 }
 
 export async function networkFetch(url, options = {}, redirects = 0) {
+  if (closing) throw new Error("outbound network session is closing");
   if (!anyProxy()) return fetch(url, options);
   const target = new URL(url);
   if (!["http:", "https:"].includes(target.protocol)) throw new Error("unsupported upstream protocol");

@@ -23,11 +23,23 @@ const RUN_OPTIONS: &[&str] = &[
     "--json",
     "--measurements",
 ];
-const SWEEP_OPTIONS: &[&str] = &["--record", "--replay", "--json"];
+const SWEEP_OPTIONS: &[&str] = &[
+    "--reconcile-completed",
+    "--resume",
+    "--record",
+    "--replay",
+    "--json",
+    "--show-output",
+    "--respect-record-timings",
+    "--cassette-root",
+    "--jobs",
+    "--max-active-attempts",
+];
 const PROVIDER_SUBCOMMANDS: &[&str] = &["models"];
 const PROVIDER_MODELS_OPTIONS: &[&str] = &["--json", "--free"];
 const TOOL_SUBCOMMANDS: &[&str] = &["list", "install"];
-const WORKLOAD_SUBCOMMANDS: &[&str] = &["list", "install", "tui"];
+const WORKLOAD_SUBCOMMANDS: &[&str] = &["list", "install", "tui", "recover"];
+const WORKLOAD_RECOVER_OPTIONS: &[&str] = &["--json"];
 const WORKLOAD_LIST_OPTIONS: &[&str] = &["--dir"];
 const WORKLOAD_INSTALL_OPTIONS: &[&str] = &["--name", "--dir"];
 
@@ -82,6 +94,7 @@ fn generate_bash() -> String {
         &[
             ("list", WORKLOAD_LIST_OPTIONS),
             ("install", WORKLOAD_INSTALL_OPTIONS),
+            ("recover", WORKLOAD_RECOVER_OPTIONS),
         ],
     );
     script.push_str("    esac\n}\ncomplete -F _asb asb\n");
@@ -156,6 +169,7 @@ fn generate_zsh() -> String {
         &[
             ("list", WORKLOAD_LIST_OPTIONS),
             ("install", WORKLOAD_INSTALL_OPTIONS),
+            ("recover", WORKLOAD_RECOVER_OPTIONS),
         ],
     );
     script.push_str("      esac\n      ;;\n  esac\n}\n");

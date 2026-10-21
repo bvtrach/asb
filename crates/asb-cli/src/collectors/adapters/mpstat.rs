@@ -86,12 +86,25 @@ impl measurements::Session {
     pub(crate) fn start_cpu_snapshot(&mut self, pid: u32) -> Result<(), String> {
         let interval = measurements::pidstat_interval_seconds();
         let enabled = self.state::<CpuState>().borrow().enabled;
-        self.start_snapshot(
+        self.start_tree_snapshot(
             "mpstat",
-            "ASB_MEASURE_MPSTAT",
-            &["-u", "-T", "ALL", "-p", &pid.to_string(), &interval],
             enabled,
             &super::pidstat::executable(self.tool_dir.as_deref()),
+            pid,
+            Box::new(move |pids| {
+                vec![
+                    "-u".into(),
+                    "-T".into(),
+                    "ALL".into(),
+                    "-p".into(),
+                    pids.iter()
+                        .map(u32::to_string)
+                        .collect::<Vec<_>>()
+                        .join(","),
+                    interval.clone(),
+                    "1".into(),
+                ]
+            }),
         )
     }
 }

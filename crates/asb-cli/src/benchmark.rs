@@ -2,8 +2,10 @@
 
 use serde::{Deserialize, Serialize};
 
+pub(crate) const MAX_CONCURRENCY: usize = 64;
+
 /// Small, extensible benchmark configuration written by `asb setup`.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct BenchmarkConfig {
     pub agent: String,
     pub workload: String,
@@ -30,7 +32,7 @@ pub struct BenchmarkConfig {
 }
 
 /// Measurement modules selected by generated setup files.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct MeasurementConfig {
     pub enabled: bool,
     pub directory: String,
@@ -54,9 +56,15 @@ where
     D: serde::Deserializer<'de>,
 {
     let value = usize::deserialize(deserializer)?;
-    (value > 0)
-        .then_some(value)
-        .ok_or_else(|| serde::de::Error::custom("concurrency must be at least 1"))
+    if value == 0 {
+        return Err(serde::de::Error::custom("concurrency must be at least 1"));
+    }
+    if value > MAX_CONCURRENCY {
+        return Err(serde::de::Error::custom(format!(
+            "concurrency must not exceed {MAX_CONCURRENCY}; split larger selections into bounded sweeps"
+        )));
+    }
+    Ok(value)
 }
 
 #[cfg(test)]
@@ -85,5 +93,20 @@ mod tests {
         )
         .expect_err("zero concurrency must be invalid");
         assert!(error.to_string().contains("concurrency must be at least 1"));
+    }
+
+    #[test]
+    fn concurrency_is_bounded_before_replica_allocation() {
+        for concurrency in [64u64, 65, u64::MAX] {
+            let config = format!(
+                "agent='pi'\nworkload='bug-fix'\nprovider='cli2key'\nmodel='fixture'\nconcurrency={concurrency}\n"
+            );
+            let parsed = toml::from_str::<BenchmarkConfig>(&config);
+            if concurrency == 64 {
+                assert_eq!(parsed.unwrap().concurrency, 64);
+            } else {
+                assert!(parsed.is_err());
+            }
+        }
     }
 }

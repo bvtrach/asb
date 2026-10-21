@@ -1,7 +1,11 @@
 // Kernel lock contention attributable to the agent process tree. This profile
 // needs a kernel built with lock contention tracepoints.
-tracepoint:lock:contention_begin /@asb_tree[pid]/ {
+tracepoint:lock:contention_begin /@asb_tree[pid] || @asb_tree[tid]/ {
   @asb_lock_start[tid] = nsecs;
+}
+
+tracepoint:sched:sched_process_exit /@asb_lock_start[tid]/ {
+  delete(@asb_lock_start[tid]);
 }
 
 tracepoint:lock:contention_end /@asb_lock_start[tid]/ {

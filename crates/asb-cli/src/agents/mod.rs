@@ -4,6 +4,7 @@
 //! shape and provider-specific adjustment lives in the owning adapter module.
 
 mod adapters;
+pub(crate) mod driver;
 use adapters::REGISTRY;
 
 use crate::Error;
@@ -20,6 +21,22 @@ pub(crate) trait AgentAdapter: Sync {
     fn executable(&self) -> &'static str;
     /// Project-local installation recipe for this exact adapter executable.
     fn recipe(&self) -> Recipe;
+    fn runtime_inputs(
+        &self,
+        context: &crate::runtime_inputs::Context<'_>,
+    ) -> Result<Vec<crate::runtime_inputs::Dependency>, Error> {
+        let executable = resolve(self.id(), context.root, &context.project.tools_dir)
+            .ok_or_else(|| Error::Input("selected agent runtime is not installed".into()))?;
+        let mut command = self.process(&executable)?;
+        project::apply_python_path(&mut command, context.root, Path::new(&executable))?;
+        crate::tools::apply_runtime_path(&mut command, context.root, &context.project.tools_dir)?;
+        let mut inputs = self.recipe().runtime_inputs(&context.tool_root(self.id()));
+        inputs.push(crate::runtime_inputs::Dependency::command(&command));
+        if let Some(path) = std::env::var_os("ASB_TOOL_DIR") {
+            inputs.push(crate::runtime_inputs::Dependency::file(PathBuf::from(path)));
+        }
+        Ok(inputs)
+    }
     /// Supported wire interfaces, in preference order.
     fn supported_endpoints(&self) -> &'static [Support];
     fn command(&self, context: &CommandContext<'_>) -> CommandSpec;
@@ -50,6 +67,10 @@ pub(crate) trait AgentAdapter: Sync {
     }
     /// A complete run's authoritative counter, not a count of JSON/text matches.
     fn step_count(&self, _stdout: &str, _stderr: &str) -> Option<u64> {
+        None
+    }
+    /// A terminal client/protocol failure that a zero process exit can hide.
+    fn execution_failure(&self, _stdout: &str, _stderr: &str) -> Option<String> {
         None
     }
 }
@@ -171,6 +192,7 @@ type UsageHook = fn(&str, &str, bool) -> crate::measurements::TokenUsage;
 type FinalResponseHook = fn(&str, &Path) -> Option<String>;
 type ProcessHook = fn(&str) -> Result<Command, Error>;
 type StepCountHook = fn(&str, &str) -> Option<u64>;
+type FailureHook = fn(&str, &str) -> Option<String>;
 
 /// Trait-object implementation whose behavior is supplied by individual files.
 pub(super) struct StaticAdapter {
@@ -185,6 +207,7 @@ pub(super) struct StaticAdapter {
     final_response: Option<FinalResponseHook>,
     process: Option<ProcessHook>,
     step_count: Option<StepCountHook>,
+    failure: Option<FailureHook>,
     replay_credential_vars: &'static [&'static str],
 }
 impl StaticAdapter {
@@ -208,6 +231,7 @@ impl StaticAdapter {
             final_response: None,
             process: None,
             step_count: None,
+            failure: None,
             replay_credential_vars: &[],
         }
     }
@@ -229,6 +253,11 @@ impl StaticAdapter {
 
     pub(super) const fn with_final_response(mut self, hook: FinalResponseHook) -> Self {
         self.final_response = Some(hook);
+        self
+    }
+
+    pub(super) const fn with_execution_failure(mut self, hook: FailureHook) -> Self {
+        self.failure = Some(hook);
         self
     }
 
@@ -293,6 +322,9 @@ impl AgentAdapter for StaticAdapter {
     }
     fn step_count(&self, stdout: &str, stderr: &str) -> Option<u64> {
         self.step_count.and_then(|hook| hook(stdout, stderr))
+    }
+    fn execution_failure(&self, stdout: &str, stderr: &str) -> Option<String> {
+        self.failure.and_then(|hook| hook(stdout, stderr))
     }
 }
 pub(crate) fn prepare(agent: &str, context: &mut PreparationContext<'_>) -> Result<(), Error> {

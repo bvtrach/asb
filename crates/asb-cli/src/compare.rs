@@ -1,31 +1,35 @@
 //! Offline comparison and SVG chart generation for completed sweeps.
 
 use crate::{Error, read_config};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
 const MAX_BYTES: u64 = 16 * 1024 * 1024;
+mod coverage;
+pub(crate) mod outcomes;
+mod reconciliation;
 const PLOT_TOP: f64 = 70.0;
 const PLOT_BOTTOM: f64 = 390.0;
 const PLOT_RIGHT: f64 = 880.0;
 const Y_TICKS: usize = 5;
 
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct SweepFile {
-    configs: Vec<String>,
-}
-
 #[derive(Debug)]
 struct BenchmarkData {
+    result_source: &'static str,
+    reconciled: bool,
+    replica_index: Option<usize>,
+    execution_cohort: Option<crate::measurements::ExecutionCohort>,
     label: String,
     directory: PathBuf,
     agent: String,
     workload: String,
+    task: Option<crate::workloads::TaskIdentity>,
+    selection: Option<crate::workloads::TaskSelection>,
+    evaluation_completed: bool,
     workload_evaluation: String,
     provider: String,
     model: String,
@@ -46,31 +50,14 @@ struct TimeSeries {
 /// Compare all completed benchmark measurements referenced by a sweep.
 pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
     let sweep_path = Path::new(path);
-    let text = read_config(sweep_path)?;
-    let value: toml::Value = toml::from_str(&text)
-        .map_err(|error| Error::Input(format!("cannot parse sweep {path}: {error}")))?;
-    if !value
-        .as_table()
-        .is_some_and(|table| table.contains_key("configs"))
-    {
-        return Err(Error::Input(format!(
-            "{path} is not a sweep TOML; expected configs = [...]"
-        )));
-    }
-    let sweep: SweepFile = value
-        .try_into()
-        .map_err(|error| Error::Input(format!("invalid sweep {path}: {error}")))?;
-    if sweep.configs.is_empty() {
-        return Err(Error::Input(format!(
-            "sweep {path} contains no benchmark configurations"
-        )));
-    }
+    let sweep = crate::sweep::read_manifest(sweep_path)?;
     let parent = sweep_path.parent().unwrap_or_else(|| Path::new("."));
     let stem = sweep_path
         .file_stem()
         .and_then(|value| value.to_str())
         .unwrap_or("sweep");
     let sweep_results = parent.join(format!("{stem}-results"));
+    let plan = crate::sweep::plan::SweepPlan::load(&sweep_results, parent, &sweep)?;
     let comparison_dir = parent.join("results").join(format!("{stem}-comparison"));
     fs::create_dir_all(&comparison_dir).map_err(|error| {
         Error::Run(format!(
@@ -80,10 +67,50 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
     })?;
 
     let mut benchmark_data = Vec::new();
+    let mut actual_attempts = BTreeSet::new();
     for (index, reference) in sweep.configs.iter().enumerate() {
         let config = checked_reference(parent, reference, path)?;
         let result_dir = sweep_results.join(format!("{index:03}-{}", safe_name(&config)));
         let (agent, workload, provider, model, concurrency) = benchmark_identity(&config)?;
+        let selection = plan
+            .as_ref()
+            .map(|plan| plan.entries[index].selection.clone());
+        let mut outcomes = outcomes::load(&result_dir, concurrency)?;
+        if let Some(plan) = &plan {
+            let mut imports = crate::sweep::recovered::load(
+                &sweep_results.join(".checkpoint"),
+                &result_dir,
+                index,
+                &plan.entries[index],
+            )?;
+            let closed = crate::sweep::closed_slot_reports(
+                &sweep_results.join(".checkpoint"),
+                &result_dir,
+                index,
+                &plan.entries[index],
+            )?;
+            for (slot, (_, value)) in &closed {
+                if let Some((_, imported)) = imports.get(slot) {
+                    if imported["task"] != value["task"]
+                        || imported["workload_success"] != value["workload_success"]
+                    {
+                        return Err(Error::Input(
+                            "closed slot conflicts with its imported grade; preserve both records"
+                                .into(),
+                        ));
+                    }
+                    imports.remove(slot);
+                }
+            }
+            outcomes::add_imports(&mut outcomes, imports)?;
+            outcomes::add_closed(&mut outcomes, closed)?;
+        } else if result_dir.join(".asb-imported-grades").exists()
+            || sweep_results.join(".checkpoint/closed-slots").exists()
+        {
+            return Err(Error::Input(
+                "retained grades require their original saved sweep plan".into(),
+            ));
+        }
         for replica in 1..=concurrency {
             let label = if concurrency == 1 {
                 format!("{index:03}-{}", safe_name(&config))
@@ -95,31 +122,145 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
             } else {
                 format!("measurements-concurrency-{replica}")
             });
-            let run_path = measurement_dir.join("run.json");
+            let mut run_path = measurement_dir.join("run.json");
             let artifacts = artifact_links(parent, &measurement_dir);
-            if !run_path.is_file() {
+            let outcome = outcomes.get(&replica);
+            let grade_only_closed =
+                outcome.is_some_and(|record| record.source == "recovered-official-grade");
+            let measured = run_path.is_file() && !grade_only_closed;
+            if !measured && outcome.is_none() {
+                let workload_evaluation = selection.as_ref().map_or_else(
+                    || crate::workloads::evaluation_kind(&workload, Path::new("")).into(),
+                    |selection| selection.evaluation_kind.clone(),
+                );
                 benchmark_data.push(BenchmarkData {
-                label,
-                directory: result_dir.clone(),
-                agent: agent.clone(),
-                workload: workload.clone(),
-                workload_evaluation: crate::workloads::evaluation_kind(&workload, Path::new("")).into(),
-                provider: provider.clone(),
-                model: model.clone(),
-                metrics: BTreeMap::new(),
-                series: BTreeMap::new(),
+                    result_source: "missing",
+                    reconciled: false,
+                    replica_index: None,
+                    execution_cohort: None,
+                    label,
+                    directory: result_dir.clone(),
+                    agent: agent.clone(),
+                    workload: workload.clone(),
+                    task: None,
+                    selection: selection.clone(),
+                    evaluation_completed: false,
+                    workload_evaluation,
+                    provider: provider.clone(),
+                    model: model.clone(),
+                    metrics: BTreeMap::new(),
+                    series: BTreeMap::new(),
                     host_metadata: None,
                     components: None,
-                status: Some(format!(
-                    "missing measurements: expected {} (measurement collection may be disabled, or the run stopped before writing results)",
-                    run_path.display()
-                )),
-                artifacts,
-            });
+                    status: Some(format!(
+                        "missing measurements: expected {} (measurement collection may be disabled, or the run stopped before writing results)",
+                        run_path.display()
+                    )),
+                    artifacts,
+                });
                 continue;
             }
-            let run_value = read_json(&run_path)?;
-            let run_status = match run_value.get("status").and_then(Value::as_str) {
+            let run_value = if measured {
+                let measured = read_json(&run_path)?;
+                if let Some(outcome) = outcome {
+                    outcome.check_measurement(&measured)?;
+                }
+                measured
+            } else {
+                let outcome = outcome.expect("a recorded outcome is required without measurements");
+                run_path = outcome.path.clone();
+                outcome.summary.clone()
+            };
+            if plan.is_some() || outcome.is_some() {
+                for (field, expected) in [
+                    ("agent", &agent),
+                    ("workload", &workload),
+                    ("provider", &provider),
+                    ("model", &model),
+                ] {
+                    if run_value.get(field).and_then(Value::as_str) != Some(expected.as_str()) {
+                        return Err(Error::Input(format!(
+                            "result {} does not match selected `{field}`; inspect the attempt instead of mixing results from another configuration",
+                            run_path.display()
+                        )));
+                    }
+                }
+            }
+            let execution_cohort = run_value
+                .get("execution_cohort")
+                .filter(|value| !value.is_null())
+                .map(|value| {
+                    serde_json::from_value::<crate::measurements::ExecutionCohort>(value.clone())
+                })
+                .transpose()
+                .map_err(|error| {
+                    Error::Input(format!(
+                        "invalid execution cohort in {}: {error}",
+                        run_path.display()
+                    ))
+                })?;
+            let replica_index = run_value
+                .get("replica_index")
+                .filter(|value| !value.is_null())
+                .map(|value| {
+                    value
+                        .as_u64()
+                        .and_then(|value| usize::try_from(value).ok())
+                        .ok_or_else(|| {
+                            Error::Input(format!("invalid replica index in {}", run_path.display()))
+                        })
+                })
+                .transpose()?;
+            if execution_cohort.is_some() != replica_index.is_some()
+                || execution_cohort.as_ref().is_some_and(|cohort| {
+                    replica_index != Some(replica) || !cohort.admits(replica, concurrency)
+                })
+            {
+                return Err(Error::Input(format!(
+                    "execution cohort does not match replica selection in {}",
+                    run_path.display()
+                )));
+            }
+            let task = run_value
+                .get("task")
+                .filter(|value| !value.is_null())
+                .map(|value| {
+                    serde_json::from_value::<crate::workloads::TaskIdentity>(value.clone())
+                })
+                .transpose()
+                .map_err(|error| {
+                    Error::Input(format!(
+                        "invalid task identity in {}: {error}",
+                        run_path.display()
+                    ))
+                })?;
+            if let (Some(selection), Some(task)) = (&selection, &task)
+                && !selection.matches(task)
+            {
+                return Err(Error::Input(format!(
+                    "measurement {} does not match the planned dataset instance",
+                    run_path.display()
+                )));
+            }
+            if (plan.is_some() || outcome.is_some())
+                && let Some(task) = &task
+                && (task.attempt_id.is_empty()
+                    || task.attempt_id.len() > 256
+                    || task.workload != workload
+                    || !actual_attempts.insert(task.attempt_id.clone()))
+            {
+                return Err(Error::Input(format!(
+                    "result {} has a mismatched, missing, oversized or duplicate actual attempt identity; an attempt cannot be counted twice",
+                    run_path.display()
+                )));
+            }
+            let identity_bound = selection
+                .as_ref()
+                .is_none_or(|selection| task.as_ref().is_some_and(|task| selection.matches(task)));
+            let run_status = if !measured {
+                outcome.map(outcomes::Recorded::status)
+            } else {
+                match run_value.get("status").and_then(Value::as_str) {
                 Some(status)
                     if run_value.get("workload_evaluation").and_then(Value::as_str)
                         == Some("adapter-smoke") =>
@@ -128,7 +269,9 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
                         "{status}: adapter smoke only; upstream task resolution not measured"
                     ))
                 }
-                Some("unscored") => Some("unscored: initial task was already passing or its baseline could not be verified".into()),
+                Some("unscored") => Some(
+                    "unscored: initial task was already passing or its baseline could not be verified".into()
+                ),
                 Some(status) if run_value.get("success") == Some(&Value::Bool(false)) => Some(
                     if let Some(reason) = run_value.get("failure_reason").and_then(Value::as_str) {
                         format!("benchmark run failed: {reason}")
@@ -144,6 +287,7 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
                 ),
                 Some(status) => Some(status.to_owned()),
                 None => Some("unknown".into()),
+            }
             };
             let workload_evaluation = run_value
                 .get("workload_evaluation")
@@ -152,20 +296,34 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
                 .to_owned();
             let workload_evaluation = crate::workloads::scored_kind(
                 &workload_evaluation,
-                run_value
-                    .get("workload_baseline_passed")
-                    .and_then(Value::as_bool),
+                &crate::workloads::BaselineEvidence::from_record(&run_value),
             )
             .to_owned();
+            if let Some(selection) = selection
+                .as_ref()
+                .filter(|selection| selection.dataset.is_some())
+                && crate::workloads::resolution_eligible(&workload_evaluation)
+                && workload_evaluation != selection.evaluation_kind
+            {
+                return Err(Error::Input(format!(
+                    "measurement {} does not match the planned evaluator; a different task grader cannot earn this benchmark's score",
+                    run_path.display()
+                )));
+            }
             let mut metrics = BTreeMap::new();
+            let evaluation_completed = identity_bound
+                && crate::workloads::resolution_eligible(&workload_evaluation)
+                && run_value
+                    .get("workload_success")
+                    .and_then(Value::as_bool)
+                    .is_some();
             flatten_numbers("", &run_value, &mut metrics);
             // Correct old presentations without rewriting their raw evidence.
             if !crate::workloads::resolution_eligible(&workload_evaluation) {
                 metrics.remove("success_rate");
             } else {
-                let resolved = ["success", "process_success", "workload_success"]
-                    .iter()
-                    .all(|key| run_value.get(*key).and_then(Value::as_bool) == Some(true));
+                let resolved = evaluation_completed
+                    && run_value.get("workload_success").and_then(Value::as_bool) == Some(true);
                 metrics.insert("success_rate".into(), if resolved { 1.0 } else { 0.0 });
             }
             if run_value
@@ -179,9 +337,15 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
             let mut series = BTreeMap::new();
             let mut host_metadata = None;
             let mut components = None;
-            for entry in
-                fs::read_dir(&measurement_dir).map_err(|error| Error::Input(error.to_string()))?
-            {
+            let collector_files = if measured {
+                Some(
+                    fs::read_dir(&measurement_dir)
+                        .map_err(|error| Error::Input(error.to_string()))?,
+                )
+            } else {
+                None
+            };
+            for entry in collector_files.into_iter().flatten() {
                 let file = entry
                     .map_err(|error| Error::Input(error.to_string()))?
                     .path();
@@ -245,10 +409,35 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
                 }
             }
             benchmark_data.push(BenchmarkData {
+                result_source: if measured {
+                    "measurements"
+                } else {
+                    outcome.expect("recorded outcome").source
+                },
+                reconciled: if grade_only_closed {
+                    true
+                } else if outcome.is_some_and(|outcome| outcome.source == "imported-official-grade")
+                {
+                    false
+                } else {
+                    reconciliation::recorded(
+                        &sweep_results,
+                        &result_dir,
+                        index,
+                        replica,
+                        concurrency,
+                        task.as_ref(),
+                    )?
+                },
+                replica_index,
+                execution_cohort,
                 label,
                 directory: result_dir.clone(),
                 agent: agent.clone(),
                 workload: workload.clone(),
+                task,
+                selection: selection.clone(),
+                evaluation_completed,
                 workload_evaluation,
                 provider: provider.clone(),
                 model: model.clone(),
@@ -262,6 +451,17 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
         }
     }
 
+    let mut cohorts = BTreeMap::new();
+    for benchmark in &benchmark_data {
+        if let Some(cohort) = &benchmark.execution_cohort
+            && let Some(previous) = cohorts.insert(&cohort.id, cohort)
+            && previous != cohort
+        {
+            return Err(Error::Input(
+                "conflicting execution cohort declarations in sweep measurements".into(),
+            ));
+        }
+    }
     let mut metric_values: BTreeMap<String, Vec<(String, f64)>> = BTreeMap::new();
     let mut series_values: BTreeMap<String, Vec<(String, TimeSeries)>> = BTreeMap::new();
     for benchmark in &benchmark_data {
@@ -307,21 +507,36 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
             &benchmark.provider,
             &benchmark.model,
             &benchmark.workload,
-            &benchmark.workload_evaluation,
+            coverage::group_kind(benchmark),
+            benchmark
+                .task
+                .as_ref()
+                .and_then(|task| task.dataset.as_ref())
+                .or_else(|| {
+                    benchmark
+                        .selection
+                        .as_ref()
+                        .and_then(|selection| selection.dataset.as_ref())
+                }),
         ))
         .map_err(|error| Error::Run(error.to_string()))?;
         resolution_groups.entry(key).or_default().observe(
-            &benchmark.workload_evaluation,
+            coverage::group_kind(benchmark),
             benchmark
                 .metrics
                 .get("success_rate")
                 .is_some_and(|value| *value == 1.0),
         );
     }
+    let evaluation_coverage = coverage::evaluation_summary(&benchmark_data);
+    let population_coverage = coverage::populations(&benchmark_data)?;
     let summary = json!({
         "schema_version": 2,
         "success_rate_definition": "resolved task attempts / all selected task attempts, including failures; not process exit rate or pass@k; smoke checks excluded",
         "resolution_groups": resolution_groups,
+        "selection_plan": plan.as_ref().map(|plan| json!({"run_id":plan.run_id,"configuration_match":true,"execution_mode":plan.execution_mode,"respect_record_timings":plan.respect_record_timings,"scheduling":plan.scheduling})),
+        "evaluation_coverage":evaluation_coverage,
+        "population_coverage":population_coverage,
         "sweep": sweep_path,
         "results_directory": sweep_results,
         "comparison_directory": comparison_dir,
@@ -331,6 +546,13 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
             "directory": benchmark.directory,
             "agent": benchmark.agent,
             "workload": benchmark.workload,
+            "task": benchmark.task,
+            "replica_index": benchmark.replica_index,
+            "execution_cohort": benchmark.execution_cohort,
+            "reconciled": benchmark.reconciled,
+            "result_source": benchmark.result_source,
+            "selection": benchmark.selection,
+            "evaluation_completed": benchmark.evaluation_completed,
             "workload_evaluation": benchmark.workload_evaluation,
             "provider": benchmark.provider,
             "model": benchmark.model,
@@ -351,7 +573,13 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
     serde_json::to_writer_pretty(&mut file, &summary)
         .map_err(|error| Error::Run(format!("cannot write {}: {error}", summary_path.display())))?;
     writeln!(file).map_err(|error| Error::Run(error.to_string()))?;
-    write_html_report(&comparison_dir, &benchmark_data, &graphs)?;
+    write_html_report(
+        &comparison_dir,
+        &benchmark_data,
+        &graphs,
+        plan.as_ref().map(|plan| plan.execution_mode.as_str()),
+        plan.as_ref().and_then(|plan| plan.scheduling),
+    )?;
     writeln!(
         output,
         "Compared {} benchmarks; wrote {} graphs, report.html, and {}",
@@ -385,17 +613,26 @@ fn benchmark_identity(path: &Path) -> Result<(String, String, String, String, us
                 ))
             })
     };
+    let concurrency = match table.get("concurrency") {
+        None => 1,
+        Some(value) => value
+            .as_integer()
+            .and_then(|n| usize::try_from(n).ok())
+            .filter(|n| (1..=crate::benchmark::MAX_CONCURRENCY).contains(n))
+            .ok_or_else(|| {
+                Error::Input(format!(
+                    "benchmark {} concurrency must be an integer from 1 through {}",
+                    path.display(),
+                    crate::benchmark::MAX_CONCURRENCY
+                ))
+            })?,
+    };
     Ok((
         field("agent")?,
         field("workload")?,
         field("provider")?,
         field("model")?,
-        table
-            .get("concurrency")
-            .and_then(toml::Value::as_integer)
-            .and_then(|n| usize::try_from(n).ok())
-            .filter(|n| *n > 0)
-            .unwrap_or(1),
+        concurrency,
     ))
 }
 
@@ -545,8 +782,17 @@ fn write_html_report(
     comparison_dir: &Path,
     benchmarks: &[BenchmarkData],
     graphs: &[String],
+    selection_mode: Option<&str>,
+    scheduling: Option<crate::sweep::scheduler::Scheduling>,
 ) -> Result<(), Error> {
     let mut dimensions: BTreeMap<&str, Vec<String>> = BTreeMap::new();
+    let mut dispatch_groups = BTreeMap::new();
+    for benchmark in benchmarks {
+        if let Some(cohort) = &benchmark.execution_cohort {
+            let next = dispatch_groups.len() + 1;
+            dispatch_groups.entry(cohort.id.as_str()).or_insert(next);
+        }
+    }
     dimensions.insert(
         "benchmark",
         benchmarks.iter().map(|item| item.label.clone()).collect(),
@@ -588,8 +834,17 @@ fn write_html_report(
         1,
     );
     html.push_str("<main class=\"shell\">");
+    if let Some(scheduling) = scheduling {
+        html.push_str(&format!("<p class=\"scheduling\">Sweep scheduling: up to {} distinct configurations; {} active attempt slots, including replicas. Concurrent tasks share host resources.</p>", scheduling.jobs, scheduling.max_active_attempts));
+    }
     html.push_str("<header class=\"hero\"><p class=\"eyebrow\">ASB BENCHMARK REPORT</p><h1>Sweep comparison</h1><p>Explore benchmark results and measurements from this sweep. Use the filters to focus the report without rerunning anything.</p></header>");
-    html.push_str("<section class=\"explain\"><strong>How to read this report</strong><p>Each row is one agent/provider/model/workload combination. Runtime, success rate, token usage, host metadata, component timings, and structured collector measurements are summarized in the table and charts. Network wait remains null unless directly observed. The complete machine-readable evidence inventory is available in comparison.json.</p></section>");
+    let coverage = coverage::evaluation_summary(benchmarks);
+    html.push_str(&format!("<section class=\"explain\"><strong>Evaluation coverage</strong><p>Execution mode: {}.</p><p>{}/{} eligible selected attempts evaluated; {} have no completed evaluation. {} attempts are unscored. {}</p><p>Partial results are not a complete-population benchmark score. See population_coverage in comparison.json for dataset selection, unique tasks and complete one-attempt-per-task scores.</p></section>",
+        escape(selection_mode.unwrap_or("unknown")),
+        coverage.evaluated_attempts, coverage.eligible_selected_attempts, coverage.unevaluated_attempts, coverage.unscored_attempts,
+        if selection_mode.is_some() {"Pre-run task selection is preserved and matches the configurations."} else {"No pre-run selection snapshot exists; dataset completeness cannot be established from these legacy records."}));
+    html.push_str(&coverage::html_table(benchmarks)?);
+    html.push_str("<section class=\"explain\"><strong>How to read this report</strong><p>Each row is one selected task attempt for an agent/provider/model/workload combination. Runtime, success rate, token usage, host metadata, component timings, and structured collector measurements are summarized in the table and charts. Network wait remains null unless directly observed. The complete machine-readable evidence inventory is available in comparison.json.</p></section>");
     html.push_str("<section class=\"filters\"><div class=\"section-title\"><h2>Filter results</h2><div><button type=\"button\" data-action=\"all\">Select all</button><button type=\"button\" data-action=\"none\">Clear all</button></div></div><div class=\"filter-grid\">");
     for (group, values) in &dimensions {
         html.push_str(&format!("<fieldset><legend>{}</legend>", title_case(group)));
@@ -670,6 +925,11 @@ fn write_html_report(
                 .collect::<String>();
             let mut previews = String::new();
             for artifact in &benchmark.artifacts {
+                if benchmark.result_source == "recovered-official-grade" {
+                    // Preserved partial collectors are diagnostic downloads,
+                    // never final execution charts for a grade-only closure.
+                    continue;
+                }
                 let name = artifact.rsplit('/').next().unwrap_or(artifact);
                 match crate::collectors::display_artifact(name) {
                     Some(crate::collectors::ArtifactDisplay::Svg { class, label }) => {
@@ -705,7 +965,9 @@ fn write_html_report(
             escape(&benchmark.label), escape(&benchmark.agent), escape(&benchmark.provider), escape(&benchmark.model), escape(&benchmark.workload),
             escape(&benchmark.label), escape(&benchmark.agent), escape(&benchmark.provider), escape(&benchmark.model), escape(&benchmark.workload),
             runtime, success, tokens,
-            evaluation_details,
+            format_args!("{}{}<p>{}</p>", evaluation_details, if benchmark.reconciled { "<p>Reconciled retained local outcome: current artifact consistency checked; no agent rerun or historical attestation.</p>" } else { "" }, benchmark.execution_cohort.as_ref().map_or_else(
+                || "Dispatch context unknown (legacy or missing measurement).".into(),
+                |cohort| format!("Dispatch group {}: {} of {} selected replicas admitted; slots {}. Dispatch membership is not proof of simultaneous execution. Resumed measurements may belong to different cohorts.", dispatch_groups[cohort.id.as_str()], cohort.admitted_slots.len(), cohort.selected_replicas, cohort.admitted_slots.iter().map(usize::to_string).collect::<Vec<_>>().join(", ")))),
             component_details,
             host_details,
             metrics_details,
@@ -947,6 +1209,10 @@ fn flatten_numbers(prefix: &str, value: &Value, output: &mut BTreeMap<String, f6
         }
         Value::Object(object) => {
             for (key, child) in object {
+                if prefix.is_empty() && matches!(key.as_str(), "execution_cohort" | "replica_index")
+                {
+                    continue;
+                }
                 let next = if prefix.is_empty() {
                     key.clone()
                 } else {
@@ -1376,6 +1642,19 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
+    fn dispatch_provenance_is_not_a_numeric_measurement() {
+        let mut metrics = std::collections::BTreeMap::new();
+        super::flatten_numbers(
+            "",
+            &json!({"replica_index":2,"execution_cohort":{
+            "id":"abcd","selected_replicas":3,"admitted_slots":[2]},"elapsed_ms":42}),
+            &mut metrics,
+        );
+        assert_eq!(metrics.len(), 1);
+        assert_eq!(metrics["elapsed_ms"], 42.0);
+    }
+
+    #[test]
     fn agent_process_graphs_include_all_agents_but_not_unavailable_measurements() {
         let root = std::env::temp_dir().join(format!(
             "asb-agent-compare-{}-{}",
@@ -1770,6 +2049,82 @@ mod tests {
         assert_eq!(group["unresolved_count"], 1);
         assert_eq!(group["success_rate"], 0.0);
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn official_resolution_uses_typed_baseline_and_evaluator_not_client_exit() {
+        let root = std::env::temp_dir().join(format!(
+            "asb-official-resolution-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("sweep.toml"),
+            "configs=['resolved.toml','unresolved.toml','missing.toml','invalid.toml']\n",
+        )
+        .unwrap();
+        for (index, name, resolved) in [
+            (0, "resolved", json!(true)),
+            (1, "unresolved", json!(false)),
+            (2, "missing", Value::Null),
+            (3, "invalid", json!(true)),
+        ] {
+            std::fs::write(
+                root.join(format!("{name}.toml")),
+                "agent='pi'\nworkload='swe-bench-lite'\nprovider='local'\nmodel='m'\n",
+            )
+            .unwrap();
+            let baseline = if name == "invalid" {
+                json!({"kind":"upstream-task-definition","base_commit":"HEAD"})
+            } else {
+                json!({"kind":"upstream-task-definition","base_commit":"a".repeat(40)})
+            };
+            let directory = root.join(format!("sweep-results/{index:03}-{name}/measurements"));
+            std::fs::create_dir_all(&directory).unwrap();
+            std::fs::write(
+                directory.join("run.json"),
+                json!({"schema_version":2,"status":"failed",
+                "success":false,"process_success":false,"workload_success":resolved,
+                "workload_evaluation":"upstream-harness","workload_baseline":baseline,
+                "workload_baseline_passed":false})
+                .to_string(),
+            )
+            .unwrap();
+        }
+        run(root.join("sweep.toml").to_str().unwrap(), &mut Vec::new()).unwrap();
+        let comparison: Value = serde_json::from_str(
+            &std::fs::read_to_string(root.join("results/sweep-comparison/comparison.json"))
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(comparison["benchmarks"][0]["metrics"]["success_rate"], 1.0);
+        assert_eq!(comparison["benchmarks"][1]["metrics"]["success_rate"], 0.0);
+        assert_eq!(comparison["benchmarks"][2]["metrics"]["success_rate"], 0.0);
+        assert!(
+            comparison["benchmarks"][3]["metrics"]
+                .get("success_rate")
+                .is_none()
+        );
+        let groups = comparison["resolution_groups"].as_object().unwrap();
+        assert_eq!(
+            groups
+                .values()
+                .map(|group| group["task_count"].as_u64().unwrap())
+                .sum::<u64>(),
+            3
+        );
+        assert_eq!(
+            groups
+                .values()
+                .map(|group| group["resolved_count"].as_u64().unwrap())
+                .sum::<u64>(),
+            1
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

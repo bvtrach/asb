@@ -1,0 +1,392 @@
+"""Opt-in mixed original SWE/Terminal task scheduling with real Pi, no LLM.
+
+A two-request provider barrier proves both clients execute concurrently. The
+provider supplies deterministic known repairs; this is not AI task solving.
+"""
+import http.server
+import io
+import json
+import os
+from pathlib import Path
+import re
+import shlex
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+import unittest
+import uuid
+
+sys.dont_write_bytecode = True
+sys.path.insert(0, str(Path(__file__).parents[1] / "assets/benchmarks"))
+
+
+@unittest.skipUnless(os.environ.get("ASB_TEST_BENCHMARK_ASB") and os.environ.get("ASB_TEST_SWECATALOG_ROOT"),
+                     "requires explicit original catalogs, real client and Docker opt-in")
+class ParallelOriginalTaskQualification(unittest.TestCase):
+    def test_distinct_original_tasks_overlap_and_keep_separate_grades_and_collectors(self):
+        from asb_docker import DockerSession
+        import guest_provider_fixture as provider
+        root = Path(os.environ["ASB_TEST_SWECATALOG_ROOT"]).absolute()
+        binary = Path(os.environ["ASB_TEST_BENCHMARK_ASB"]).absolute()
+        collection_mode = os.environ.get("ASB_TEST_BENCHMARK_MEASUREMENTS", "enabled")
+        self.assertIn(collection_mode,["enabled","disabled"])
+        collect = collection_mode == "enabled"
+        artifacts = Path(tempfile.mkdtemp(prefix="parallel-original-tasks-", dir=root))
+        print(f"Retained mixed original-task qualification ({collection_mode} measurements): {artifacts}", flush=True)
+        provider.root = artifacts
+        fix = ("from pathlib import Path; p=Path('astropy/modeling/separable.py'); t=p.read_text(); "
+               "old='cright[-right.shape[0]:, -right.shape[1]:] = 1'; "
+               "assert t.count(old)==1; p.write_text(t.replace(old, 'cright[-right.shape[0]:, -right.shape[1]:] = right'))")
+        (artifacts / "command.txt").write_text("if [ -f astropy/modeling/separable.py ]; then python3 -c "
+            + shlex.quote(fix) + "; else printf 'Hello, world!\\n' > hello.txt; fi")
+        barrier = threading.Barrier(2)
+        lock = threading.Lock()
+        arrivals = []
+        class Handler(provider.Handler):
+            def do_POST(self):
+                length = int(self.headers.get("Content-Length", "0"))
+                if not 0 < length <= 2 * 1024**2:
+                    self.send_error(413)
+                    return
+                payload = self.rfile.read(length)
+                text = payload.decode("utf-8").lower()
+                task = "swe" if "astropy" in text else "terminal" if "hello.txt" in text else "unknown"
+                with lock:
+                    ordinal = len(arrivals)
+                    arrivals.append({"task":task, "started_ns":time.monotonic_ns()})
+                if ordinal < 2:
+                    try:
+                        barrier.wait(timeout=90)
+                    except threading.BrokenBarrierError:
+                        self.send_error(504, "parallel-client barrier timed out")
+                        return
+                original = self.rfile
+                try:
+                    self.rfile = io.BytesIO(payload)
+                    super().do_POST()
+                finally:
+                    self.rfile = original
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            base = f"http://127.0.0.1:{server.server_address[1]}/v1"
+            network_name = "asb-fixture-" + uuid.uuid4().hex
+            with DockerSession() as client:
+                network = client.networks.create(network_name, internal=True, labels={"asb.owner":"asb"})
+                try:
+                    for name, suite, instance in [("swe", "swe-bench-lite", "astropy__astropy-12907"),
+                                                  ("terminal", "terminal-bench-1.0", "hello-world")]:
+                        settings = "[measurements]\nenabled=true\ndirectory='measurements'\ncollectors=['agent-memory','agent-workers']\n" if collect else (
+                            "" if name == "swe" else "[measurements]\nenabled=false\ndirectory='measurements'\ncollectors=[]\n")
+                        (artifacts / (name + ".toml")).write_text(
+                            f"agent='pi'\nprovider='openrouter'\nmodel='fixture-model'\nworkload='{suite}'\ntrial='{instance}'\n" + settings)
+                    manifest = artifacts / "sweep.toml"
+                    manifest.write_text("configs=['swe.toml','terminal.toml']\n")
+                    environment = {"PATH":os.environ["PATH"], "HOME":str(artifacts),
+                        "OPENROUTER_API_KEY":"fixture-token", "OPENROUTER_BASE_URL":base,
+                        "OPENROUTER_MODELS_URL":base + "/models", "NO_PROXY":"*", "no_proxy":"*",
+                        "ASB_BENCHMARK_NETWORK":network_name, "NPM_CONFIG_OFFLINE":"true",
+                        "ASB_MEASURE_INTERVAL_MS":"50"}
+                    result = subprocess.run([binary,"sweep",manifest,"--jobs","2","--max-active-attempts","2","--json"],
+                        cwd=root, env=environment, capture_output=True, timeout=240)
+                    (artifacts / "asb.stdout").write_bytes(result.stdout)
+                    (artifacts / "asb.stderr").write_bytes(result.stderr)
+                    self.assertEqual(result.returncode, 0, result.stderr.decode())
+                    inputs = json.loads((artifacts / "sweep-results/.checkpoint/inputs.json").read_bytes())
+                    self.assertEqual(inputs["status"], "stable", inputs["status"])
+                    self.assertEqual(inputs["initial"], inputs["final"])
+                    self.assertTrue(any(root["name"].startswith("runtime-source-") and
+                        "libc.so" in root["path"] for root in inputs["roots"]))
+                    records = [json.loads(line) for line in result.stdout.splitlines()]
+                    self.assertEqual(len(records), 2)
+                    self.assertGreaterEqual(len(arrivals), 4, "both real clients need a tool call and completion")
+                    original_calls = len(arrivals)
+                    # A harmless recovery inspection of already-removed task
+                    # resources must not invalidate their completed receipts.
+                    for index, name in enumerate(["000-swe", "001-terminal"]):
+                        allocation = json.loads((artifacts / "sweep-results/.checkpoint/allocated" / f"{index:06}/001.json").read_bytes())
+                        reference = allocation["reference"]
+                        references = list((artifacts / "sweep-results" / name).rglob(reference["preparation_id"] + ".json"))
+                        self.assertEqual(len(references),1)
+                        recovery = subprocess.run([binary,"workload","recover",references[0],"--json"],
+                            cwd=root,env=environment,capture_output=True,timeout=60)
+                        self.assertEqual(recovery.returncode,0,recovery.stderr.decode())
+                        report = json.loads(recovery.stdout)
+                        self.assertTrue(report["resources"])
+                        self.assertTrue(all(resource["status"] == "absent" for resource in report["resources"]))
+                        self.assertFalse((Path(reference["artifacts"]) / "resource-quiescence.json").exists())
+                        inspection = subprocess.run([binary,"workload","recover",references[0],"--inspect-grade","--json"],
+                            cwd=root,env=environment,capture_output=True,timeout=60)
+                        self.assertEqual(inspection.returncode,0,inspection.stderr.decode())
+                        grade = json.loads(inspection.stdout)
+                        self.assertTrue(grade["workload_success"])
+                        self.assertEqual(grade["task"]["task_id"],reference["task_id"])
+                        self.assertEqual(grade["scope"],"retained-official-grade-not-execution-recovery")
+                        for field in ["process_success","exit_code","elapsed_ms","token_usage","steps"]:
+                            self.assertIsNone(grade[field])
+                    resumed = subprocess.run([binary,"sweep",manifest,"--jobs","2","--max-active-attempts","2","--resume","--json"],
+                        cwd=root, env=environment, capture_output=True, timeout=120)
+                    (artifacts / "resume.stdout").write_bytes(resumed.stdout)
+                    (artifacts / "resume.stderr").write_bytes(resumed.stderr)
+                    self.assertEqual(resumed.returncode, 0, resumed.stderr.decode())
+                    reused = [json.loads(line) for line in resumed.stdout.splitlines()]
+                    self.assertEqual(len(reused), 2)
+                    self.assertTrue(all(record["reused"] and record["workload_success"] for record in reused))
+                    self.assertEqual({record["task"]["attempt_id"] for record in reused},
+                        {record["task"]["attempt_id"] for record in records})
+                    self.assertEqual(len(arrivals), original_calls, "continuation must not start either real client again")
+                    # Simulate a completed/cleaned-up task whose receipt writes
+                    # were lost. Preserve those receipts outside the result tree.
+                    checkpoint = artifacts / "sweep-results/.checkpoint"
+                    archive = artifacts / "reconciliation-archive"
+                    archive.mkdir()
+                    for index in range(2):
+                        (checkpoint / f"replicas/{index:06}/001.json").rename(archive / f"replica-{index}.json")
+                        (checkpoint / f"completed/{index:06}.json").rename(archive / f"group-{index}.json")
+                    rejected = subprocess.run([binary,"sweep",manifest,"--jobs","2","--max-active-attempts","2","--resume","--json"],
+                        cwd=root,env=environment,capture_output=True,timeout=60)
+                    self.assertNotEqual(rejected.returncode,0,"ordinary resume must not silently manufacture a receipt")
+                    self.assertEqual(len(arrivals),original_calls)
+                    allocation = json.loads((checkpoint / "allocated/000001/001.json").read_bytes())
+                    evaluator = Path(allocation["reference"]["artifacts"]) / "evaluation.json"
+                    evaluator_bytes = evaluator.read_bytes()
+                    inconsistent = json.loads(evaluator_bytes)
+                    inconsistent["resolved"] = False
+                    evaluator.write_text(json.dumps(inconsistent))
+                    invalid = subprocess.run([binary,"sweep",manifest,"--jobs","2","--max-active-attempts","2","--resume","--reconcile-completed","--json"],
+                        cwd=root,env=environment,capture_output=True,timeout=120)
+                    evaluator.write_bytes(evaluator_bytes)
+                    self.assertNotEqual(invalid.returncode,0,"inconsistent retained grades must not be promoted")
+                    self.assertFalse((checkpoint / "replicas/000000/001.json").exists(),"validate all candidates before publishing any")
+                    self.assertFalse((checkpoint / "replicas/000001/001.json").exists())
+                    self.assertEqual(len(arrivals),original_calls)
+                    repaired = subprocess.run([binary,"sweep",manifest,"--jobs","2","--max-active-attempts","2","--resume","--reconcile-completed","--json"],
+                        cwd=root,env=environment,capture_output=True,timeout=120)
+                    (artifacts / "reconcile.stdout").write_bytes(repaired.stdout)
+                    (artifacts / "reconcile.stderr").write_bytes(repaired.stderr)
+                    self.assertEqual(repaired.returncode,0,repaired.stderr.decode())
+                    repaired_rows = [json.loads(line) for line in repaired.stdout.splitlines()]
+                    self.assertEqual(len(repaired_rows),2)
+                    self.assertEqual(len(arrivals),original_calls,"receipt reconciliation cannot start another client")
+                    self.assertTrue(all(row["reused"] for row in repaired_rows))
+                    self.assertTrue(all(row["reconciled"] for row in repaired_rows))
+                    self.assertTrue(json.loads((checkpoint / "replicas/000000/001.json").read_bytes())["reconciled"])
+                    comparison = json.loads((artifacts / "results/sweep-comparison/comparison.json").read_bytes())
+                    self.assertTrue(next(row for row in comparison["benchmarks"] if row["workload"] == "swe-bench-lite")["reconciled"])
+                    self.assertIn("Reconciled retained local outcome",(artifacts / "results/sweep-comparison/report.html").read_text())
+                    self.assertFalse(barrier.broken)
+                    self.assertEqual({entry["task"] for entry in arrivals[:2]}, {"swe","terminal"},
+                        "the barrier must overlap distinct clients, not two auxiliary calls from one client")
+                    for record in records:
+                        self.assertTrue(record["process_success"], record)
+                        self.assertTrue(record["workload_success"], record)
+                        self.assertEqual(record["workload_evaluation"], "upstream-harness")
+                        self.assertEqual(record["agent"], "pi")
+                        self.assertEqual(record["provider"], "openrouter")
+                    targets = []
+                    for index, name in enumerate(["000-swe", "001-terminal"]):
+                        directory = artifacts / "sweep-results" / name
+                        self.assertFalse((directory / ".terminal-output.tmp").exists())
+                        self.assertFalse((artifacts / "sweep-results" / f".terminal-output-{index:06}.tmp").exists())
+                        receipt = json.loads((artifacts / "sweep-results/.checkpoint/completed" / f"{index:06}.json").read_bytes())
+                        self.assertEqual(receipt["scope"], "outcome-evidence-only-not-complete-input-closure")
+                        self.assertEqual(len(receipt["fingerprint"]["digest"]), 64)
+                        self.assertEqual(len(receipt["roots"]), 2)
+                        completions = list((directory / ".asb-completions").glob("*.json"))
+                        self.assertEqual(len(completions), 1)
+                        completion = json.loads(completions[0].read_bytes())
+                        self.assertEqual(completion["replica"], {"index":1,"total":1})
+                        replica = json.loads((artifacts / "sweep-results/.checkpoint/replicas" / f"{index:06}/001.json").read_bytes())
+                        self.assertEqual(replica["replica"], {"index":1,"total":1})
+                        self.assertEqual(replica["scope"], "completed-replica-declared-evidence")
+                        intent = json.loads((artifacts / "sweep-results/.checkpoint/started" / f"{index:06}/001.json").read_bytes())
+                        self.assertEqual(intent["scope"], "replica-execution-intent")
+                        self.assertEqual(intent["replica"], {"index":1,"total":1})
+                        allocation_path = artifacts / "sweep-results/.checkpoint/allocated" / f"{index:06}/001.json"
+                        allocation = json.loads(allocation_path.read_bytes())
+                        self.assertEqual(allocation["scope"], "allocated-workload-attempt")
+                        self.assertEqual(allocation["replica"], intent["replica"])
+                        self.assertEqual(allocation["intent_id"], intent["intent_id"])
+                        self.assertEqual(allocation["input_digest"], intent["input_digest"])
+                        self.assertEqual(allocation["reference"]["task_id"], completion["summary"]["task"]["task_id"])
+                        self.assertIn("workload-allocation", [item["name"] for item in replica["roots"]])
+                        reference = allocation["reference"]
+                        references = list(directory.rglob(reference["preparation_id"] + ".json"))
+                        self.assertEqual(len(references), 1)
+                        self.assertEqual(json.loads(references[0].read_bytes()), reference)
+                        cohort = completion["summary"]["execution_cohort"]
+                        self.assertEqual(cohort["selected_replicas"], 1)
+                        self.assertEqual(cohort["admitted_slots"], [1])
+                        self.assertEqual(intent["execution_cohort"], cohort)
+                        self.assertEqual(completion["summary"]["replica_index"], 1)
+                        self.assertTrue(intent["reservation_id"])
+                        self.assertFalse((artifacts / "sweep-results/.checkpoint/pending" / f"{index:06}/001.json").exists())
+                        self.assertTrue(completion["workload_cleanup_confirmed"])
+                        self.assertTrue(completion["summary"]["workload_success"])
+                        self.assertEqual(completion["summary"]["workload_evaluation"], "upstream-harness")
+                        evidence = completion["workload_evidence"]
+                        self.assertEqual(len(evidence), 1)
+                        self.assertTrue(Path(evidence[0]).is_dir())
+                        self.assertTrue(Path(evidence[0]).is_relative_to(root / ".asb/attempts"))
+                        self.assertNotIn("stdout", completion["summary"])
+                        self.assertNotIn("stderr", completion["summary"])
+                        measured = directory / "measurements"
+                        if not collect:
+                            self.assertFalse(measured.exists(),"unmeasured task grading must not depend on collector files")
+                            import docker.errors
+                            journal = json.loads((Path(evidence[0]) / "resources.json").read_bytes())
+                            for resource in journal["resources"]:
+                                if resource["kind"] == "containers":
+                                    with self.assertRaises(docker.errors.NotFound):
+                                        client.containers.get(resource["name"])
+                            continue
+                        target = json.loads((measured / "execution-target.json").read_bytes())
+                        self.assertEqual(target["scope"], "verified-local-isolated-process-tree")
+                        self.assertEqual(target["cgroup_membership"], "preserved")
+                        targets.append(target)
+                        events = [entry["event"]["kind"] for entry in json.loads((measured / "lifecycle.json").read_bytes())]
+                        self.assertEqual(completion["summary"]["task"], json.loads((measured / "run.json").read_bytes())["task"])
+                        self.assertEqual([event for event in events if event.startswith("agent_")],
+                            ["agent_spawn", "agent_execute_begin", "agent_started", "agent_execute_end", "agent_exited"])
+                        for collector in ["agent-memory", "agent-workers"]:
+                            data = json.loads((measured / (collector + ".json")).read_bytes())
+                            self.assertEqual(data["status"], "observed", data)
+                            self.assertEqual(data["source"], "execution-namespace-linux-proc-sampling")
+                            self.assertGreater(data["samples"], 0)
+                        identifier = re.search(r"[a-f0-9]{64}", target["cgroup"])
+                        self.assertIsNotNone(identifier)
+                        import docker.errors
+                        with self.assertRaises(docker.errors.NotFound):
+                            client.containers.get(identifier.group())
+                    if collect:
+                        self.assertNotEqual(targets[0]["host_pid"], targets[1]["host_pid"])
+                        self.assertNotEqual(targets[0]["cgroup"], targets[1]["cgroup"])
+                    comparison = artifacts / "results/sweep-comparison"
+                    report = json.loads((comparison / "comparison.json").read_bytes())
+                    self.assertEqual({record["workload"] for record in report["benchmarks"]}, {"swe-bench-lite", "terminal-bench-1.0"})
+                    self.assertEqual(report["evaluation_coverage"]["evaluated_attempts"], 2)
+                    self.assertTrue(all(row["result_source"] == ("measurements" if collect else "task-outcome") for row in report["benchmarks"]))
+                    self.assertTrue(all(row["metrics"]["success_rate"] == 1.0 for row in report["benchmarks"]))
+                    self.assertEqual(report["selection_plan"]["scheduling"], {"jobs":2,"max_active_attempts":2})
+                    self.assertEqual(len(report["population_coverage"]), 2)
+                    for population in report["population_coverage"].values():
+                        self.assertEqual(population["selected_tasks"], 1)
+                        self.assertIsNone(population["full_population_resolution_rate"])
+                    html = (comparison / "report.html").read_text()
+                    graphs = ["metric-success_rate.svg"]
+                    if collect:
+                        graphs.extend(["metric-agent-memory.peak_rss_mib.svg", "metric-agent-workers.spawned_worker_count.svg"])
+                    else:
+                        self.assertIn("optional measurements unavailable",html)
+                    for graph in graphs:
+                        self.assertIn("<svg", (comparison / graph).read_text())
+                        self.assertIn(graph, html)
+                    # Simulate lost execution summaries without losing the
+                    # qualification evidence. Import only official grades from
+                    # the original starts/allocations, then restore all files.
+                    import_archive = artifacts / "grade-import-qualification"
+                    import_archive.mkdir()
+                    moved = []
+                    comparison.rename(import_archive / "original-comparison")
+                    try:
+                        for name in ["000-swe", "001-terminal"]:
+                            directory = artifacts / "sweep-results" / name
+                            for relative in [".asb-completions", "measurements"]:
+                                source = directory / relative
+                                if source.exists():
+                                    destination = import_archive / (name + "-" + relative)
+                                    source.rename(destination)
+                                    moved.append((source,destination))
+                        imported = subprocess.run([binary,"sweep",manifest,"--import-grades","--json"],
+                            cwd=root,env=environment,capture_output=True,timeout=120)
+                        (import_archive / "import.stdout").write_bytes(imported.stdout)
+                        (import_archive / "import.stderr").write_bytes(imported.stderr)
+                        self.assertEqual(imported.returncode,0,imported.stderr.decode())
+                        self.assertEqual(json.loads(imported.stdout)["imported"],2)
+                        compared = subprocess.run([binary,"compare",manifest],cwd=root,env=environment,capture_output=True,timeout=120)
+                        self.assertEqual(compared.returncode,0,compared.stderr.decode())
+                        grade_report = json.loads((comparison / "comparison.json").read_bytes())
+                        self.assertEqual(grade_report["evaluation_coverage"]["evaluated_attempts"],2)
+                        for row in grade_report["benchmarks"]:
+                            self.assertEqual(row["result_source"],"imported-official-grade")
+                            self.assertFalse(row["reconciled"])
+                            self.assertIsNone(row["execution_cohort"])
+                            self.assertEqual(row["metrics"]["success_rate"],1)
+                            self.assertNotIn("elapsed_ms",row["metrics"])
+                            self.assertNotIn("token_usage.total_tokens",row["metrics"])
+                        self.assertIn("metric-success_rate.svg",(comparison / "report.html").read_text())
+                        self.assertEqual(len(arrivals),original_calls,"grade import/reporting must not rerun clients")
+                        # Explicitly close the same started slots with official
+                        # grades, not invented execution observations. Preserve
+                        # real partial measurements, but never graph them as
+                        # final data after the ordinary outcomes are lost.
+                        seals = []
+                        for index in range(2):
+                            for relative in [f"replicas/{index:06}/001.json",f"completed/{index:06}.json"]:
+                                source = checkpoint / relative
+                                destination = import_archive / ("seal-" + relative.replace("/","-"))
+                                source.rename(destination)
+                                seals.append((source,destination))
+                        partials = []
+                        for source,destination in moved:
+                            if source.name == "measurements":
+                                destination.rename(source)
+                                partials.append((source,destination))
+                        try:
+                            closed = subprocess.run([binary,"sweep",manifest,"--jobs","2","--max-active-attempts","2",
+                                "--resume","--reconcile-completed","--json"],cwd=root,env=environment,capture_output=True,timeout=120)
+                            (import_archive / "close.stdout").write_bytes(closed.stdout)
+                            (import_archive / "close.stderr").write_bytes(closed.stderr)
+                            self.assertNotEqual(closed.returncode,0,"unknown process status must remain explicit")
+                            rows = [json.loads(line) for line in closed.stdout.splitlines()]
+                            self.assertEqual(len(rows),2,closed.stderr.decode())
+                            for row in rows:
+                                self.assertTrue(row["reused"])
+                                self.assertTrue(row["recovered_grade_only"])
+                                self.assertTrue(row["workload_success"])
+                                for field in ["process_success","elapsed_ms","steps","token_usage","execution_cohort"]:
+                                    self.assertIsNone(row[field])
+                            receipts = sorted((checkpoint / "closed-slots").rglob("*.json"))
+                            self.assertEqual(len(receipts),2)
+                            before = {path:path.read_bytes() for path in receipts}
+                            again = subprocess.run([binary,"sweep",manifest,"--jobs","2","--max-active-attempts","2",
+                                "--resume","--json"],cwd=root,env=environment,capture_output=True,timeout=120)
+                            self.assertNotEqual(again.returncode,0)
+                            self.assertEqual(before,{path:path.read_bytes() for path in receipts})
+                            compared = subprocess.run([binary,"compare",manifest],cwd=root,env=environment,capture_output=True,timeout=120)
+                            self.assertEqual(compared.returncode,0,compared.stderr.decode())
+                            report = json.loads((comparison / "comparison.json").read_bytes())
+                            for row in report["benchmarks"]:
+                                self.assertEqual(row["result_source"],"recovered-official-grade")
+                                self.assertTrue(row["reconciled"])
+                                self.assertEqual(row["metrics"]["success_rate"],1)
+                                self.assertNotIn("elapsed_ms",row["metrics"])
+                                self.assertNotIn("token_usage.total_tokens",row["metrics"])
+                            html = (comparison / "report.html").read_text()
+                            self.assertIn("partial execution artifacts preserved",html)
+                            self.assertNotIn("metric-agent-memory.peak_rss_mib.svg",html)
+                            self.assertEqual(len(arrivals),original_calls,"closure/resume cannot rerun either client")
+                        finally:
+                            closed_dir = checkpoint / "closed-slots"
+                            if closed_dir.exists():closed_dir.rename(import_archive / "closed-slots")
+                            for source,destination in reversed(partials):source.rename(destination)
+                            for source,destination in reversed(seals):destination.rename(source)
+                    finally:
+                        if comparison.exists():comparison.rename(import_archive / "imported-grade-comparison")
+                        (import_archive / "original-comparison").rename(comparison)
+                        for source,destination in reversed(moved):destination.rename(source)
+                        for name in ["000-swe", "001-terminal"]:
+                            source = artifacts / "sweep-results" / name / ".asb-imported-grades"
+                            if source.exists():source.rename(import_archive / (name + "-imports"))
+                    (artifacts / "overlap.json").write_text(json.dumps({"barrier_participants":2,"arrivals":arrivals}))
+                finally:
+                    network.remove()
+        finally:
+            server.shutdown(); server.server_close(); thread.join(timeout=2)
+
+
+if __name__ == "__main__":
+    unittest.main()

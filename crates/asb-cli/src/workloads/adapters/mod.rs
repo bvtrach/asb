@@ -27,12 +27,104 @@ mod swe_perf;
 mod swe_rebench;
 mod tau_bench;
 mod terminal_bench;
+mod terminal_bench_1_0;
+mod terminal_bench_2_1;
 
 pub(super) trait WorkloadAdapter: Sync {
+    fn process_lifetime(&self) -> super::session::ProcessLifetime {
+        super::session::ProcessLifetime::Quiesce
+    }
+    fn grade_retained(
+        &self,
+        _context: &super::recovery::RecoveryContext<'_>,
+    ) -> Result<serde_json::Value, crate::Error> {
+        Err(crate::Error::Input("this workload cannot yet grade a retained unfinished submission; preserved work was not changed".into()))
+    }
+    fn inspect_grade(
+        &self,
+        _context: &super::recovery::RecoveryContext<'_>,
+    ) -> Result<serde_json::Value, crate::Error> {
+        Err(crate::Error::Input(
+            "this workload cannot inspect retained official grades".into(),
+        ))
+    }
+    fn verify_retained(
+        &self,
+        _context: &super::recovery::RetainedOutcomeContext<'_>,
+    ) -> Result<(), crate::Error> {
+        Err(crate::Error::Input(
+            "this workload cannot validate retained upstream outcomes".into(),
+        ))
+    }
     fn id(&self) -> &'static str;
+    fn recover(
+        &self,
+        _context: &super::recovery::RecoveryContext<'_>,
+    ) -> Result<serde_json::Value, crate::Error> {
+        Err(crate::Error::Input(
+            "this workload adapter does not support recovery; preserved results were not changed"
+                .into(),
+        ))
+    }
+    /// Publish/download owned execution dependencies before creating attempts
+    /// or taking an optional input snapshot. Local workloads do nothing.
+    fn preflight(&self, _context: &super::PreflightContext<'_>) -> Result<(), crate::Error> {
+        Ok(())
+    }
+    fn runtime_inputs(
+        &self,
+        _context: &crate::runtime_inputs::Context<'_>,
+    ) -> Result<Vec<crate::runtime_inputs::Dependency>, crate::Error> {
+        Ok(Vec::new())
+    }
+    fn source(&self) -> Option<&'static str> {
+        None
+    }
+    fn install(
+        &self,
+        _context: &super::InstallationContext<'_>,
+        _output: &mut dyn std::io::Write,
+        _progress: &mut dyn FnMut(u8, &str),
+    ) -> Result<bool, crate::Error> {
+        Ok(false)
+    }
+    fn installed_available(&self, _directory: &Path) -> Option<bool> {
+        None
+    }
+    fn installed_trials(&self, _directory: &Path) -> Result<Vec<Trial>, String> {
+        Ok(self.trial_ids())
+    }
+    fn planning_catalog(
+        &self,
+        _directory: &Path,
+    ) -> Result<Option<super::PlanningCatalog>, String> {
+        Ok(None)
+    }
     /// Smoke fixtures are not instances from the named upstream benchmark.
-    fn evaluation_kind(&self) -> &'static str {
+    fn evaluation_kind(&self, _name: &str) -> &'static str {
         "adapter-smoke"
+    }
+    fn evaluator(&self) -> super::session::Evaluator {
+        super::evaluate_external_smoke
+    }
+    fn prepare_task(
+        &self,
+        context: &super::PreparationContext<'_>,
+    ) -> Result<Box<dyn super::WorkloadSession>, String> {
+        let prompt = super::load_trial(
+            context.workload,
+            context.trial,
+            context.trial_set,
+            context.workload_directory,
+        )?;
+        self.prepare_fixture(context.workload, context.workspace)?;
+        self.prepare_source(context.workload_directory, context.workspace)?;
+        Ok(Box::new(super::session::FileSession::new(
+            context,
+            prompt,
+            self.evaluator(),
+            self.evaluation_kind(context.workload),
+        )))
     }
     fn matches(&self, name: &str) -> bool {
         self.id() == name
@@ -84,8 +176,15 @@ impl WorkloadAdapter for StaticExternalAdapter {
 
 pub(super) struct PromptAdapter;
 impl WorkloadAdapter for PromptAdapter {
-    fn evaluation_kind(&self) -> &'static str {
-        "bundled-fixture"
+    fn evaluation_kind(&self, name: &str) -> &'static str {
+        if name == "repository-navigation" {
+            "response-review"
+        } else {
+            "bundled-fixture"
+        }
+    }
+    fn evaluator(&self) -> super::session::Evaluator {
+        super::evaluate_builtin
     }
     fn id(&self) -> &'static str {
         "prompt"
@@ -143,6 +242,8 @@ static REGISTRY: &[&dyn WorkloadAdapter] = &[
     &swe_rebench::ADAPTER,
     &tau_bench::ADAPTER,
     &terminal_bench::ADAPTER,
+    &terminal_bench_1_0::ADAPTER,
+    &terminal_bench_2_1::ADAPTER,
 ];
 
 pub(super) fn find(name: &str) -> Option<&'static dyn WorkloadAdapter> {
@@ -150,6 +251,12 @@ pub(super) fn find(name: &str) -> Option<&'static dyn WorkloadAdapter> {
         .iter()
         .copied()
         .find(|adapter| adapter.matches(name))
+}
+
+pub(super) fn sources() -> impl Iterator<Item = (&'static str, &'static str)> {
+    REGISTRY
+        .iter()
+        .filter_map(|adapter| adapter.source().map(|source| (adapter.id(), source)))
 }
 
 pub(super) fn populate_prompts(directory: &Path) -> Result<usize, std::io::Error> {

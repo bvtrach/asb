@@ -54,6 +54,12 @@ ASB is deliberately split into a small CLI and a file-backed workload directory:
   aggregate state, never argv, prompts, or credentials. Lifecycle completion and
   session destruction stop and join the sampler. Compare renders all-agent SVG
   bars and dedicated HTML sections with units and sampling limitations;
+  isolated workloads run these two samplers in their own execution namespace
+  through optional collector-trait hooks, using the prepared command's PATH,
+  working directory and entry point. Only bounded aggregate observations cross
+  back to the host; argv, prompts and credentials do not. Proc samplers verify
+  PID/start-time identity and ancestry throughout their lifetime, stop at the
+  execution boundary and reject reused or reparented tasks;
   the mpstat/iostat result names use process-scoped `pidstat` sampling for the
   agent process and its child tasks, retaining bounded raw output and exposing
   averaged, unit-named CPU and I/O metrics under a machine-readable `metrics`
@@ -145,9 +151,169 @@ ASB is deliberately split into a small CLI and a file-backed workload directory:
   files are stored under `.asb/fixtures/<name>/` and materialized into the run
   workspace without overwriting existing edits.
 
+`WorkloadAdapter` creates a distinct mutable `WorkloadSession` for each
+attempt. The session owns its task invocation, prepared workspace, initial
+baseline evidence and evaluator. The generic runner consumes those values
+without choosing a benchmark's grader. Task and attempt identities are stored
+in run/measurement records and preserved by comparison; optional dataset
+identities include source, revision and split. Generic contracts live in
+`workloads/session.rs`, separate from concrete adapters. The ongoing
+[full benchmark integration](FULL_BENCHMARK_INTEGRATION.md) extends this
+boundary with actual upstream catalogs, submissions, environments and
+evaluators; a session by itself is not proof of full benchmark support.
+An adapter can also expose a read-only `PlanningCatalog`: dataset identity,
+available task IDs and evaluator scope, without preparing an environment.
+Sweep planning caches this once per installed workload and saves a bounded
+`plan.json` before running anything. A `TaskSelection` is requested intent,
+not an actual `TaskIdentity`, measured baseline, or evaluator result. Compare
+uses that snapshot when preparation failed, validates source configuration
+semantics and actual task/attempt/grader identity, and never invents attempts
+for missing rows. Selection snapshots do not yet provide the complete
+runtime/project/cassette fingerprints required by a resume protocol. A private
+`.checkpoint/inputs.json` records before/after content stability for the running
+ASB executable, saved plan, project configuration, installed tools/workloads,
+project Python and file-valued environment overrides. Environment values enter
+only a keyed digest, never the public response. Changed, excessive or
+unsupported inputs cannot claim stability. This optional seal is explicitly
+not a resume receipt. Adapter-owned runtime declarations now include selected
+programs with their prepared PATH, Python standard/selected virtual-environment
+libraries, native extension dependencies, and the invoking ASB's mapped native
+libraries. Bounded local discovery inspects native loader dependencies and
+script interpreters without running agent/provider entry points. Logical
+commands are re-resolved at the end, so a new earlier PATH candidate or changed
+native dependency cannot claim stability. Unsupported/excessive discovery
+leaves this optional seal unavailable, never blocks a fresh execution, and
+does not claim whole-host immutability or arbitrary application dlopen closure.
+Record/replay dispatch asks the selected proxy adapters for their
+execution files without starting them or materializing scratch scripts. The
+default adapter binds its selected host Node executable or explicit proxy
+override, preserving symlinks and PATH precedence. Replay additionally binds
+the actual source cassette directories, including rebased/preserved history
+paths. Record cassettes are outputs, not replay inputs. Interpreter and native
+loader dependencies are added by shared runtime discovery, not inferred merely
+from an executable's pathname.
+After workload cleanup and measurement completion, the runner writes private
+`.asb-completions/` outcome records beside the run log, including unresolved
+outcomes, actual task identity, cleanup status and workload-owned evaluator
+evidence paths. These records omit agent stdout/stderr. When one replica
+finishes, a generic completion observer can independently bind its
+one-based slot, selected population, original input digest, private outcome
+record, workspace, log, native runtime state (if present), measurements and
+external evaluator/proxy evidence in
+`.checkpoint/replicas/<configuration>/<replica>.json`. These receipts publish
+after grading, workload/proxy cleanup and measurement completion, before the
+runner waits for the whole group. Sibling output paths do not enter that
+replica's seal. Slot-to-workspace/log/measurement naming comes from the same
+runner helper used to create replicas; the observer does not guess an agent's
+paths. Per-configuration evidence publication is serialized without serializing
+agent execution, and metadata publication failure never changes a fresh grade.
+Schema-2 private outcomes declare the slot and execution-output paths; old
+schema-1 whole-group outcomes retain their previous read compatibility.
+After a configuration's
+replicas finish, the checkpoint binds its complete result tree and all declared
+evaluator roots into `.checkpoint/completed/<index>.json`. Every replica must
+have a unique, matching task identity, an actual boolean evaluator outcome,
+supported baseline evidence and confirmed workload/proxy cleanup. Proxy-owned
+output files (including external recording paths) join the evidence roots;
+an absent output from a failed attempt is bound as absent, not treated as a
+request to retry a graded failure until it produces a recording. Replay validation failure is separate from
+whether its proxy process stopped. Enabled measurement records
+must agree with the outcome summaries. Both resolved and unresolved grades are
+sealed; incomplete, malformed or mismatched groups are not. Publication cannot
+replace an existing receipt, and verification rejects changed results, evidence,
+selection or input identity. Temporary output spools live outside the per-task
+result tree, so hashing excludes no evidence filenames. Neither an input-only
+nor an outcome-only seal is sufficient to suppress execution or change a grade.
+`asb sweep --resume` combines current declared-input validation with the original
+selection/mode/scheduling and every completed group's evidence seal before
+starting or skipping anything. It reuses complete groups without launching
+clients, preserves failed grades and failure exits, and admits configurations
+whose result directory does not exist. A pending initial seal from a stopped
+owner is usable only when the current declared inputs still match exactly.
+If a stopped owner missed the final group receipt but every selected replica
+has independently sealed evidence, continuation verifies those slots and the
+complete outcome population without creating new attempts or republishing a
+group receipt during validation. Partial groups retain each validated grade and
+can dispatch only slots with a positive, matching never-started reservation
+and no attempt outputs. The owner publishes all reservations before launching
+that configuration. Starting a replica publishes intent, consumes its reservation
+and synchronizes the reservation directory before measurement/provider/workload
+startup. A missing start file alone never proves a slot was unused. Missing,
+changed or already-consumed reservations and unsealed graded outcomes reject
+continuation before scheduling. Already-started unsealed slots still require
+owned-resource recovery, which remains unfinished. A completion-evidence failure
+never changes an already computed grade; an intent-write failure stops the
+attempt before execution. Unavailable input fingerprints still do not block
+fresh non-resume execution. Missing keys are never regenerated for continuation, and
+invalid continuation never replaces historical input seals/results. JSONL
+summaries carry `reused: true`; human output explicitly identifies reuse.
+The generic runner preserves original replica indices while skipping cached
+slots, including false grades and failed clients, and does not start those
+slots' providers/proxies/environments again. Identical isolated configuration
+files are not rewritten during continuation. Existing default replay cassettes
+must still identify their original preserved hard links. Interrupted parallel
+terminal spools are privately archived after validation, never overwritten or
+treated as grading evidence.
+`asb sweep SWEEP.toml --resume --reconcile-completed` explicitly repairs missing
+completion receipts for already-graded, cleanup-confirmed schema-2 outcomes.
+Original inputs, selection, start intent and workload allocation must still
+match. The owning workload adapter verifies retained task/submission/grader
+artifacts read-only under the resource owner's lock. All candidate outcomes
+are validated before publication; false grades remain false. Repaired receipts
+bind current artifacts and a reconciliation provenance marker, which JSONL and
+comparison reports disclose. This is current local consistency validation,
+not historical attestation. It never launches an agent, provider, environment
+or evaluator, and cannot turn an ungraded interrupted attempt into a grade.
+Sessions may execute through a workload-owned controller rather than the
+native process path. The generic execution context carries the selected
+configuration and negotiated connection, and the owning session returns
+separate process output, adapter-parsed results and observed execution time.
+The runner does not choose container images, dataset formats or graders.
+The Linux guest driver and native process gate are exclusive child
+supervisors. They retain double-forked helpers as subreapers and verify kernel
+child ownership through pidfds. By default they stop/reap remaining helpers
+after the principal client exits, and only then publish a completed result.
+An adapter-owned `ProcessLifetime::ThroughEvaluation` instead keeps guest
+services alive in its private workload PID namespace through official grading.
+The SDK controller and guest bind that delegation to a distinct namespace and
+per-execution token, confirming principal exit separately from a bounded private
+result handoff. Execution accounting stops at principal exit, not evaluator
+completion. Bounded output readers freeze client capture while continuing to
+drain inherited service pipes; the idle subreaper reaps exited services without
+signalling live ones. SDK stop/removal owns final service teardown and joins the
+held Docker output transport. Errors before confirmed handoff retain the
+container-reset/preservation path. Terminal-Bench adapters select this policy;
+native and SWE-bench sessions remain quiescent. This service policy does not
+claim preservation of arbitrary interactive shell state across guest execution.
+A 500 ms TERM grace is
+followed by KILL with a five-second teardown bound; the required kernel APIs
+are probed before client launch. The shared multi-run process never takes this
+ownership role. Guest output-consumer errors also trigger owned-child cleanup.
+Native Linux execution uses the gate even when measurements are disabled.
+Its owner is bound to the spawning process (not the spawning thread) with a
+pidfd before client execution. A small child watcher pins both owner and gate;
+it wakes a stopped gate on owner loss so the gate can quiesce its descendants.
+The native resume path confirms the stopped state before sending CONT, and
+cancellation uses TERM plus CONT with a bounded cleanup wait instead of
+immediately killing the supervisor. All watchers and signals are scoped to
+the attempt; no shared runner signal handler or process-group kill is used.
+The native supervisor and its idle watcher are part of the measured process
+tree; process-tree totals include that instrumentation overhead. The watcher
+is created before cgroup attachment, so it remains outside the new accounting
+leaf; the supervisor and subsequently launched client are inside it.
+Container task measurements continue to target their guest driver separately.
+If guest metadata confirms neither quiescence nor the declared namespace-owned
+service handoff, the workload controller waits for
+its owned private-PID-namespace container to stop and restarts its original
+entry point before grading partial work. The filesystem is retained, the
+client failure remains separate from the task grade, and the execution journal
+distinguishes supervisor confirmation from a container reset. Failed reset
+confirmation aborts evaluation. Host/shared container PID namespaces are not
+valid task targets. This cooperative teardown is not abrupt-host-crash recovery.
+
 The CLI is the stable user boundary. A benchmark configuration names an agent,
 workload, provider, model, concurrency, workspace, and log file. `concurrency`
-defaults to `1`; values greater than one run isolated replicas of the same
+defaults to `1` and is bounded to `1..=64` before allocating replicas; values greater than one run isolated replicas of the same
 agent/model/workload in parallel, with separate workspaces, logs, measurements,
 and record cassettes. A replay may fan one cassette out to every replica, each
 with independent progress and agent configuration. Provider credentials are never stored
@@ -307,9 +473,276 @@ tape proxy automatically and has no tool-catalog entry. npm recipes are
 project-local; Python recipes use a
 project-local virtual environment. `asb workload install` downloads a prompt
 URL, resolves a pinned external workload alias, or copies a local prompt into
-the configured workloads directory. The `swe-bench` and `terminal-bench`
-aliases download pinned upstream source archives into local bundle directories;
+the configured workloads directory. The legacy `terminal-bench`
+alias downloads a pinned upstream source archive into a local bundle directory;
 the runner copies those sources into `external-workload/` in the workspace.
+The three original SWE-bench family adapters now own a pinned official task
+catalog installer, SDK dependency and installed-task discovery. They do not
+fall back to synthetic trial IDs. The development run path connects those
+sessions to actual instance execution and official grading, reusing the
+selected Rust agent adapter inside the task environment. ASB automatically
+stages its running executable: a static ELF directly, or a dynamic ELF with
+its matching loader and libraries for the same-architecture Linux task image.
+The scoped launcher does not replace guest system libraries or export a
+library search path to benchmark clients. `ASB_GUEST_BINARY` is an optional
+development override, not a required build/install step. Runtime staging and
+recursive gates retain the invoking executable's kernel identity
+on Linux, so replacement of its installed pathname cannot switch the running
+attempt to a different binary or invalidate a recursive process gate. Host-loopback endpoint
+forwarding uses a private, bounded raw TCP relay over the owned Docker exec
+stream: only task-loopback listeners are opened, and host destinations remain
+on the host. Endpoint and HTTP/HTTPS/SOCKS proxy ports are rewritten before
+installation; TLS hostnames and raw protocol bytes are preserved. The relay
+spans installation/execution and closes on cancellation or any failure.
+Measured isolated sessions verify the daemon PID against this host's kernel
+boot ID, namespace PID mapping, stopped state, process start time and owned
+container cgroup before dispatching through the collector interface. They
+never move Docker processes into native ASB cgroups. CPU accounting reads
+existing container counters over the agent interval and labels those totals
+as whole-container CPU, separately from agent-tree samples. Zero sampled CPU
+without observed activity is unavailable, not an exact zero total. Isolated
+memory/worker sampling, core CPU accounting and representative Perfetto
+capture are qualified; this is not qualification of every optional collector
+or full-population planning.
+Collector attachment and guest bootstrap belong to agent preparation, with a
+separate bounded deadline. The execution budget starts only at resume, and
+an explicit end event stops execution accounting before metadata transfer and
+official grading. Perfetto resolves the numeric PID to one process lifetime
+alive at the start marker; ambiguous PID generations leave metrics unavailable
+with a scope warning instead of silently mixing processes or inventing zeros.
+Failed preparation/execution cancels the controller through EOF and drains its
+bounded protocol until cleanup acknowledgement and child exit, retaining the
+original error and any cleanup failure. Normal completion still requires a
+successful explicit close. Session destruction also attempts bounded owner
+cleanup when a failure between preparation and execution bypasses both paths;
+abrupt process termination still requires a recovery mechanism.
+Only an explicit protocol close authorizes normal destructive teardown.
+EOF, malformed input, failed protocol publication, exception unwinding and
+preparation failure mark an interrupted attempt instead. Each original
+workload adapter quiesces its declared resources under its existing owner lock,
+retaining stopped containers, partial files, volumes, build images, submissions
+and any existing official grades. It never calls normal Compose-down/volume
+deletion or image cleanup on this path. All durable journal/daemon/owner
+checks precede stopping resources. A changed journal or unconfirmed stop is a
+preservation failure, not successful cleanup. `interruption.json` explicitly
+states that preservation is neither grading nor retry permission.
+Cancellation accepts a stopped-preserved acknowledgement and still reports
+the interrupted operation as failed; normal completion requires removal and
+cannot accept that acknowledgement as a completed attempt. A preserved
+environment's filesystem is retained, not its running process/shell state.
+Official sessions also track whether their latest evaluator response actually
+completed a matching task grade. Errors, missing/contradictory resolved flags
+and mismatched identities cannot take the normal close/removal path. Session
+finish cancels into stopped preservation and reports the artifact location
+instead. Valid unresolved and empty-submission outcomes are completed grades,
+not permission to repeat the client. A later evaluator failure invalidates
+the previous completion flag rather than allowing old evidence to delete
+new or ungraded work.
+Task controllers now persist a private `resources.json` before creating their
+declared containers, Compose networks and volumes. The journal binds the exact
+names to one attempt, a random ownership label and the Docker daemon identity;
+an operating-system lock excludes recovery while the controller owns it. The
+installed `asb_resources.py --quiesce ATTEMPT_DIRECTORY` helper validates the
+entire declaration and observed ownership before stopping any container. It
+looks up only the declared names and uses their immutable SDK objects, never a
+host-wide listing, pruning or PID signals. Stopped containers, their files and
+volumes are preserved. Live-controller refusal, wrong-daemon/owner rejection
+and actual SIGKILL recovery are covered by provider-free tests.
+This is observed resource quiescence, not a resume or grading receipt: a
+daemon-side pending creation can finish after its controller dies. Source-build
+images are now journaled too: SWE-bench declares its source-build tag before
+invocation, while the generic Compose bridge replaces SDK shared build-output
+names with per-attempt tags and records their recovery labels before building.
+Prebuilt/upstream images are not claimed. Normal teardown removes only those
+owned tags with `noprune` and without force; it does not remove shared aliases,
+parent images or build caches. Recovery preserves these images and reports
+their immutable IDs, keeping them available for later inspection/evaluation.
+Read-only outcome reconciliation requires matching image-cleanup records when
+the journal declares build outputs. Interrupted evaluator recovery, recovered
+submission grading and sweep-slot reconciliation still require integration;
+stopped preservation alone does not supply these missing outcomes.
+Before launching an official workload controller, ASB publishes a private,
+immutable attempt reference under the host workspace's `.asb-attempts/`. It
+contains only the intended task/dataset and project-local artifact location,
+not an actual attempt outcome or measured baseline. In a sweep, the generic
+allocation observer binds that reference to the existing replica start intent,
+selected input digest and configuration. A failed binding stops before the
+controller is spawned. Completed replica receipts additionally seal that
+allocation record; legacy/native outcomes without an allocation remain valid.
+`asb workload recover REFERENCE [--json]` uses `WorkloadAdapter::recover` to
+select the owning SDK's resource helper. Reference locations are bounded and
+validated against the artifact-owning project, not the workspace directory
+(which can be external or inside another project). Helpers provide a bounded
+one-shot response and must exit successfully. Human output describes preserved
+work; JSON contains only the recovery report. A no-op inspection of already
+absent resources does not add files to sealed evaluator evidence. Recovery
+still cannot assign a grade or admit an interrupted slot for retry.
+`asb workload recover REFERENCE --inspect-grade [--json]` instead inspects an
+existing official grading report through `WorkloadAdapter::inspect_grade`.
+The owning adapter checks task/submission identity, baseline, SDK and its own
+evaluator artifacts. Removed attempts retain their normal cleanup checks;
+stopped-preserved attempts additionally require matching interruption/resource
+declarations. The inactive-owner lock is acquired before reading evidence.
+Missing, inconsistent, ambiguous or incomplete grades are errors, never an
+invented unresolved grade. No agent, evaluator or Docker operation runs.
+The report explicitly leaves process success, exit code, elapsed time, tokens
+and steps null. `recorded_cleanup` describes retained evidence, not a new
+observation of Docker state. This is current local artifact consistency, not
+historical attestation or recovered execution metrics.
+Inspection uses a private temporary support copy and the owning project's
+installed SDK interpreter; it never replaces installed SDK helper files that
+another worker may be using. Temporary copies are removed on success/error,
+while retained artifacts remain unchanged. The operation publishes no outcome
+or resume receipt and cannot admit a new attempt. Recovered grading and
+outcome import remain separate work in the standalone inspection command.
+`asb sweep SWEEP.toml --import-grades` explicitly imports completed retained
+official grades into separate `.asb-imported-grades/` reporting records. It
+holds the sweep output lock, loads the saved plan without execution preflight,
+and binds each grade to its original configuration, start intent and workload
+allocation. All selected candidates are validated before any publication.
+Existing outcomes/measurements are never replaced, repeated identical imports
+are unchanged, and conflicting or duplicate actual attempts are errors. This
+operation neither runs clients/evaluators nor creates completion/resume receipts.
+Compare revalidates the original bindings and adapter-owned evidence before
+using an import. Inspection reports include bounded SHA-256/length entries
+for exact artifact bytes read, detecting edits even when parsed grades agree.
+These are current local consistency checks, not historical attestation.
+Reports label the source `imported-official-grade`; process status, time,
+tokens, steps and concurrency cohort stay unknown. False grades stay false.
+SDK metadata inspection currently repeats per imported attempt during compare;
+population-scale presentation/inspection optimization remains delivery work.
+Actual recovered grading and interrupted execution continuation are separate
+from this report-only operation.
+`asb workload recover REFERENCE --grade [--json]` adds explicit retained
+submission grading through `WorkloadAdapter::grade_retained`. The three original
+SWE-bench registrations now implement it: their installed pinned catalog must
+match the retained task/dataset/base, and the captured patch hash/length/image
+must match the original submission. A new official evaluator runs against that
+frozen patch and original immutable image, never a new agent or restarted task.
+Completed true/false grades are validated and reused rather than rerun. Earlier
+failed evaluator artifacts stay in place; a private create-new
+`selected-evaluation.json` explicitly identifies the validated evaluator instead
+of guessing the latest directory. Unfinished evaluator journals are independently
+locked and quiesced before another grading attempt. Missing ownership evidence,
+conflicting completed grades, changed patches/catalogs and unavailable images
+are errors. Grading failure preserves artifacts without selecting a grade.
+If complete official SWE-bench reports remain after a missing/failed ASB
+wrapper, explicit grading instead reconstructs their normalized outcome without
+Docker, another evaluator or an agent. The original evaluator lock must be
+inactive and its task-specific cleanup confirmed. Frozen SDK inputs must match
+the installed pinned task, candidate patch, image and SDK; the official summary
+and instance report must agree. A new metadata-only evaluation directory keeps
+bounded copies plus a manifest binding every original input/report and the
+old wrapper's bytes or absence. No original artifact is replaced. Private
+staging keeps an interrupted copy from looking like another official grader;
+a complete derived result missed before selection can be reconciled without
+rerunning tests. Inspection/import/compare revalidate the source manifest,
+ownership and cleanup as well as the copied reports. Changed/incomplete or
+ambiguous raw outcomes remain errors, never permission to repeat tests.
+The helper observes EOF/SIGTERM to cancel its official evaluator; raw descriptor
+reads avoid a buffered-stdin daemon shutdown race. Returned reports use the same
+grade-only inspection schema and still cannot invent missing execution metrics
+or admit a new agent attempt.
+Original Terminal-Bench 1.0 now supports the first official verifier invocation
+for an explicitly captured pre-verifier environment. It binds the installed
+definition hash/dataset/SDK, original container and image, and every declared
+resource. Under the original owner lock it stops and resumes only those exact
+containers, never Compose up/build, a new agent or replacement volumes. Source
+preparation persists the main service's network aliases and explicit static
+addresses, so grading can restore its original connectivity after an agent
+override. Dynamic addresses are not pinned unnecessarily; unrelated containers
+and networks are not removed. Success/failure/cancellation stop and preserve the
+owned resources, and a recovered grade is selected only after cleanup confirms
+preservation. SDK test logs/results use a unique recovered directory/session;
+the original submission and prior records are not overwritten. Missing execution
+metrics remain unknown. Normal and recovered Terminal-Bench grades must identify
+their upstream environment baseline, not pretend to have a Git-task baseline.
+
+A durable `evaluation-started.json` is written before side-effecting tests.
+Missing results after that marker require outcome reconstruction, not an implicit
+test retry against already-mutated state. Original tasks requiring the lost
+agent shell cannot be truthfully graded in a new shell and are refused before
+restart. The new operation therefore does not reconstruct lost process/shell
+state or recover an already-started verifier.
+Original Harbor now also supports first-verifier grading of a captured,
+stopped-preserved environment. It validates the installed original task/SDK,
+definition, image, resource ownership and network topology before resuming
+only those exact containers. Its SDK environment delegates execution/copy to
+verified immutable container IDs, never Compose up/build/discovery or a new
+agent. The official verifier still owns test upload, command construction and
+binary reward parsing. Original log mounts remain unchanged; current verifier
+outputs are downloaded into the new private recovered evaluation directory.
+Transport output and child shutdown are bounded, including full-pipe failure.
+Normal Harbor grading now publishes the same durable verifier-start record.
+Completed false/true grades are preserved and reused, recovered cleanup must
+confirm stopped preservation before selection, and inspection/import/compare
+follow the explicit selected evaluator.
+Both original Terminal SDKs now publish a create-new, durable SDK-return
+observation before the final normalized result. It binds the parsed outcome,
+task identity, start record and raw pane/reward bytes (including absent reward
+formats). If final publication is lost, retained grading reconstructs from that
+record without an SDK invocation, Docker or a restarted service. Private staging
+and explicit selection preserve every original artifact; inspection/import/compare
+revalidate the original observation, raw files, wrapper bytes/absence and cleanup.
+An interrupted metadata copy or missed selection can be reconciled without tests.
+Missing trustworthy SDK-return evidence remains unknown; raw logs alone are not
+permission to infer success or repeat a side-effecting verifier.
+
+Explicit sweep reconciliation can also close an allocated, started slot whose
+ordinary run record was lost, provided adapter-owned inspection confirms its
+official grade. This creates a separate grade-only closure, not an ordinary
+execution completion receipt. It binds the original selection/start/allocation,
+current declared input digest and preserved per-slot artifacts. Resume validates
+that seal and does not rerun the client. Comparison independently checks the
+official grade without requiring today's executable to match the old one.
+Timing, process status, tokens, steps and execution cohort remain unknown;
+reused output returns a non-success status disclosing that uncertainty, even
+for a resolved grade. Partial collector files remain diagnostic downloads,
+not final measurements or inline performance graphs. Compatible report-only
+imports remain preserved and are deduplicated only in presentation.
+Unobserved grades, conflicting ordinary outcomes and changed preservation
+evidence still cannot authorize silent retry. Final continuation/disposition
+review and delivery qualification remain unfinished.
+See the full benchmark delivery
+checklist before claiming complete upstream benchmark support.
+Their shared installer also downloads a checksum-pinned original
+`SWE-bench/swe-bench-tasks` archive into the project cache and evaluator tool
+directory. It validates every selected population's identity, original
+evaluation data and test lists against that archive. When an image is not local
+and its registry pull fails, preparation can build the exact original task
+Dockerfile through scoped Docker Buildx access. This revision's Dockerfiles
+are self-contained; the build context contains only the Dockerfile, never gold
+patches, test programs, task metadata or host directories. Builds require
+Buildx/BuildKit per-build `--resource` support, enforce 2 CPUs/8 GiB/600 seconds,
+record archive/Dockerfile/image identities and use a unique ASB-labeled image
+tag. Cleanup removes only that tag with `noprune`, not published images or
+shared caches. Source building does not change daemon settings or the selected
+default builder. The evaluation uses the exact resulting immutable image ID.
+The explicit `terminal-bench-1.0` and `terminal-bench-2.1` adapters likewise
+install their original complete task catalogs and own environment sessions.
+Version 1.0 delegates its Compose environment, tmux tests and parser to the
+original SDK; 2.1 delegates environment construction and verifier/reward parsing
+to Harbor. Neither SDK chooses an agent/provider/model. Both consume the same
+generic guest execution contract as SWE-bench, with attempt-scoped teardown
+and original environment-definition baseline evidence. A missing prebuilt
+Harbor image can fall back to its original task Dockerfile within the same
+preparation time budget. Temporary SDK overlays stay in the attempt directory;
+no global image/build pruning or host service changes are performed.
+Selected-client bootstrap comes from the installer recipe and owning tool
+adapter's declared distribution assets. The host prefetches verified archives
+only; it does not replace runtimes used by other clients or bridges. The guest
+installs its declared runtimes and selected client with the same Rust recipes,
+without relying on curl in the task image. Preparation carries its project
+root/configuration explicitly, so external catalog locations do not redirect
+SDK or attempt storage. Transfer receipts and temporary files remain scoped
+to the project attempt; public npm caches are copied only for npm recipes.
+An adapter-owned execution preflight publishes the compiled SDK helpers and
+prefetches selected guest runtime archives before any task environment starts.
+Sweeps deduplicate this over selected project/workload/agent combinations and
+perform it before preserving old outputs or taking input snapshots. Read-only
+runtime metadata discovery does not download or publish anything. Repeated
+identical helper publication preserves the existing private regular file;
+changed helpers replace it atomically without following destination symlinks.
 Other aliases install pinned prompt metadata. These commands do not handle
 credentials.
 `asb init` prepares `.asb/python/venv` using an installed Python 3.12 or 3.13,
@@ -434,6 +867,12 @@ exposing the endpoint; an unrelated listening socket cannot satisfy readiness.
 Explicit `ASB_LLM_TAPE` overrides retain the legacy fixed-port/TCP readiness
 protocol for compatibility. Such overrides are responsible for their own
 listener ownership; they do not provide the built-in receipt guarantee.
+Embedded proxy invocations also hold a private stdin lifetime pipe. Parent
+exit closes it, including death before Node startup. EOF and normal shutdown
+close the listener and its connections, prevent further recording, and wait
+for owned outbound subprocesses with bounded TERM/KILL escalation. An abnormal
+embedded proxy exit cannot confirm cleanup. Legacy overrides retain their own
+stdin/lifecycle contract and do not acquire this built-in guarantee.
 Measurement collection remains
 explicitly opt-in through `asb run --measurements DIR`; CI tests the tape on
 loopback but does not start live agents, live providers, or host collectors.
@@ -454,10 +893,59 @@ the selected model and interface.
 Goose's adapter sets its `OPENAI_HOST` or `ANTHROPIC_HOST` to the tape endpoint
 for both recording and replay; replay uses a placeholder credential.
 
+Setup, sweep execution and comparison share the same manifest type and bounded
+reader: up to 65,536 configurations in 16 MiB, independently of each individual
+configuration/prompt's smaller bound. All manifest reference paths are checked
+before execution. Setup resolves each selected trial set once, checks the whole
+agent/model/task cross product before creating files, and rejects oversized
+selections instead of publishing a sweep it cannot consume. These format
+bounds accommodate complete original populations independently of scheduling.
+`asb sweep SWEEP.toml --jobs N` runs up to N distinct configurations (`1..=32`,
+default 1). This is separate from each configuration's identical replicas.
+`--max-active-attempts N` bounds the sum of admitted replica counts (`1..=64`)
+and defaults to max(jobs, largest selected concurrency), preserving sequential
+replica choices. A configuration must fit the budget; invalid admission is
+rejected before preserving/moving existing results. A bounded FIFO worker pool
+holds replica-weighted slots through preparation, execution, grading and cleanup.
+The count budget is not a host RAM reservation; task environment CPU/memory/PID
+limits remain adapter-owned, and operators must choose jobs for host capacity.
+Selected scheduling is saved in the plan and disclosed in JSON/HTML reports
+because concurrent configurations share host resources.
+Parallel terminal output uses private, bounded per-configuration files and is
+drained as whole configuration blocks on completion. Output errors stop new
+admission and join admitted work; owned temporary duplicates are then removed.
+Sequential defaults retain immediate preparation warnings and streaming
+`--show-output`. Raw agent output conflicts with `--json` rather than corrupting
+JSONL. Shared tool dependency publication is serialized without serializing
+execution. Each JSONL summary includes agent/provider/model/workload names and
+its actual task/attempt identity, so completion-order output remains identifiable.
+Scheduling and output exclusion are separate from completed-group continuation
+and do not claim abrupt-crash container recovery or full-population evaluation.
+Without `--resume`, every new sweep starts fresh output workspaces. Previous results and reports
+are protected by a per-output operating-system file lock held from planning
+through final comparison. A competing writer fails before moving prior data;
+unrelated manifests remain independent. The persistent lock file is never
+unlinked, and process exit releases its lock without a stale-lease repair.
+This exclusion is not container recovery after abrupt host/process failure.
+Previous results and reports
+are moved under `<stem>-history/<run-id>/`, retaining the original result/report
+layout so relative artifact links remain usable. Default replay recordings
+are hard-linked into the new attempt without copying payloads; explicitly
+selected input roots inside old results are rebased to their preserved path.
+New default record attempts do not write those links. Live/record/replay mode
+and replay timing choice are saved in the selection snapshot and surfaced by
+comparison; old records without this information remain mode-unknown.
+
 `asb compare SWEEP.toml` reads the isolated `<sweep>-results/` directories
 created by `asb sweep`. It writes bounded `comparison.json` data, an offline
 `report.html`, and SVG charts to `results/<sweep>-comparison/`; no provider or
-agent is contacted. The report links every result artifact and explains the
+agent is contacted. The generic outcome reader additionally loads recorded
+per-replica task summaries when optional measurement collection is disabled or
+its run record is absent. It validates actual identity and slot mapping, rejects
+conflicts with existing measurement records and discloses its result source.
+Grades do not disappear merely because collection was disabled, and missing
+collector/host/time-series data is never fabricated. Outcome reporting does not
+prove resume eligibility or historical integrity. The report links every result artifact and explains the
 measurement fields. Its dependency-free JavaScript can enable or disable
 benchmarks, agents, providers, models, and workloads without rerunning the
 sweep. Each chart

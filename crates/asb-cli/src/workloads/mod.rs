@@ -7,6 +7,97 @@ use std::path::{Path, PathBuf};
 
 mod adapters;
 
+pub(crate) struct PreflightContext<'a> {
+    pub project_root: &'a Path,
+    pub project_config: &'a crate::project::ProjectConfig,
+    pub agent: &'a str,
+}
+
+impl PreflightContext<'_> {
+    pub(crate) fn tool_root(&self, id: &str) -> PathBuf {
+        crate::project::resolve(self.project_root, &self.project_config.tools_dir).join(id)
+    }
+}
+
+pub(crate) fn preflight(name: &str, context: &PreflightContext<'_>) -> Result<(), crate::Error> {
+    adapters::find(name).map_or(Ok(()), |adapter| adapter.preflight(context))
+}
+mod controller;
+pub(crate) mod recovery;
+pub(crate) mod relay;
+mod remote;
+mod selection;
+pub(crate) mod session;
+pub(crate) fn runtime_inputs(
+    name: &str,
+    context: &crate::runtime_inputs::Context<'_>,
+) -> Result<Vec<crate::runtime_inputs::Dependency>, crate::Error> {
+    adapters::find(name).map_or_else(|| Ok(Vec::new()), |adapter| adapter.runtime_inputs(context))
+}
+pub(crate) mod target;
+pub(crate) fn registered_sources() -> impl Iterator<Item = (&'static str, &'static str)> {
+    adapters::sources()
+}
+pub(crate) use selection::{PlanningCatalog, TaskSelection};
+pub(crate) use session::BaselineEvidence;
+pub use session::TaskIdentity;
+pub(crate) use session::{ExecutionContext, PreparationContext, WorkloadSession};
+
+pub(crate) fn planning_catalog(
+    name: &str,
+    directory: &Path,
+) -> Result<Option<PlanningCatalog>, String> {
+    adapters::find(name).map_or(Ok(None), |adapter| adapter.planning_catalog(directory))
+}
+
+pub(crate) fn describe_selection(
+    config: &crate::benchmark::BenchmarkConfig,
+    directory: &Path,
+    catalog: Option<&PlanningCatalog>,
+) -> Result<TaskSelection, String> {
+    selection::describe(
+        &config.workload,
+        config.trial.as_deref(),
+        config.trial_set.as_deref(),
+        directory,
+        catalog,
+    )
+}
+
+pub(crate) struct InstallationContext<'a> {
+    pub project_root: &'a Path,
+    pub tools_root: &'a Path,
+    pub workloads_root: &'a Path,
+}
+
+pub(crate) fn install_registered(
+    name: &str,
+    context: &InstallationContext<'_>,
+    output: &mut dyn std::io::Write,
+    progress: &mut dyn FnMut(u8, &str),
+) -> Result<bool, crate::Error> {
+    adapters::find(name).map_or(Ok(false), |adapter| {
+        adapter.install(context, output, progress)
+    })
+}
+
+pub(crate) fn installed_available(name: &str, directory: &Path) -> Option<bool> {
+    adapters::find(name).and_then(|adapter| adapter.installed_available(directory))
+}
+
+pub(crate) fn prepare_task(
+    context: &PreparationContext<'_>,
+) -> Result<Box<dyn WorkloadSession>, String> {
+    adapters::find(context.workload)
+        .ok_or_else(|| {
+            format!(
+                "no workload adapter is registered for `{}`",
+                context.workload
+            )
+        })?
+        .prepare_task(context)
+}
+
 const MAX_PROMPT_BYTES: u64 = 64 * 1024;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -251,6 +342,7 @@ pub(super) fn populate_builtin_fixtures(directory: &Path) -> Result<usize, std::
 }
 
 /// Materialize the selected fixture into the run workspace without overwriting edits.
+#[cfg(test)]
 pub(crate) fn prepare_fixture(name: &str, directory: &Path) -> Result<usize, String> {
     adapters::find(name).map_or(Ok(0), |adapter| adapter.prepare_fixture(name, directory))
 }
@@ -288,6 +380,7 @@ pub(super) fn prepare_builtin_fixture(name: &str, directory: &Path) -> Result<us
 }
 
 /// Copy an installed external workload source into the run workspace.
+#[cfg(test)]
 pub(crate) fn prepare_external(
     name: &str,
     workload_directory: &Path,
@@ -381,13 +474,7 @@ fn adapter_trial_label(name: &str) -> String {
 /// adapter is selected and installed, ASB runs the small adapter-smoke trial
 /// that is materialized beside that reference.
 pub(crate) fn evaluation_kind(name: &str, _workspace: &Path) -> &'static str {
-    if name == "repository-navigation" {
-        return "response-review";
-    }
-    if source_expectation(name).is_some() {
-        return "bundled-fixture";
-    }
-    adapters::find(name).map_or("ungraded", |adapter| adapter.evaluation_kind())
+    adapters::find(name).map_or("ungraded", |adapter| adapter.evaluation_kind(name))
 }
 
 /// Only an actual task evaluator can contribute to task-resolution rate.
@@ -399,8 +486,8 @@ pub(crate) fn resolution_eligible(kind: &str) -> bool {
     )
 }
 
-pub(crate) fn scored_kind(kind: &str, baseline_passed: Option<bool>) -> &str {
-    if resolution_eligible(kind) && baseline_passed != Some(false) {
+pub(crate) fn scored_kind<'a>(kind: &'a str, baseline: &session::BaselineEvidence) -> &'a str {
+    if resolution_eligible(kind) && !baseline.supports(kind) {
         "invalid-baseline"
     } else {
         kind
@@ -524,6 +611,13 @@ pub(crate) enum Evaluation {
     Failed(String),
 }
 
+/// Evaluator diagnostics remain visible even when execution failed as well.
+#[derive(Debug, Serialize)]
+pub(crate) struct EvaluationFailure {
+    pub kind: &'static str,
+    pub reason: String,
+}
+
 fn source_satisfies(path: &Path, expectation: &SourceExpectation) -> Result<Evaluation, String> {
     for file in expectation.files {
         let source_path = path.join(file.relative);
@@ -580,7 +674,18 @@ fn source_satisfies(path: &Path, expectation: &SourceExpectation) -> Result<Eval
 /// task success.  Grading is implemented in Rust over evaluator-owned,
 /// immutable expectations; no agent-controlled tests, subprocess, shell, or
 /// inherited credentials are executed.
+#[cfg(test)]
 pub(crate) fn evaluate(
+    name: &str,
+    workspace: &Path,
+    agent_output: &str,
+) -> Result<Evaluation, String> {
+    adapters::find(name)
+        .ok_or_else(|| format!("no grader is available for workload `{name}`"))?
+        .evaluator()(name, workspace, agent_output)
+}
+
+pub(super) fn evaluate_builtin(
     name: &str,
     workspace: &Path,
     agent_output: &str,
@@ -603,11 +708,17 @@ pub(crate) fn evaluate(
     if let Some(expectation) = source_expectation(name) {
         return source_satisfies(workspace, &expectation);
     }
-    let directory = if adapters::find(name).is_some() {
-        workspace.join("external-workload").join("asb-trial")
-    } else {
-        return Err(format!("no grader is available for workload `{name}`"));
-    };
+    Err(format!(
+        "no bundled grader is available for workload `{name}`"
+    ))
+}
+
+pub(super) fn evaluate_external_smoke(
+    name: &str,
+    workspace: &Path,
+    _agent_output: &str,
+) -> Result<Evaluation, String> {
+    let directory = workspace.join("external-workload").join("asb-trial");
     let implementation = directory.join("src/task.py");
     let relative = "external-workload/asb-trial/src/task.py";
     let metadata = match fs::metadata(&implementation) {
@@ -824,6 +935,27 @@ pub fn load_trial(
     let Some(trial) = trial else {
         return Ok(prompt);
     };
+    let selected = selected_trial(name, trial, trial_set, directory)?;
+    let trial_prompt = directory
+        .join(name)
+        .join("trials")
+        .join(format!("{}.txt", selected.id));
+    if trial_prompt.is_file() {
+        return load_prompt_file(&trial_prompt, name);
+    }
+    Ok(format!(
+        "{prompt}\n\nSelected external workload trial: {}\n{}\n",
+        selected.id, selected.description
+    ))
+}
+
+/// Validate an explicit selection independently of prompt-file materialization.
+pub(crate) fn selected_trial(
+    name: &str,
+    trial: &str,
+    trial_set: Option<&str>,
+    directory: &Path,
+) -> Result<Trial, String> {
     let set_name = trial_set.ok_or_else(|| {
         format!(
             "workload `{name}` selected trial `{trial}` without a trial-set TOML; run `asb workload tui`"
@@ -845,27 +977,16 @@ pub fn load_trial(
             config.workload
         ));
     }
-    let selected = config
+    config
         .trials
-        .iter()
+        .into_iter()
         .find(|candidate| candidate.id == trial)
         .ok_or_else(|| {
             format!(
                 "trial `{trial}` is not enabled in {}",
                 config_path.display()
             )
-        })?;
-    let trial_prompt = directory
-        .join(name)
-        .join("trials")
-        .join(format!("{}.txt", selected.id));
-    if trial_prompt.is_file() {
-        return load_prompt_file(&trial_prompt, name);
-    }
-    Ok(format!(
-        "{prompt}\n\nSelected external workload trial: {}\n{}\n",
-        selected.id, selected.description
-    ))
+        })
 }
 
 pub fn read_trial_set(path: &Path) -> Result<TrialSet, String> {
@@ -905,6 +1026,14 @@ pub(crate) fn external_adapter_names() -> impl Iterator<Item = &'static str> {
     adapters::names()
 }
 
+/// Installed dataset tasks replace synthetic defaults; malformed data is an error.
+pub fn installed_trials(name: &str, directory: &Path) -> Result<Vec<Trial>, String> {
+    adapters::find(name).map_or_else(
+        || Ok(trial_ids(name)),
+        |adapter| adapter.installed_trials(directory),
+    )
+}
+
 pub fn write_default_trial_set(name: &str, directory: &Path) -> Result<(), std::io::Error> {
     let path = directory.join(format!("{name}.workload.toml"));
     if path.exists() {
@@ -912,7 +1041,7 @@ pub fn write_default_trial_set(name: &str, directory: &Path) -> Result<(), std::
     }
     let config = TrialSet {
         workload: name.into(),
-        trials: trial_ids(name),
+        trials: installed_trials(name, directory).map_err(std::io::Error::other)?,
     };
     let text = toml::to_string_pretty(&config).map_err(std::io::Error::other)?;
     fs::write(path, text)
@@ -980,6 +1109,69 @@ mod tests {
     };
     use std::fs;
     use std::path::PathBuf;
+
+    #[test]
+    fn dependency_preflight_is_adapter_owned_and_runtime_discovery_is_read_only() {
+        let root = std::env::temp_dir()
+            .join(super::TaskIdentity::local("dependency-preflight", None).attempt_id);
+        fs::create_dir_all(&root).unwrap();
+        let project = crate::project::ProjectConfig::default();
+        let context = super::PreflightContext {
+            project_root: &root,
+            project_config: &project,
+            agent: "missing-fixture-agent",
+        };
+        // Local tasks neither install remote tools nor require an agent for
+        // dependency preparation. No environment/network mutation is needed.
+        super::preflight("bug-fix", &context).unwrap();
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 0);
+        for (workload, sdk, helper) in [
+            ("swe-bench", "swebench", "asb_swebench.py"),
+            ("swe-bench-lite", "swebench", "asb_swebench.py"),
+            ("swe-bench-verified", "swebench", "asb_swebench.py"),
+            (
+                "terminal-bench-1.0",
+                "terminal-bench",
+                "asb_terminal_bench_1.py",
+            ),
+            ("terminal-bench-2.1", "harbor", "asb_harbor.py"),
+        ] {
+            let tool = context.tool_root(sdk);
+            if !tool.join("venv/bin/python").exists() {
+                let error = super::preflight(workload, &context).unwrap_err();
+                assert!(
+                    error
+                        .to_string()
+                        .contains(&format!("asb workload install {workload}"))
+                );
+            }
+            fs::create_dir_all(tool.join("venv/bin")).unwrap();
+            fs::write(tool.join("venv/bin/python"), "fixture metadata only").unwrap();
+            let helper = tool.join(helper);
+            let inputs = super::runtime_inputs(
+                workload,
+                &crate::runtime_inputs::Context {
+                    root: &root,
+                    project: &project,
+                },
+            )
+            .unwrap();
+            assert!(!inputs.is_empty());
+            // Metadata declarations do not publish helpers or download assets.
+            let before = helper.exists();
+            let error = super::preflight(workload, &context).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("selected agent has no installation adapter")
+            );
+            assert!(helper.is_file());
+            if sdk != "swebench" || workload == "swe-bench" {
+                assert!(!before);
+            }
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
 
     fn evaluate(name: &str, workspace: &std::path::Path, output: &str) -> Result<bool, String> {
         super::evaluate(name, workspace, output).map(|value| value == super::Evaluation::Passed)
@@ -1080,14 +1272,14 @@ mod tests {
     fn installed_external_source_is_copied_without_overwriting_workspace_edits() {
         let root = std::env::temp_dir().join(format!("asb-external-copy-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
-        let source = root.join("workloads/swe-bench/source");
+        let source = root.join("workloads/terminal-bench/source");
         let workspace = root.join("workspace");
         fs::create_dir_all(&source).unwrap();
         fs::write(source.join("README.md"), "upstream").unwrap();
         fs::create_dir_all(workspace.join("external-workload")).unwrap();
         fs::write(workspace.join("external-workload/README.md"), "edited").unwrap();
         assert_eq!(
-            prepare_external("swe-bench", &root.join("workloads"), &workspace).unwrap(),
+            prepare_external("terminal-bench", &root.join("workloads"), &workspace).unwrap(),
             0
         );
         assert_eq!(
@@ -1407,6 +1599,44 @@ mod tests {
             .is_err()
         );
         let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn selected_manifest_is_checked_without_loading_a_prompt_or_environment() {
+        let root = std::env::temp_dir().join(format!(
+            "asb-selection-{}",
+            super::TaskIdentity::local("selection", None).attempt_id
+        ));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("selection.toml"),
+            "workload='official-suite'\n[[trials]]\nid='case-1'\ndescription='Selected case'\n",
+        )
+        .unwrap();
+        assert_eq!(
+            super::selected_trial("official-suite", "case-1", Some("selection.toml"), &root)
+                .unwrap()
+                .id,
+            "case-1"
+        );
+        assert!(
+            super::selected_trial("official-suite", "case-2", Some("selection.toml"), &root)
+                .unwrap_err()
+                .contains("not enabled")
+        );
+        assert!(
+            super::selected_trial("different-suite", "case-1", Some("selection.toml"), &root)
+                .unwrap_err()
+                .contains("belongs to")
+        );
+        for unsafe_path in ["../selection.toml", "/selection.toml"] {
+            assert!(
+                super::selected_trial("official-suite", "case-1", Some(unsafe_path), &root)
+                    .unwrap_err()
+                    .contains("invalid workload trial-set path")
+            );
+        }
+        fs::remove_dir_all(root).unwrap();
     }
 }
 #[test]

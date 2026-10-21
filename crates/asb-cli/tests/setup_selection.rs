@@ -1,0 +1,206 @@
+//! Provider-free setup contracts: catalogs are synthetic, no SDK is executed.
+use serde_json::json;
+use std::path::PathBuf;
+use std::process::{Command, Output};
+
+struct Project(PathBuf);
+impl Project {
+    fn new() -> Self {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let value = Self(std::env::temp_dir().join(format!(
+            "asb-setup-selection-{}-{stamp}",
+            std::process::id()
+        )));
+        value.write(
+            ".asb/project.toml",
+            "tools_dir='tools'\nworkloads_dir='catalogs'\nworkspace_dir='workspaces'\n",
+        );
+        value
+    }
+    fn write(&self, path: &str, text: &str) {
+        let path = self.0.join(path);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    }
+    fn setup(&self, workload: &str, extra: &[&str]) -> Output {
+        Command::new(env!("CARGO_BIN_EXE_asb"))
+            .current_dir(&self.0)
+            .env_clear()
+            .env("HOME", &self.0)
+            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+            .args([
+                "setup",
+                "--agent",
+                "pi",
+                "--provider",
+                "openrouter",
+                "--model",
+                "offline-fixture",
+                "--workload",
+                workload,
+                "--output",
+                "selected.toml",
+            ])
+            .args(extra)
+            .output()
+            .unwrap()
+    }
+}
+impl Drop for Project {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+#[test]
+fn all_five_catalogs_accept_explicit_instances_and_reject_missing_or_unknown_before_writing() {
+    for (workload, source, revision, split, population, sdk, version) in [
+        (
+            "swe-bench",
+            "SWE-bench/SWE-bench",
+            "c6fe717fd7a4c3ac1daa4055a4fd082c6a1d28a2",
+            "test",
+            2294,
+            "swebench",
+            "",
+        ),
+        (
+            "swe-bench-lite",
+            "SWE-bench/SWE-bench_Lite",
+            "b0dde1093fe417d83b7184254edf8199c1f0dff5",
+            "test",
+            300,
+            "swebench",
+            "",
+        ),
+        (
+            "swe-bench-verified",
+            "SWE-bench/SWE-bench_Verified",
+            "78f471bf655a3137b2e8a75af1501690ec009ec3",
+            "test",
+            500,
+            "swebench",
+            "",
+        ),
+        (
+            "terminal-bench-1.0",
+            "harbor-framework/terminal-bench-1",
+            "91e10457b5410f16c44364da1a34cb6de8c488a5",
+            "terminal-bench-core@0.1.1",
+            80,
+            "terminal-bench",
+            "0.2.18",
+        ),
+        (
+            "terminal-bench-2.1",
+            "harbor-framework/terminal-bench-2-1",
+            "7131e4375048a0e408a8fb404b5f499d726b695b",
+            "tasks",
+            89,
+            "harbor",
+            "0.24.0",
+        ),
+    ] {
+        let project = Project::new();
+        let tasks = (0..population).map(|index| {
+            let id = format!("fixture-{index}");
+            if sdk == "swebench" {
+                let metadata = format!("evaluation-data/{revision}/{}.json","a".repeat(64));
+                project.write(&format!("catalogs/{workload}/{metadata}"),"{}");
+                json!({"id":id,"description":"synthetic selection only","repo":"fixture/repository",
+                    "base_commit":"b".repeat(40),"metadata":metadata,"metadata_sha256":"c".repeat(64)})
+            } else {
+                let definition = format!("source/tasks/{id}");
+                std::fs::create_dir_all(project.0.join("catalogs").join(workload).join(&definition)).unwrap();
+                json!({"id":id,"description":"synthetic selection only","instruction":"fixture","definition":definition})
+            }
+        }).collect::<Vec<_>>();
+        let mut catalog = json!({"schema_version":1,"workload":workload,
+            "dataset":{"source":source,"revision":revision,"split":split},"tasks":tasks});
+        if sdk != "swebench" {
+            catalog["sdk"] = json!({"package":sdk,"version":version});
+            catalog["source_sha256"] = json!("a".repeat(64));
+            catalog["archive_sha256"] = json!("b".repeat(64));
+            project.write(&format!("catalogs/{workload}/source-manifest.json"), "{}");
+        }
+        let path = format!("catalogs/{workload}/catalog.json");
+        project.write(&path, &catalog.to_string());
+        let result = project.setup(workload, &["--trial", "fixture-0"]);
+        assert!(
+            result.status.success(),
+            "{workload}: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let saved = std::fs::read(project.0.join("selected.toml")).unwrap();
+        let config: toml::Value = toml::from_str(std::str::from_utf8(&saved).unwrap()).unwrap();
+        assert_eq!(config["workload"].as_str(), Some(workload));
+        assert_eq!(config["trial"].as_str(), Some("fixture-0"));
+        assert_eq!(config["workspace"].as_str(), Some("workspaces"));
+        assert!(
+            !project.0.join("tools").exists(),
+            "setup must not install or execute an SDK"
+        );
+        for arguments in [&[][..], &["--trial", "not-installed"][..]] {
+            let result = project.setup(workload, arguments);
+            assert!(!result.status.success(), "{workload}");
+            assert_eq!(
+                saved,
+                std::fs::read(project.0.join("selected.toml")).unwrap()
+            );
+        }
+        // A stale catalog cannot overwrite a previously usable configuration.
+        project.write(&path, "{}");
+        assert!(
+            !project
+                .setup(workload, &["--trial", "fixture-0"])
+                .status
+                .success()
+        );
+        assert_eq!(
+            saved,
+            std::fs::read(project.0.join("selected.toml")).unwrap()
+        );
+    }
+}
+
+#[test]
+fn enabled_trial_sets_round_trip_and_invalid_selections_preserve_existing_config() {
+    let project = Project::new();
+    project.write(
+        "catalogs/selected.workload.toml",
+        "workload='agentbench'\n[[trials]]\nid='one'\ndescription='enabled fixture'\n",
+    );
+    let result = project.setup(
+        "agentbench",
+        &["--trial", "one", "--trial-set", "selected.workload.toml"],
+    );
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let saved = std::fs::read(project.0.join("selected.toml")).unwrap();
+    let config: toml::Value = toml::from_str(std::str::from_utf8(&saved).unwrap()).unwrap();
+    assert_eq!(config["trial_set"].as_str(), Some("selected.workload.toml"));
+    for arguments in [
+        vec!["--trial", "one"],
+        vec![
+            "--trial",
+            "disabled",
+            "--trial-set",
+            "selected.workload.toml",
+        ],
+        vec!["--trial", "one", "--trial-set", "../outside.toml"],
+        vec!["--trial"],
+        vec!["--trial-set", "selected.workload.toml"],
+    ] {
+        assert!(!project.setup("agentbench", &arguments).status.success());
+        assert_eq!(
+            saved,
+            std::fs::read(project.0.join("selected.toml")).unwrap()
+        );
+    }
+}

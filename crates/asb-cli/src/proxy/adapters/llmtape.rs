@@ -29,10 +29,12 @@ pub(crate) struct Settings {
 
 struct RunningLlmtape {
     child: Option<Child>,
+    builtin: bool,
     url: String,
     progress: Option<PathBuf>,
     cassette: PathBuf,
     mode: Mode,
+    cleanup_confirmed: bool,
     _scratch: Scratch,
 }
 
@@ -54,6 +56,17 @@ impl Drop for StartingChild {
 impl ProxyAdapter for LlmtapeAdapter {
     fn name(&self) -> &'static str {
         NAME
+    }
+
+    fn input_files(&self) -> Result<Vec<PathBuf>, Error> {
+        execution_input_files(configured_override().as_deref())
+    }
+    fn runtime_inputs(&self) -> Result<Vec<crate::runtime_inputs::Dependency>, Error> {
+        // Retain the logical command, not just its initial PATH resolution,
+        // so a new earlier PATH candidate is detectable at final discovery.
+        Ok(vec![crate::runtime_inputs::Dependency::program(
+            configured_override().unwrap_or_else(|| "node".into()),
+        )])
     }
 
     fn start(
@@ -107,8 +120,12 @@ impl ProxyAdapter for LlmtapeAdapter {
         let ready_file = scratch.path.join("ready.json");
         let mut command = executable.command();
         command.env_remove("ASB_TAPE_READY_FILE");
+        command.env_remove("ASB_TAPE_OWNER_PIPE");
         if builtin {
             command.env("ASB_TAPE_READY_FILE", &ready_file);
+            // The parent retains the write end in Child.stdin. CLOEXEC keeps
+            // other launched programs from extending this lifetime lease.
+            command.env("ASB_TAPE_OWNER_PIPE", "1");
         }
         crate::project::apply_network_proxy(&mut command, Path::new("."))?;
         command
@@ -144,7 +161,11 @@ impl ProxyAdapter for LlmtapeAdapter {
             std::fs::canonicalize(&request.workspace).unwrap_or_else(|_| request.workspace.clone());
         command
             .env("ASB_TAPE_WORKSPACE", tape_workspace)
-            .stdin(Stdio::null())
+            .stdin(if builtin {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            })
             .stdout(Stdio::null())
             .stderr(Stdio::null());
         let child = command.spawn().map_err(|error| {
@@ -166,11 +187,13 @@ impl ProxyAdapter for LlmtapeAdapter {
         )?;
         Ok(Box::new(RunningLlmtape {
             child: child.0.take(),
+            builtin,
             url: format!("http://127.0.0.1:{port}/v1"),
             progress: (request.mode == Mode::Replay)
                 .then(|| replay_cassette.with_extension("jsonl.progress.json")),
             cassette: cassette.clone(),
             mode: request.mode,
+            cleanup_confirmed: false,
             _scratch: scratch,
         }))
     }
@@ -262,6 +285,16 @@ fn read_ready_port(path: &Path, child_id: u32) -> Result<Option<u16>, Error> {
 }
 
 impl ProxySession for RunningLlmtape {
+    fn output_files(&self) -> Vec<PathBuf> {
+        if self.mode == Mode::Record {
+            vec![self.cassette.clone()]
+        } else {
+            Vec::new()
+        }
+    }
+    fn cleanup_confirmed(&self) -> bool {
+        self.cleanup_confirmed
+    }
     fn url(&self) -> &str {
         &self.url
     }
@@ -270,8 +303,9 @@ impl ProxySession for RunningLlmtape {
         let Some(mut child) = self.child.take() else {
             return Ok(());
         };
-        crate::project::stop_network_child(&mut child)
-            .map_err(|error| Error::Run(format!("could not stop proxy adapter: {error}")))?;
+        let stopped = stop_proxy(&mut child, self.builtin);
+        self.cleanup_confirmed = stopped.is_ok();
+        stopped.map_err(|error| Error::Run(format!("could not stop proxy adapter: {error}")))?;
         if self.mode == Mode::Replay {
             let progress = self
                 .progress
@@ -313,9 +347,19 @@ impl ProxySession for RunningLlmtape {
 
     fn abort(&mut self) {
         if let Some(mut child) = self.child.take() {
-            let _ = crate::project::stop_network_child(&mut child);
+            self.cleanup_confirmed = stop_proxy(&mut child, self.builtin).is_ok();
         }
     }
+}
+
+fn stop_proxy(child: &mut Child, builtin: bool) -> std::io::Result<()> {
+    crate::project::stop_network_child(child)?;
+    if builtin && !child.try_wait()?.is_some_and(|status| status.success()) {
+        return Err(std::io::Error::other(
+            "embedded tape proxy exited without confirming owned subprocess cleanup; inspect retained attempt artifacts",
+        ));
+    }
+    Ok(())
 }
 
 impl Drop for RunningLlmtape {
@@ -347,10 +391,7 @@ impl ProxyExecutable {
 /// Resolve an explicitly supplied proxy or materialize ASB's built-in proxy.
 /// ASB deliberately does not look up an unqualified host `llmtape` command.
 fn resolve_executable(directory: &Path) -> Result<ProxyExecutable, Error> {
-    if let Some(override_path) = std::env::var("ASB_LLM_TAPE")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-    {
+    if let Some(override_path) = configured_override() {
         return Ok(ProxyExecutable::Override(override_path));
     }
     let script = directory.join(".asb-tape-proxy.mjs");
@@ -363,6 +404,22 @@ fn resolve_executable(directory: &Path) -> Result<ProxyExecutable, Error> {
         ))
     })?;
     Ok(ProxyExecutable::Builtin(script))
+}
+
+fn configured_override() -> Option<String> {
+    std::env::var("ASB_LLM_TAPE")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+}
+
+fn execution_input_files(override_path: Option<&str>) -> Result<Vec<PathBuf>, Error> {
+    // The built-in scripts are already bound by ASB's executable identity.
+    // Keep the actual command's host runtime or explicit override separately.
+    let program = Path::new(override_path.unwrap_or("node"));
+    let path = crate::tools::host_executable(program).ok_or_else(|| {
+        Error::Input("selected tape proxy executable is unavailable for input binding".into())
+    })?;
+    Ok(vec![path])
 }
 
 // Created exclusively, so teardown only removes files owned by this session.
@@ -432,6 +489,32 @@ mod tests {
     use crate::tape::{Mode, Session};
     use std::io::{Read, Write};
     use std::net::TcpStream;
+
+    #[test]
+    fn abnormal_builtin_exit_cannot_confirm_proxy_cleanup() {
+        use crate::proxy::ProxySession;
+        let root = test_root();
+        for code in [0, 2] {
+            let mut child = std::process::Command::new("node")
+                .args(["-e", &format!("process.exit({code})")])
+                .spawn()
+                .unwrap();
+            child.wait().unwrap();
+            let mut session = super::RunningLlmtape {
+                child: Some(child),
+                builtin: true,
+                url: String::new(),
+                progress: None,
+                cassette: root.join("tape"),
+                mode: Mode::Record,
+                cleanup_confirmed: false,
+                _scratch: super::Scratch::create(&root).unwrap(),
+            };
+            assert_eq!(session.finish().is_ok(), code == 0);
+            assert_eq!(session.cleanup_confirmed(), code == 0);
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn builtin_startup_rejects_foreign_listener_and_reaps_unready_child() {
@@ -525,6 +608,27 @@ mod tests {
     }
     use std::path::Path;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[cfg(unix)]
+    #[test]
+    fn declared_override_input_is_not_launched_or_materialized_and_keeps_its_symlink() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let root = test_root();
+        let program = root.join("proxy");
+        let marker = root.join("must-not-run");
+        std::fs::write(&program, format!("#!/bin/sh\ntouch {}\n", marker.display())).unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let link = root.join("selected-proxy");
+        symlink(&program, &link).unwrap();
+        let files = super::execution_input_files(link.to_str()).unwrap();
+        assert_eq!(files.as_slice(), std::slice::from_ref(&link));
+        assert!(!marker.exists());
+        assert!(!root.join(".asb-tape-proxy.mjs").exists());
+        std::fs::set_permissions(program, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(super::execution_input_files(link.to_str()).is_err());
+        assert!(!marker.exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     fn test_root() -> std::path::PathBuf {
         let stamp = SystemTime::now()

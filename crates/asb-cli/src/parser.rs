@@ -72,6 +72,7 @@ pub(crate) fn run(args: &[OsString], stdout: &mut dyn Write, stderr: &mut dyn Wr
                     mode,
                     cassette: options.cassette.as_deref(),
                     respect_record_timings: options.respect_record_timings,
+                    ..Default::default()
                 },
                 stdout,
             )
@@ -87,13 +88,20 @@ pub(crate) fn run(args: &[OsString], stdout: &mut dyn Write, stderr: &mut dyn Wr
                     "--respect-record-timings requires --replay; recording always stores response delays",
                 );
             }
-            sweep::run(
+            sweep::run_with_options(
                 &options.path,
-                options.json,
-                options.show_output,
-                mode,
-                options.respect_record_timings,
-                options.cassette_root.as_deref().map(std::path::Path::new),
+                sweep::Options {
+                    json: options.json,
+                    show_output: options.show_output,
+                    mode,
+                    respect_record_timings: options.respect_record_timings,
+                    cassette_root: options.cassette_root.as_deref().map(std::path::Path::new),
+                    jobs: usize::from(options.jobs),
+                    max_active_attempts: options.max_active_attempts.map(usize::from),
+                    resume: options.resume,
+                    reconcile_completed: options.reconcile_completed,
+                    import_grades: options.import_grades,
+                },
                 stdout,
             )
         }
@@ -109,6 +117,15 @@ pub(crate) fn run(args: &[OsString], stdout: &mut dyn Write, stderr: &mut dyn Wr
             WorkloadCommand::List(args) => install::workload_list(args.into(), stdout),
             WorkloadCommand::Install(args) => install::workload(args.into(), stdout),
             WorkloadCommand::Tui => tui::workload_tui(stdout),
+            WorkloadCommand::Recover(args) => {
+                if args.grade {
+                    crate::workloads::recovery::grade_retained(&args.reference, args.json, stdout)
+                } else if args.inspect_grade {
+                    crate::workloads::recovery::inspect_grade(&args.reference, args.json, stdout)
+                } else {
+                    crate::workloads::recovery::run(&args.reference, args.json, stdout)
+                }
+            }
         },
     };
     match result {
@@ -122,7 +139,10 @@ fn close_command(args: &[OsString]) -> Option<&'static str> {
     let (value, choices): (&str, &[&str]) = match first {
         "provider" => (args.get(1)?.to_str()?, &["models"]),
         "tool" => (args.get(1)?.to_str()?, &["list", "install"]),
-        "workload" => (args.get(1)?.to_str()?, &["list", "install", "tui"]),
+        "workload" => (
+            args.get(1)?.to_str()?,
+            &["list", "install", "tui", "recover"],
+        ),
         _ => (
             first,
             &[
@@ -202,6 +222,12 @@ struct SetupArgs {
     agent: Option<String>,
     #[arg(long)]
     workload: Option<String>,
+    /// Installed workload instance ID, or enabled trial from --trial-set.
+    #[arg(long, value_name = "INSTANCE")]
+    trial: Option<String>,
+    /// Project-local workload trial selection TOML.
+    #[arg(long, value_name = "FILE", requires = "trial")]
+    trial_set: Option<String>,
     #[arg(long)]
     provider: Option<String>,
     #[arg(long)]
@@ -219,6 +245,8 @@ impl From<SetupArgs> for config::SetupOptions {
         Self {
             agent: value.agent,
             workload: value.workload,
+            trial: value.trial,
+            trial_set: value.trial_set,
             provider: value.provider,
             model: value.model,
             concurrency: value.concurrency,
@@ -243,7 +271,7 @@ struct RunArgs {
     cassette: Option<String>,
     #[arg(long)]
     json: bool,
-    #[arg(long = "show-output")]
+    #[arg(long = "show-output", conflicts_with = "json")]
     show_output: bool,
     #[arg(long)]
     measurements: Option<String>,
@@ -254,6 +282,18 @@ struct RunArgs {
 struct SweepArgs {
     #[arg(value_name = "SWEEP")]
     path: String,
+    /// Import existing official grades for reporting only; never run an agent or evaluator.
+    #[arg(long, conflicts_with_all = ["resume", "reconcile_completed", "record", "replay", "show_output", "respect_record_timings", "cassette_root", "max_active_attempts"])]
+    import_grades: bool,
+    /// Reuse validated completed groups and run untouched configurations; incomplete groups require recovery.
+    #[arg(long)]
+    resume: bool,
+    #[arg(
+        long,
+        requires = "resume",
+        help = "validate retained completed grades and repair missing receipts; never retry an agent"
+    )]
+    reconcile_completed: bool,
     #[arg(long)]
     record: bool,
     #[arg(long)]
@@ -262,11 +302,21 @@ struct SweepArgs {
     respect_record_timings: bool,
     #[arg(long)]
     json: bool,
-    #[arg(long = "show-output")]
+    #[arg(
+        long = "show-output",
+        conflicts_with = "json",
+        help = "show agent output; parallel jobs buffer it by configuration"
+    )]
     show_output: bool,
     /// Separate cassette root for recording, or the record root when replaying.
     #[arg(long, value_name = "DIR")]
     cassette_root: Option<String>,
+    /// Maximum distinct configurations running at once (not identical replicas).
+    #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u16).range(1..=32))]
+    jobs: u16,
+    /// Total simultaneous replicas across all jobs; defaults to max(jobs, largest concurrency).
+    #[arg(long, value_parser = clap::value_parser!(u16).range(1..=64))]
+    max_active_attempts: Option<u16>,
 }
 
 #[derive(Debug, Args)]
@@ -305,6 +355,23 @@ enum WorkloadCommand {
     List(WorkloadListArgs),
     Install(WorkloadInstallArgs),
     Tui,
+    #[command(
+        after_help = "By default, stops only a departed controller's recorded task containers, preserving partial files and volumes. --inspect-grade instead reads an existing official grade without changing the attempt or running an agent/evaluator. Neither operation resumes a sweep."
+    )]
+    Recover(WorkloadRecoverArgs),
+}
+#[derive(Debug, Args)]
+struct WorkloadRecoverArgs {
+    #[arg(value_name = "REFERENCE")]
+    reference: PathBuf,
+    /// Grade a retained unfinished submission with its official evaluator; never rerun the agent.
+    #[arg(long, conflicts_with = "inspect_grade")]
+    grade: bool,
+    /// Read an existing official grade without running an agent/evaluator or changing the attempt.
+    #[arg(long)]
+    inspect_grade: bool,
+    #[arg(long)]
+    json: bool,
 }
 #[derive(Debug, Args, Default)]
 struct WorkloadListArgs {
@@ -400,11 +467,16 @@ mod tests {
             "bug-fix",
             "--workspace",
             "workspace",
+            "--trial",
+            "one",
+            "--trial-set",
+            "selected.workload.toml",
         ])
         .expect("typed setup options parse");
         let rendered = format!("{cli:?}");
         assert!(rendered.contains("gpt-6.1-sol"));
         assert!(rendered.contains("benchmark.toml"));
+        assert!(rendered.contains("selected.workload.toml"));
     }
 
     #[test]

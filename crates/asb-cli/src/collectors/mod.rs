@@ -115,6 +115,7 @@ pub(crate) enum LifecyclePhase {
     ProxyPreparation,
     AgentPreparation,
     WorkloadEvaluation,
+    WorkloadCleanup,
 }
 
 impl LifecyclePhase {
@@ -126,6 +127,7 @@ impl LifecyclePhase {
             Self::ProxyPreparation => "proxy.prepare",
             Self::AgentPreparation => "agent.prepare",
             Self::WorkloadEvaluation => "workload.evaluate",
+            Self::WorkloadCleanup => "workload.cleanup",
         }
     }
 }
@@ -136,6 +138,21 @@ impl LifecyclePhase {
 /// `Session`. Defaults leave unsupported capabilities absent or do no work.
 pub(crate) trait CollectorAdapter: Sync {
     fn id(&self) -> &'static str;
+    fn runtime_inputs(
+        &self,
+        context: &crate::runtime_inputs::Context<'_>,
+    ) -> Result<Vec<crate::runtime_inputs::Dependency>, crate::Error> {
+        self.tool_id().map_or_else(
+            || Ok(Vec::new()),
+            |id| {
+                crate::tools::find(id)
+                    .ok_or_else(|| {
+                        crate::Error::Input("collector tool has no input declaration".into())
+                    })?
+                    .runtime_inputs(context)
+            },
+        )
+    }
     fn environment_flag(&self) -> Option<&'static str> {
         None
     }
@@ -173,6 +190,38 @@ pub(crate) trait CollectorAdapter: Sync {
         _selected: &[String],
     ) -> Result<(), String> {
         Ok(())
+    }
+    /// Some collectors must resolve entry points inside the execution
+    /// namespace, where its executables/interpreters are actually installed.
+    fn prefers_execution_namespace(&self) -> bool {
+        false
+    }
+    fn execution_namespace_requested(&self, _session: &mut crate::measurements::Session) -> bool {
+        false
+    }
+    fn export_execution_namespace_state(
+        &self,
+        _session: &mut crate::measurements::Session,
+    ) -> Result<serde_json::Value, String> {
+        Err("collector does not export execution-namespace observations".into())
+    }
+    fn import_execution_namespace_state(
+        &self,
+        _session: &mut crate::measurements::Session,
+        _value: &serde_json::Value,
+    ) -> Result<(), String> {
+        Err("collector does not import execution-namespace observations".into())
+    }
+    fn agent_launch_prepared(
+        &self,
+        session: &mut crate::measurements::Session,
+        command: &std::process::Command,
+    ) {
+        let args = command
+            .get_args()
+            .map(|value| value.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        self.agent_launch(session, &command.get_program().to_string_lossy(), &args);
     }
     fn preflight(&self, _context: &mut PreflightContext<'_>) -> Result<(), String> {
         Ok(())
@@ -217,6 +266,15 @@ pub(crate) trait CollectorAdapter: Sync {
         _pid: u32,
     ) -> Result<(), String> {
         Ok(())
+    }
+    /// A verified local isolated process is not ASB's direct child. Adapters
+    /// that manage membership must override this instead of moving its PID.
+    fn attach_isolated_pid(
+        &self,
+        session: &mut crate::measurements::Session,
+        pid: u32,
+    ) -> Result<(), String> {
+        self.attach_pid(session, pid)
     }
 }
 

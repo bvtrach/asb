@@ -394,7 +394,7 @@ fn process_tree_prelude_from_pids(pids: impl IntoIterator<Item = u32>) -> String
         let _ = writeln!(prelude, "  @asb_tree[{pid}] = 1;");
     }
     prelude.push_str(
-        "  printf(\"ASB_BPFTRACE_READY\\n\");\n}\ntracepoint:sched:sched_process_fork /@asb_tree[args->parent_pid]/ { @asb_tree[args->child_pid] = 1; }\n",
+        "  printf(\"ASB_BPFTRACE_READY\\n\");\n}\ntracepoint:sched:sched_process_fork /@asb_tree[args->parent_pid]/ { @asb_tree[args->child_pid] = 1; }\ntracepoint:sched:sched_process_exit /@asb_tree[tid]/ { delete(@asb_tree[tid]); }\n",
     );
     prelude
 }
@@ -783,6 +783,9 @@ mod tests {
         let program = profile_probe_program(profile);
         assert!(program.contains("@asb_tree[0] = 1;"));
         assert!(program.contains("sched_process_fork"));
+        assert!(
+            program.contains("sched_process_exit /@asb_tree[tid]/ { delete(@asb_tree[tid]); }")
+        );
         assert!(program.contains(profile.program));
         assert!(program.contains("interval:ms:1 { exit(); }"));
         assert!(!program.contains("@asb_tree[1] = 1;"));

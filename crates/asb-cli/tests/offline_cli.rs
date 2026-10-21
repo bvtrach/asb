@@ -660,14 +660,130 @@ fn sweep_rejects_invalid_manifests_and_unsafe_references() {
 }
 
 #[test]
-fn sweep_rejects_nested_sweeps_and_reports_comparison_failure() {
+fn sweep_admission_errors_preserve_existing_outputs_and_reject_unbounded_replicas() {
+    let project = Project::new();
+    project.write("sweep.toml", "configs=['benchmark.toml']\n");
+    project.write(
+        "benchmark.toml",
+        "agent='pi'\nworkload='bug-fix'\nprovider='cli2key'\nmodel='fixture'\nconcurrency=2\n",
+    );
+    project.write("sweep-results/previous", "retain result");
+    project.write("results/sweep-comparison/report.html", "retain report");
+    for options in [
+        ["--jobs", "0"],
+        ["--jobs", "33"],
+        ["--max-active-attempts", "0"],
+        ["--max-active-attempts", "65"],
+        ["--max-active-attempts", "1"],
+    ] {
+        let result = project.command(&["sweep", "sweep.toml", options[0], options[1]]);
+        assert!(!result.status.success(), "{options:?}");
+        assert_eq!(
+            std::fs::read_to_string(project.0.join("sweep-results/previous")).unwrap(),
+            "retain result"
+        );
+        assert_eq!(
+            std::fs::read_to_string(project.0.join("results/sweep-comparison/report.html"))
+                .unwrap(),
+            "retain report"
+        );
+        assert!(!project.0.join("sweep-history").exists());
+        assert!(!project.0.join("sweep-results/plan.json").exists());
+    }
+    project.write(
+        "benchmark.toml",
+        "agent='pi'\nworkload='bug-fix'\nprovider='cli2key'\nmodel='fixture'\nconcurrency=65\n",
+    );
+    for arguments in [
+        vec!["run", "benchmark.toml"],
+        vec!["sweep", "sweep.toml", "--jobs", "2"],
+    ] {
+        expect_failure(
+            &project.command(&arguments),
+            "concurrency must not exceed 64",
+        );
+    }
+    expect_failure(
+        &project.command(&[
+            "setup",
+            "--agent",
+            "pi",
+            "--provider",
+            "cli2key",
+            "--model",
+            "fixture",
+            "--workload",
+            "bug-fix",
+            "--concurrency",
+            "65",
+            "--output",
+            "invalid.toml",
+        ]),
+        "concurrency must not exceed 64",
+    );
+    assert!(!project.0.join("invalid.toml").exists());
+    let help = project.command(&["sweep", "--help"]);
+    expect_success(&help);
+    assert!(stdout(&help).contains("--jobs"));
+    assert!(stdout(&help).contains("--max-active-attempts"));
+    for command in ["run", "sweep"] {
+        let output = project.command(&[command, "benchmark.toml", "--json", "--show-output"]);
+        assert!(!output.status.success());
+        assert!(stderr(&output).contains("cannot be used with"));
+    }
+}
+
+#[test]
+fn sweep_rejects_nested_sweeps_before_execution_or_comparison() {
     let project = Project::new();
     project.init();
     project.write("outer.toml", "configs = ['inner.toml']\n");
     project.write("inner.toml", "configs = ['irrelevant.toml']\n");
     let result = project.command(&["sweep", "outer.toml"]);
     expect_failure(&result, "nested sweep");
-    assert!(stderr(&result).contains("comparison failed"));
+    assert!(!project.0.join("outer-results").exists());
+    assert!(!project.0.join("results/outer-comparison").exists());
+}
+
+#[test]
+fn competing_sweep_leaves_existing_results_and_reports_untouched() {
+    let project = Project::new();
+    project.write("sweep.toml", "configs=['benchmark.toml']\n");
+    // A valid referenced path, deliberately malformed configuration: output
+    // exclusion must happen before planning, archival or any runtime work.
+    project.write("benchmark.toml", "not a valid benchmark");
+    project.write("sweep-results/previous", "retain result");
+    project.write("results/sweep-comparison/report.html", "retain report");
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(project.0.join(".sweep-asb-sweep.lock"))
+        .unwrap();
+    lock.try_lock().unwrap();
+    expect_failure(
+        &project.command(&["sweep", "sweep.toml"]),
+        "another sweep owns",
+    );
+    assert_eq!(
+        std::fs::read_to_string(project.0.join("sweep-results/previous")).unwrap(),
+        "retain result"
+    );
+    assert_eq!(
+        std::fs::read_to_string(project.0.join("results/sweep-comparison/report.html")).unwrap(),
+        "retain report"
+    );
+    assert!(!project.0.join("sweep-history").exists());
+    assert!(!project.0.join("sweep-results/plan.json").exists());
+    // Other tests can fork this multi-threaded test process while the raw
+    // descriptor is open. Unlock explicitly, just like OutputLock::drop,
+    // rather than depending on every inherited copy reaching exec first.
+    lock.unlock().unwrap();
+    drop(lock);
+    let next = project.command(&["sweep", "sweep.toml"]);
+    assert!(!next.status.success());
+    assert!(!stderr(&next).contains("another sweep owns"));
 }
 
 #[test]
@@ -933,7 +1049,13 @@ fetch(endpoint + '/responses', {method:'POST',headers:{'content-type':'applicati
     stop.store(true, Ordering::Relaxed);
     worker.join().unwrap();
     expect_success(&run);
-    expect_success(&record);
+    assert!(
+        record.status.success(),
+        "record stdout={} stderr={} log={}",
+        String::from_utf8_lossy(&record.stdout),
+        String::from_utf8_lossy(&record.stderr),
+        std::fs::read_to_string(project.0.join("run.log")).unwrap_or_default()
+    );
     expect_success(&replay);
     assert_eq!(
         before_replay, after_replay,
@@ -1010,6 +1132,16 @@ async function main() {
       if (result.status!==0) throw new Error('offline CPU child failed');
     }
   }
+  if (behavior === 'replica-barrier') {
+    const root = process.env.ASB_FIXTURE_BARRIER;
+    fs.mkdirSync(root, {recursive:true});
+    fs.writeFileSync(require('path').join(root, String(process.pid)), 'started');
+    const deadline = Date.now() + 5000;
+    while (fs.readdirSync(root).length < 2) {
+      if (Date.now() > deadline) throw new Error('configured replicas were not started concurrently');
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+  }
   if (behavior === 'agent-workers' || behavior === 'only-tools') {
     const {spawn} = require('child_process');
     const children = [];
@@ -1024,9 +1156,13 @@ async function main() {
     })));
   }
   console.log('fixture-agent-output');
+  if (behavior === 'api-error-event') console.log(JSON.stringify({type:'agent_end',messages:[{role:'assistant',stopReason:'error',errorMessage:'400 fixture-secret'}]}));
   if (behavior === 'fatal') console.error('Authentication required. Please use /login command to sign in to your account fixture-secret');
-  if (behavior === 'exit' || (behavior === 'fail-second' && process.cwd().endsWith('concurrency-2')) ||
-      (behavior === 'fail-sweep-second' && process.cwd().includes('/001-bad/'))) process.exitCode = 7;
+  const unresolvedFailure = behavior === 'exit-unresolved' ||
+      (behavior === 'fail-second' && process.cwd().endsWith('concurrency-2')) ||
+      (behavior === 'fail-sweep-second' && process.cwd().includes('/001-bad/'));
+  if (unresolvedFailure) fs.writeFileSync('src/parser.py', "def parse_path(value: str) -> list[str]:\n    return value.split('/')\n");
+  if (behavior === 'exit' || unresolvedFailure) process.exitCode = 7;
 }
 main().catch(e => { console.error(e); process.exitCode = 9; });
 "##);
@@ -1049,6 +1185,78 @@ fn replay(project: &Project, behavior: &str, additional: &[&str]) -> Output {
     ];
     args.extend_from_slice(additional);
     project.command_with_env(&args, &[("ASB_FIXTURE_BEHAVIOR", behavior)])
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn running_binary_replacement_does_not_break_measured_replay_gate() {
+    let project = replay_project(1);
+    let executable = project.0.join("running-asb");
+    std::fs::copy(env!("CARGO_BIN_EXE_asb"), &executable).unwrap();
+    let child = spawn_copied_fixture(
+        Command::new(&executable)
+            .current_dir(&project.0)
+            .args([
+                "run",
+                "benchmark.toml",
+                "--replay",
+                "--cassette",
+                "tape.jsonl",
+                "--measurements",
+                "measurements",
+            ])
+            .env_clear()
+            .env("HOME", &project.0)
+            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped()),
+    );
+    // Remove only the test-created copy, after exec has loaded it. The kernel
+    // keeps its running inode alive while the old pathname no longer exists.
+    std::fs::remove_file(executable).unwrap();
+    expect_success(&child.wait_with_output().unwrap());
+}
+
+#[cfg(target_os = "linux")]
+fn spawn_copied_fixture(command: &mut Command) -> std::process::Child {
+    // Another test can fork while fs::copy owns its output descriptor. The
+    // inherited writer exists briefly until exec closes it, producing ETXTBSY
+    // even after our copy returned. Retry only that transient exec failure.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        match command.spawn() {
+            Ok(child) => return child,
+            Err(error)
+                if error.raw_os_error() == Some(libc::ETXTBSY)
+                    && std::time::Instant::now() < deadline =>
+            {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            Err(error) => panic!("copied ASB fixture could not start: {error}"),
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn configured_replicas_overlap_instead_of_spawning_on_join() {
+    let project = replay_project(2);
+    let barrier = project.0.join("replica-barrier");
+    let result = project.command_with_env(
+        &[
+            "run",
+            "benchmark.toml",
+            "--replay",
+            "--cassette",
+            "tape.jsonl",
+        ],
+        &[
+            ("ASB_FIXTURE_BEHAVIOR", "replica-barrier"),
+            ("ASB_FIXTURE_BARRIER", barrier.to_str().unwrap()),
+        ],
+    );
+    expect_success(&result);
+    assert_eq!(std::fs::read_dir(barrier).unwrap().count(), 2);
 }
 
 #[cfg(target_os = "linux")]
@@ -1667,6 +1875,10 @@ fn replay_returns_json_and_writes_completed_log_offline() {
     let log: serde_json::Value =
         serde_json::from_slice(&std::fs::read(project.0.join("run.log")).unwrap()).unwrap();
     assert_eq!(log["status"], "completed");
+    assert_eq!(summary["task"], log["task"]);
+    assert_eq!(summary["task"]["workload"], "bug-fix");
+    assert_eq!(summary["task"]["task_id"], "bug-fix");
+    assert!(!summary["task"]["attempt_id"].as_str().unwrap().is_empty());
     assert!(
         log["stdout"]
             .as_str()
@@ -1712,6 +1924,8 @@ fn offline_replay_writes_ordered_lifecycle_events_for_all_executed_phases() {
         serde_json::json!({"kind":"agent_exited"}),
         serde_json::json!({"kind":"phase_begin","phase":"workload_evaluation"}),
         serde_json::json!({"kind":"phase_end","phase":"workload_evaluation"}),
+        serde_json::json!({"kind":"phase_begin","phase":"workload_cleanup"}),
+        serde_json::json!({"kind":"phase_end","phase":"workload_cleanup"}),
         serde_json::json!({"kind":"run_finishing"}),
     ];
     assert_eq!(events, expected);
@@ -1928,13 +2142,15 @@ fn replay_rejects_partially_consumed_cassettes() {
 #[cfg(unix)]
 #[test]
 fn replay_reports_agent_exit_and_zero_exit_fatal_output() {
-    for behavior in ["exit", "fatal"] {
+    for behavior in ["exit", "fatal", "api-error-event"] {
         let project = replay_project(1);
         let result = replay(&project, behavior, &[]);
         let expected = if behavior == "exit" {
             "agent exited unsuccessfully (exit status: 7)"
-        } else {
+        } else if behavior == "fatal" {
             "agent reported an authentication failure"
+        } else {
+            "agent reported a terminal API request failure"
         };
         expect_failure(&result, expected);
         assert!(!stderr(&result).contains("fixture-secret"));
@@ -1942,7 +2158,11 @@ fn replay_reports_agent_exit_and_zero_exit_fatal_output() {
             serde_json::from_slice(&std::fs::read(project.0.join("run.log")).unwrap()).unwrap();
         assert_eq!(log["status"], "failed");
         assert_eq!(log["failure_kind"], "agent_failure");
-        assert_eq!(log["workload_success"], serde_json::Value::Null);
+        // Both fixtures leave the correct patch before failing as processes.
+        // Task resolution must survive the independent operational failure.
+        assert_eq!(log["process_success"], false);
+        assert_eq!(log["workload_success"], true);
+        assert_eq!(log["success_rate"], 1.0);
         assert_tape_scratch_cleaned(&project);
     }
 }
@@ -2018,12 +2238,12 @@ fn pre_solved_workspace_is_preserved_but_never_earns_resolution_credit() {
 fn external_smoke_cannot_report_upstream_task_success_or_invent_steps() {
     for passed in [false, true] {
         let project = replay_project(1);
-        project.write("workloads/swe-bench.txt", "Local adapter smoke only.\n");
-        project.write("benchmark.toml", "agent='pi'\nworkload='swe-bench'\nprovider='cli2key'\nmodel='test-model'\nworkspace='workspace'\nlog_file='run.log'\n");
+        project.write("workloads/agentbench.txt", "Local adapter smoke only.\n");
+        project.write("benchmark.toml", "agent='pi'\nworkload='agentbench'\nprovider='cli2key'\nmodel='test-model'\nworkspace='workspace'\nlog_file='run.log'\n");
         project.write("workspace/external-workload/asb-trial/src/task.py", if passed {
-            "def normalize(value: str) -> str:\n    return value.strip().lower().replace(' ', '-')\n\ndef suite_label() -> str:\n    return \"swe_bench\"\n"
+            "def normalize(value: str) -> str:\n    return value.strip().lower().replace(' ', '-')\n\ndef suite_label() -> str:\n    return \"agentbench\"\n"
         } else {
-            "def normalize(value: str) -> str:\n    return value\n\ndef suite_label() -> str:\n    return \"swe_bench\"\n"
+            "def normalize(value: str) -> str:\n    return value\n\ndef suite_label() -> str:\n    return \"agentbench\"\n"
         });
         let result = replay(
             &project,
@@ -2070,7 +2290,11 @@ fn resolution_summary_counts_failed_attempts_without_survivorship_bias() {
         "workspace/src/parser.py",
         "def parse_path(value: str) -> list[str]:\n    return value.split('/')\n",
     );
-    let failed = replay(&project, "exit", &["--measurements", "measurements"]);
+    let failed = replay(
+        &project,
+        "exit-unresolved",
+        &["--measurements", "measurements"],
+    );
     assert!(!failed.status.success());
     let summary: serde_json::Value = serde_json::from_slice(
         &std::fs::read(project.0.join("measurements/summary.json")).unwrap(),
@@ -2080,6 +2304,57 @@ fn resolution_summary_counts_failed_attempts_without_survivorship_bias() {
     assert_eq!(summary["success_count"], 1);
     assert_eq!(summary["failure_count"], 1);
     assert_eq!(summary["success_rate"], 0.5);
+}
+
+#[cfg(unix)]
+#[test]
+fn failed_client_can_resolve_task_without_hiding_its_process_failure() {
+    let project = replay_project(1);
+    let result = replay(
+        &project,
+        "exit",
+        &["--json", "--measurements", "measurements"],
+    );
+    expect_failure(&result, "agent exited unsuccessfully");
+    let json: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+    assert_eq!(json["process_success"], false);
+    assert_eq!(json["workload_success"], true);
+    assert_eq!(json["success_rate"], 1.0);
+    assert_eq!(
+        json["workload_baseline"],
+        serde_json::json!({"kind":"measured","passed":false})
+    );
+    let summary: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(project.0.join("measurements/summary.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(summary["success_count"], 1);
+    assert_eq!(summary["runs"][0]["status"], "failed");
+    assert_eq!(summary["runs"][0]["process_success"], false);
+}
+
+#[cfg(unix)]
+#[test]
+fn failed_client_and_failed_grading_retain_both_diagnostics() {
+    let project = replay_project(1);
+    let result = replay(
+        &project,
+        "exit-unresolved",
+        &["--json", "--measurements", "measurements"],
+    );
+    expect_failure(&result, "agent exited unsuccessfully");
+    let json: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+    assert_eq!(json["process_success"], false);
+    assert_eq!(json["workload_success"], false);
+    assert_eq!(json["failure_kind"], "agent_failure");
+    assert_eq!(json["workload_failure"]["kind"], "workload_check_failed");
+    assert!(
+        json["workload_failure"]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("src/parser.py")
+    );
+    assert_eq!(json["success_rate"], 0.0);
 }
 
 #[cfg(unix)]

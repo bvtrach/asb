@@ -12,7 +12,8 @@ pub(super) static ADAPTER: StaticTool = StaticTool::new(
         install,
     },
     ToolKind::Collector,
-);
+)
+.with_helper_executables(&["stackcollapse-perf.pl"]);
 
 fn install(root: &Path, progress: &mut dyn FnMut(u8, &str)) -> Result<PathBuf, Error> {
     progress(25, "downloading FlameGraph scripts");

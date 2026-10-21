@@ -8,13 +8,13 @@ asb init [PROJECT_DIR] [--reset] [--yes|-y]
 asb tool list
 asb tool install AGENT
 asb workload list
-asb workload install SOURCE.txt|URL
+asb workload install WORKLOAD|SOURCE.txt|URL
 asb workload tui
 asb provider models [PROVIDER] [--free]
 asb setup tui
-asb setup --agent AGENT --workload WORKLOAD --provider PROVIDER --model MODEL [--workspace DIR] [--output FILE]
+asb setup --agent AGENT --workload WORKLOAD --provider PROVIDER --model MODEL [--trial INSTANCE] [--trial-set FILE] [--workspace DIR] [--output FILE]
 asb run CONFIG [--record|--replay] [--cassette FILE] [--json] [--measurements DIR]
-asb sweep SWEEP.toml [--record|--replay] [--cassette-root DIR] [--respect-record-timings] [--json]
+asb sweep SWEEP.toml [--record|--replay] [--cassette-root DIR] [--respect-record-timings] [--resume] [--json]
 asb compare SWEEP.toml
 ```
 
@@ -23,6 +23,26 @@ provider, model, workload, concurrency, and position within the sweep. The
 percentage indicates how far through the configuration list execution has
 reached, not how much of the current benchmark has completed. `--json` omits
 these human-readable progress lines.
+
+`asb sweep SWEEP.toml --resume` keeps the original sweep and reuses complete,
+evidence-checked replica groups, including unresolved results. Use the same
+execution mode, cassette-root and scheduling options as the original command.
+Changed declared inputs or grading evidence reject continuation without
+replacing prior results. Configurations that never started can run normally.
+Within a partial group, completed replicas are reused and positively reserved,
+never-started replicas can run. Already-started unsealed replicas still require
+owned-resource recovery and are not automatically retried. Without `--resume`, prior results are
+preserved in sweep history and execution starts fresh.
+If every replica finished and has an individual evidence receipt, resume can
+recover a missing final group receipt without launching those replicas again.
+If an allocated slot lost its ordinary run record but retains a completed
+official grade, `--resume --reconcile-completed` can explicitly close it as
+grade-only. No client is rerun; execution metrics remain unknown and the command
+reports that uncertainty with a non-success status. Comparison preserves the
+grade without treating partial collector files as final performance data.
+Unobserved grades and conflicting/incomplete ordinary outcomes are not guessed
+or silently retried. Recover owned resources first when needed, then start a
+fresh sweep without `--resume`; ASB preserves the previous results in history.
 
 `setup tui` opens a Ratatui wizard with agent, provider, model, workload, and
 measurement steps. Select multiple entries with Space; Tab or Enter advances
@@ -395,19 +415,64 @@ Every command and subcommand has concise help; use `asb COMMAND --help`.
 `asb tool list` shows all built-in agent and support-tool installers and `asb workload list`
 shows the `.txt` prompts available in the current project plus installable
 external workload aliases. Install one by its short name, for example
-`asb workload install swe-bench`; ASB fetches the pinned upstream source into
-the current project's workload directory. `swe-bench` and `terminal-bench`
-install complete local source bundles and materialize them into the run
-workspace; the other aliases install their pinned upstream prompt metadata.
+`asb workload install swe-bench`; ASB installs the complete pinned dataset and
+its project-local official evaluator SDK. The original benchmark integrations
+are:
 
-**These external aliases currently run ASB adapter smoke exercises, not real
-tasks from the named upstream suites.** In particular, `swe-bench` asks the
-agent to fix a tiny string-normalization fixture. Downloading the upstream
-harness source does not install a dataset, check out an issue's repository,
-apply its test patch, or execute its official evaluator. These exercises have
-`adapter_smoke_success`, but `workload_success` and `success_rate` are `null`;
-they must not be used to claim a SWE-bench score. See
-[evaluation semantics and limitations](docs/EVALUATION.md).
+| Workload | Pinned population | Official evaluator |
+| --- | ---: | --- |
+| `swe-bench` | 2,294 test instances | SWE-bench harness |
+| `swe-bench-lite` | 300 test instances | SWE-bench harness |
+| `swe-bench-verified` | 500 test instances | SWE-bench harness |
+| `terminal-bench-1.0` | 80 original tasks | Original Terminal-Bench SDK |
+| `terminal-bench-2.1` | 89 original tasks | Harbor |
+
+These integrations run the selected ASB agent/provider/model in isolated task
+environments and grade its resulting patch or task state using the official
+evaluator. They require a Linux host with working Docker access and the
+corresponding Compose/Buildx capabilities; SDKs are installed project-locally,
+but ASB does not install or reconfigure the host Docker daemon. Large task
+images need substantial disk space and memory. Preparation reports missing
+prerequisites before starting the selected client where they can be checked.
+
+For example, in an initialized benchmark project:
+
+```sh
+asb tool install pi
+asb workload install swe-bench-lite
+asb workload tui
+asb setup tui
+```
+
+Select actual instance IDs in the workload selector, then choose your agent,
+provider, model and measurements in setup. Setup prints the generated sweep
+command. Run that command, then `asb compare` with the same sweep TOML.
+For scripted single-instance setup, use `--trial INSTANCE` with an installed
+catalog; for example, replacing `MODEL_ID` with a compatible provider model:
+
+```sh
+asb setup --agent pi --provider openrouter --model MODEL_ID \
+  --workload swe-bench-lite --trial astropy__astropy-12907 --output instance.toml
+asb run instance.toml
+```
+
+Supply the provider credential through its environment or documented key file.
+An optional `--trial-set FILE` constrains the instance to an enabled selection
+written by `asb workload tui`. Missing/unknown instances, invalid trial sets
+and stale catalogs are rejected before replacing an existing config.
+`--jobs` controls distinct configurations; `--max-active-attempts` bounds active
+attempt slots including the configured replicas. Replicas repeat a task; they
+do not select more dataset instances.
+
+Other external aliases, including the unversioned `terminal-bench` legacy
+alias, still provide adapter smoke exercises rather than full upstream
+benchmarks. Smoke results have `adapter_smoke_success`, but no upstream
+`workload_success` or `success_rate`. Old smoke records are never upgraded to
+official grades. Official resolution rates come from completed task evaluation,
+not agent exit status; partial selections and missing evaluations are disclosed
+and do not earn a full-population score. See
+[evaluation semantics](docs/EVALUATION.md) and the
+[integration evidence and delivery checklist](docs/FULL_BENCHMARK_INTEGRATION.md).
 
 Before a run, ASB executes a modular preparation stage. For `cli2key`, it
 starts the project-local bridge when `CLI2KEY_BASE_URL` is not supplied, reads
