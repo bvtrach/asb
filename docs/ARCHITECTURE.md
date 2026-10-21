@@ -138,6 +138,12 @@ ASB is deliberately split into a small CLI and a file-backed workload directory:
   are established; it survives deletion of `.asb`. Independent processes wait
   at most fifteen seconds for startup admission, not for another capture to finish.
   Reset rejects active instance leases, including inherited crash-cleanup leases.
+  Normal service destruction joins the owner and verifies every owned daemon
+  is reaped before explicitly unlocking the persistent instance lease. This
+  prevents incidental forked descriptor copies from retaining a finished
+  service's lock. Uncertain cleanup does not explicitly unlock. Owner SIGKILL
+  still skips destruction, so inherited daemon descriptors retain crash-time
+  ownership until shutdown; the lease inode is never unlinked.
   The probes daemon enters an unprivileged private user/mount namespace via
   util-linux `unshare`. An internal native helper rechecks owner/death-signal
   and inherited-lease state, verifies the namespace transition, and binds only
