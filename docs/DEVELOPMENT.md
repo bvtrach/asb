@@ -71,6 +71,20 @@ Perf-stat regression fixtures process a complete synthetic file larger than
 the diagnostic cap, retain missing-interval timestamps and hybrid CPU counter
 totals, and reject invalid or excessive input without publishing partial totals.
 They need neither perf permissions nor a live agent/provider.
+Flamegraph pipeline regressions use synthetic local tools and pin each direct
+child's identity with a pidfd. Success, stage failures, output-file errors,
+preflight failures, timeout and unwinding must stop and reap every admitted
+stage while leaving an unrelated sentinel alive. Cleanup signals only owned
+direct children, never a process-name/PID-parent search. The caller's cleanup
+wait is bounded; an unconfirmed kernel-stuck child remains owned by a fallback
+reaper and is reported as a cleanup failure, not a completed graph. These
+fixtures neither invoke host perf nor qualify arbitrary tool descendants.
+The fallback worker is created fallibly before any tool is spawned. Creation
+failure starts no tools; cleanup transfers uncertain direct children through
+a private ownership slot, without spawning a thread or waiting on that worker.
+Deterministic test-only faults cover worker-creation failure and uncertain
+cleanup polling. Exit receipts also check idle, failed and unwinding workers;
+these tests do not need a genuinely kernel-stuck process.
 CPU/I/O and BPF adapter fixtures likewise place final samples/cumulative maps
 beyond 256 KiB, pass unrelated diagnostic strings and require full-file means,
 series and final values. Shared output tests reject incomplete, oversized,
