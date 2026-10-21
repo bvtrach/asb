@@ -15,8 +15,11 @@ pub(super) static ADAPTER: StaticTool = StaticTool::new(
 )
 .with_helper_executables(&["stackcollapse-perf.pl"]);
 
-fn install(root: &Path, progress: &mut dyn FnMut(u8, &str)) -> Result<PathBuf, Error> {
-    progress(25, "downloading FlameGraph scripts");
+fn install(
+    root: &Path,
+    progress: &mut dyn FnMut(u8, crate::install::ProgressStage),
+) -> Result<PathBuf, Error> {
+    progress(25, crate::install::ProgressStage::Downloading);
     let bin = root.join("bin");
     std::fs::create_dir_all(&bin)
         .map_err(|error| Error::Io(format!("cannot create {}: {error}", bin.display())))?;
@@ -34,7 +37,7 @@ fn install(root: &Path, progress: &mut dyn FnMut(u8, &str)) -> Result<PathBuf, E
         install_executable_source(url, &destination, "flamegraph tool")?;
         progress(
             if name == "flamegraph" { 90 } else { 60 },
-            "installing FlameGraph scripts",
+            crate::install::ProgressStage::Copying,
         );
     }
     Ok(bin.join("flamegraph"))

@@ -98,7 +98,7 @@ pub(super) trait WorkloadAdapter: Sync {
         &self,
         _context: &super::InstallationContext<'_>,
         _output: &mut dyn std::io::Write,
-        _progress: &mut dyn FnMut(u8, &str),
+        _progress: &mut dyn FnMut(u8, crate::install::ProgressStage),
     ) -> Result<bool, crate::Error> {
         Ok(false)
     }

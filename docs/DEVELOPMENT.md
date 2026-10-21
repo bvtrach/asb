@@ -58,7 +58,12 @@ noninheritance, nonterminal refusal and invoking-binary pathname replacement
 are checked without package downloads, live agents or provider credentials.
 `cargo test --locked --offline --lib install::operation` additionally covers
 fixed protocol validation, nonblocking queue pressure, pre-spawn keeper failure
-and unwinding after actual installer admission. Build the current ASB binary
+and unwinding after actual installer admission. The unwind fixture also breaks
+the real guardian's receipt channel with stderr redirected to `/dev/full`:
+cleanup uncertainty must retain custody without a second panic, and the real
+PTY must regain echo/canonical mode. Actual helper routes verify tool-package,
+workload-validation and collector-dependency phases, with every enum wire code
+round-tripped and unknown/reserved phases rejected. Build the current ASB binary
 first for focused library tests, as for native gate qualification below.
 `cargo test --locked --offline --test tui_terminal` drives the actual current
 binary through a bounded PTY. Workload fixtures use only local fake catalogs:

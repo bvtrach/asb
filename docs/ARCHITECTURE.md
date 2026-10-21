@@ -754,10 +754,12 @@ hosts fail explicitly rather than using an unsupervised fallback.
 
 An inherited private nonblocking Unix datagram channel carries eight-byte
 versioned progress/final frames. Identifiers are bounded to 128 entries of
-128 bytes. Progress contains only a percentage; the UI supplies a fixed stage.
-Raw stage strings, installer output, provider credentials and arbitrary errors
-never cross this channel. Full queues drop transient progress; the parent
-coalesces each bounded polling batch into its latest percentage. Final status
+128 bytes. Progress contains a percentage and a bounded semantic `ProgressStage`
+selected at the actual owning installer phase. Its UI label is static; raw stage
+strings, installer output, provider credentials and arbitrary errors never cross
+this channel. Full queues drop transient progress; the parent coalesces each
+bounded polling batch into its latest phase/percentage. Unknown phases, reserved
+bits and a progress stage on a final frame are rejected. Final status
 has a one-second send budget, with fixed input/I/O/execution/request failure
 categories and a project install-log hint. Original failures are appended to
 the existing install log when possible. The helper marks its protocol descriptor
@@ -768,7 +770,9 @@ descendant-quiescence receipt, then each selection flow refreshes readiness.
 Drawing/input errors, Esc and Ctrl-C explicitly stop the owned gate and retain
 both the primary error and any unconfirmed-cleanup diagnostic. Unwinding uses
 the same bounded stop and pre-established wait-only keeper; no Drop worker or
-unbounded join is introduced. The existing gate watcher retains supervision
+unbounded join is introduced. Best-effort Drop diagnostics do not panic if
+stderr fails, allowing the terminal guard to restore mode during unwinding.
+The existing gate watcher retains supervision
 after abrupt owner loss. Cleanup uncertainty is a failure, not proof that a
 kernel-stuck task stopped within the caller's six-second observation bound.
 Completed installation writes are not rolled back. Selection changes still

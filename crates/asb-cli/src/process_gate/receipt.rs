@@ -69,6 +69,10 @@ pub(super) struct Receiver {
     pub(super) quiescent: Option<u8>,
 }
 impl Receiver {
+    #[cfg(test)]
+    pub(super) fn shut_read_for_test(&self) {
+        self.socket.shutdown(std::net::Shutdown::Read).unwrap();
+    }
     pub(super) fn pair() -> io::Result<(Self, UnixStream)> {
         let (reader, writer) = UnixStream::pair()?;
         reader.set_nonblocking(true)?;

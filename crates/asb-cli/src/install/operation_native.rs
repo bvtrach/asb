@@ -1,7 +1,7 @@
 //! Fixed, credential-free datagrams; EOF and installer exit are never proofs.
 #![allow(unsafe_code)]
 use super::Request;
-use crate::{Error, install, launch::ProcessLaunch, process_gate};
+use crate::{Error, install, install::ProgressStage, launch::ProcessLaunch, process_gate};
 use std::ffi::OsString;
 use std::io::{self, Write};
 use std::os::fd::{AsRawFd, FromRawFd};
@@ -44,7 +44,7 @@ impl Completion {
 
 #[derive(Debug, PartialEq)]
 enum Message {
-    Progress(u8),
+    Progress(u8, ProgressStage),
     Final(Completion),
 }
 
@@ -52,6 +52,7 @@ pub(crate) struct Operation {
     gate: process_gate::ManagedGate,
     socket: UnixDatagram,
     percent: u8,
+    stage: ProgressStage,
     result: Option<Completion>,
     finished: bool,
 }
@@ -136,6 +137,7 @@ impl Operation {
             gate,
             socket,
             percent: 0,
+            stage: ProgressStage::Preparing,
             result: None,
             finished: false,
         })
@@ -143,6 +145,10 @@ impl Operation {
 
     pub(crate) fn percent(&self) -> u8 {
         self.percent
+    }
+
+    pub(crate) fn stage(&self) -> ProgressStage {
+        self.stage
     }
 
     fn receive(&mut self) -> Result<(), Error> {
@@ -156,7 +162,10 @@ impl Operation {
                         return Err(failure("message after final status"));
                     }
                     match message {
-                        Message::Progress(percent) => self.percent = percent,
+                        Message::Progress(percent, stage) => {
+                            self.percent = percent;
+                            self.stage = stage;
+                        }
                         Message::Final(result) => self.result = Some(result),
                     }
                 }
@@ -205,7 +214,9 @@ impl Drop for Operation {
         if !self.finished
             && let Err(error) = self.cancel()
         {
-            eprintln!("{error}");
+            // Drop may already be unwinding. A broken diagnostic sink must
+            // never cause a second panic before terminal restoration runs.
+            let _ = writeln!(io::stderr().lock(), "{error}");
         }
     }
 }
@@ -234,18 +245,27 @@ fn frame(kind: u8, percent: u8) -> [u8; FRAME] {
     bytes
 }
 
+fn progress_frame(percent: u8, stage: ProgressStage) -> [u8; FRAME] {
+    let mut bytes = frame(PROGRESS, percent);
+    bytes[6] = stage as u8;
+    bytes
+}
+
 fn decode(bytes: &[u8]) -> io::Result<Message> {
     if bytes.len() != FRAME
         || bytes[..4] != MAGIC
         || bytes[4] > FAILURE
         || bytes[5] > 100
-        || bytes[6..] != [0, 0]
+        || bytes[7] != 0
+        || (bytes[4] != PROGRESS && bytes[6] != 0)
         || (bytes[4] == SUCCESS && bytes[5] != 0)
     {
         return Err(io::Error::other("invalid installation status frame"));
     }
     match (bytes[4], bytes[5]) {
-        (PROGRESS, percent) => Ok(Message::Progress(percent)),
+        (PROGRESS, percent) => ProgressStage::from_code(bytes[6])
+            .map(|stage| Message::Progress(percent, stage))
+            .ok_or_else(|| io::Error::other("invalid installation progress stage")),
         (SUCCESS, 0) => Ok(Message::Final(Completion::Success)),
         (FAILURE, 1) => Ok(Message::Final(Completion::Input)),
         (FAILURE, 2) => Ok(Message::Final(Completion::Io)),
@@ -335,10 +355,10 @@ fn helper(args: &[OsString]) -> Result<(), ()> {
     // SAFETY: this private inherited descriptor is consumed exactly once.
     let socket = unsafe { UnixDatagram::from_raw_fd(descriptor) };
     socket.set_nonblocking(true).map_err(|_| ())?;
-    let mut progress = |percent: u8, _stage: &str| {
+    let mut progress = |percent: u8, stage: ProgressStage| {
         // Full buffers discard transient progress. No raw installer message,
         // subprocess diagnostic or credential can enter this fixed protocol.
-        let _ = socket.send(&frame(PROGRESS, percent.min(100)));
+        let _ = socket.send(&progress_frame(percent.min(100), stage));
     };
     let mut output = io::sink();
     let result = match mode {
@@ -407,7 +427,24 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
     #[test]
     fn protocol_is_fixed_and_rejects_untrusted_messages() {
-        assert_eq!(decode(&frame(PROGRESS, 80)).unwrap(), Message::Progress(80));
+        for code in 1..=13 {
+            let stage = ProgressStage::from_code(code).unwrap();
+            assert_eq!(
+                decode(&progress_frame(80, stage)).unwrap(),
+                Message::Progress(80, stage)
+            );
+        }
+        for code in [0, 14, 255] {
+            let mut unknown = progress_frame(10, ProgressStage::Preparing);
+            unknown[6] = code;
+            assert!(decode(&unknown).is_err());
+        }
+        let mut reserved = progress_frame(10, ProgressStage::Preparing);
+        reserved[7] = 1;
+        assert!(decode(&reserved).is_err());
+        let mut final_stage = frame(SUCCESS, 0);
+        final_stage[6] = ProgressStage::Ready as u8;
+        assert!(decode(&final_stage).is_err());
         assert_eq!(
             decode(&frame(SUCCESS, 0)).unwrap(),
             Message::Final(Completion::Success)
@@ -440,7 +477,7 @@ mod tests {
         let started = Instant::now();
         let mut sent = 0;
         loop {
-            match writer.send(&frame(PROGRESS, 50)) {
+            match writer.send(&progress_frame(50, ProgressStage::Downloading)) {
                 Ok(FRAME) => sent += 1,
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
                 other => panic!("unexpected send: {other:?}"),
@@ -462,23 +499,31 @@ mod tests {
         if let Some(root) = std::env::var_os(CASE) {
             let root = PathBuf::from(root);
             let pidfile = root.join("principal");
+            let scope = crate::process_cleanup::test_support::Scope::new();
+            std::panic::set_hook(Box::new(|_| {}));
             let unwind = std::panic::catch_unwind(|| {
-                let _operation = Operation::start(
-                    root.clone(),
-                    Request::Tool {
-                        name: "pi".into(),
-                        directory: root.join("tools"),
-                    },
-                )
-                .unwrap();
-                let deadline = Instant::now() + Duration::from_secs(5);
-                while !pidfile.exists() {
-                    assert!(Instant::now() < deadline, "installer never started");
-                    std::thread::sleep(Duration::from_millis(5));
-                }
-                panic!("fixture unwind after installer admission");
+                crate::tui::with_terminal_for_test(|| {
+                    let operation = Operation::start(
+                        root.clone(),
+                        Request::Tool {
+                            name: "pi".into(),
+                            directory: root.join("tools"),
+                        },
+                    )
+                    .unwrap();
+                    let deadline = Instant::now() + Duration::from_secs(5);
+                    while !pidfile.exists() {
+                        assert!(Instant::now() < deadline, "installer never started");
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    if std::env::var_os("ASB_INSTALL_UNWIND_FAULT").is_some() {
+                        operation.gate.lose_receipt_for_test();
+                    }
+                    panic!("fixture unwind after installer admission");
+                });
             });
             assert!(unwind.is_err());
+            scope.wait_finished();
             let pid = std::fs::read_to_string(pidfile).unwrap();
             assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists());
             return;
@@ -523,14 +568,63 @@ mod tests {
         if let Some(profile) = std::env::var_os("LLVM_PROFILE_FILE") {
             command.env("LLVM_PROFILE_FILE", profile);
         }
-        let output = command.output().unwrap();
-        assert!(
-            output.status.success(),
-            "stdout={} stderr={}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
+        let mut master = -1;
+        let mut slave = -1;
+        let size = libc::winsize {
+            ws_row: 40,
+            ws_col: 120,
+            ws_xpixel: 0,
+            ws_ypixel: 0,
+        };
+        assert_eq!(
+            unsafe {
+                libc::openpty(
+                    &mut master,
+                    &mut slave,
+                    std::ptr::null_mut(),
+                    std::ptr::null(),
+                    &size,
+                )
+            },
+            0
         );
-        assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+        let _master = unsafe { std::fs::File::from_raw_fd(master) };
+        let slave = unsafe { std::fs::File::from_raw_fd(slave) };
+        for fault in [false, true] {
+            if fault {
+                command.env("ASB_INSTALL_UNWIND_FAULT", "1");
+                std::fs::remove_file(root.join("principal")).unwrap();
+            }
+            command
+                .stdin(slave.try_clone().unwrap())
+                .stdout(slave.try_clone().unwrap())
+                .stderr(
+                    std::fs::OpenOptions::new()
+                        .write(true)
+                        .open("/dev/full")
+                        .unwrap(),
+                );
+            assert!(
+                command.status().unwrap().success(),
+                "unwind must not panic a second time on failed stderr"
+            );
+            let mut attributes = std::mem::MaybeUninit::<libc::termios>::uninit();
+            assert_eq!(
+                unsafe { libc::tcgetattr(slave.as_raw_fd(), attributes.as_mut_ptr()) },
+                0
+            );
+            let attributes = unsafe { attributes.assume_init() };
+            assert_ne!(
+                attributes.c_lflag & libc::ECHO,
+                0,
+                "unwind must restore echo"
+            );
+            assert_ne!(
+                attributes.c_lflag & libc::ICANON,
+                0,
+                "unwind must restore canonical mode"
+            );
+        }
         std::fs::remove_dir_all(root).unwrap();
     }
 

@@ -172,24 +172,30 @@ def assert_quiescent(root):
     assert (root / "writes").read_bytes() == before, "writes continued after confirmed exit"
 
 
-def helper_protocol(binary, root):
+def helper_protocol(binary, root, mode="tool", name="pi", expected_stages=(1, 8), expected_final=1):
     receiver, sender = socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM)
     env = environment(root)
     env["ASB_INSTALL_PROGRESS_FD"] = str(sender.fileno())
-    arguments = [binary, "__asb-install", "ASBINSTALL1", "tool", str(root),
-                 str(root / ".asb-tools"), "pi"]
+    directory = root / ("workloads" if mode == "workload" else ".asb-tools")
+    arguments = [binary, "__asb-install", "ASBINSTALL1", mode, str(root), str(directory), name]
     child = subprocess.Popen(arguments, cwd=root, env=env, pass_fds=(sender.fileno(),),
                              stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     sender.close()
     receiver.settimeout(5)
     final = None
+    stages = set()
     while final is None:
         frame = receiver.recv(9)
-        assert len(frame) == 8 and frame[:4] == b"ASI1" and frame[6:] == b"\0\0", frame
+        assert len(frame) == 8 and frame[:4] == b"ASI1" and frame[7] == 0, frame
         if frame[4] != 0:
+            assert frame[6] == 0, "final must not claim a progress stage"
             final = frame[4]
+        else:
+            assert 1 <= frame[6] <= 13, frame
+            stages.add(frame[6])
     stdout, stderr = child.communicate(timeout=5)
-    assert final == 1 and child.returncode == 0 and stdout == stderr == b""
+    assert final == expected_final and (child.returncode == 0) == (final == 1) and stdout == stderr == b""
+    assert set(expected_stages).issubset(stages), (expected_stages, stages)
     receiver.close()
     invalid = subprocess.run([binary, "__asb-install", "old"], cwd=root,
                              env=environment(root), capture_output=True, timeout=5)
@@ -230,6 +236,14 @@ def main():
                     assert_quiescent(root)
                 assert sentinel.poll() is None, "unrelated process was signalled"
             helper_protocol(binary, project(parent, "helper", "success"))
+            workload = project(parent, "helper-workload", "success")
+            bundle = workload / "workloads/terminal-bench"
+            (bundle / "source").mkdir(parents=True)
+            (bundle / "source/README.md").write_text("Local retained source fixture.\n")
+            (bundle / "ASB-BUNDLE").write_text("terminal-bench/terminal-bench@452bf305c6daa62fc59061d22133a7cbc7c1572e")
+            helper_protocol(binary, workload, "workload", "terminal-bench", (1, 9, 12))
+            helper_protocol(binary, project(parent, "helper-dependencies", "fail"),
+                            "dependencies", "flamegraph", (2, 3), 2)
             startup_failure(binary, project(parent, "startup", "slow"))
             root = project(parent, "replacement", "success")
             copied = root / "asb"

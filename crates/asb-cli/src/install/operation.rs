@@ -57,6 +57,9 @@ impl Operation {
     pub(crate) fn percent(&self) -> u8 {
         0
     }
+    pub(crate) fn stage(&self) -> crate::install::ProgressStage {
+        crate::install::ProgressStage::Preparing
+    }
     pub(crate) fn cancel(&mut self) -> Result<(), Error> {
         Ok(())
     }

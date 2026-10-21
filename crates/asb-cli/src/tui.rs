@@ -1081,6 +1081,12 @@ fn stop_terminal(mut terminal: TerminalSession) -> Result<(), io::Error> {
     }
 }
 
+#[cfg(all(test, target_os = "linux"))]
+pub(crate) fn with_terminal_for_test(action: impl FnOnce()) {
+    let _terminal = start_terminal().unwrap();
+    action();
+}
+
 fn with_terminal_cleanup<T>(result: Result<T, Error>, cleanup: io::Result<()>) -> Result<T, Error> {
     match (result, cleanup) {
         (result, Ok(())) => result,
@@ -1106,7 +1112,7 @@ fn drive_install(
         }
         render(install_status_message(
             operation.percent(),
-            "installing",
+            operation.stage().label(),
             started,
             tick,
         ))?;

@@ -12,6 +12,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 
 pub(crate) mod operation;
+mod progress;
+pub(crate) use progress::ProgressStage;
 mod source;
 pub(crate) use source::check_executable_version;
 
@@ -63,7 +65,8 @@ impl LoggedStatus for Command {
     }
 }
 
-type CustomInstall = fn(&Path, &mut dyn FnMut(u8, &str)) -> Result<PathBuf, Error>;
+type CustomInstall =
+    fn(&Path, &mut dyn FnMut(u8, crate::install::ProgressStage)) -> Result<PathBuf, Error>;
 
 #[derive(Clone, Copy)]
 pub(crate) enum Recipe {
@@ -147,7 +150,7 @@ pub(crate) fn guest_bootstrap(
     lock.lock()
         .map_err(|error| Error::Io(format!("cannot lock project bootstrap cache: {error}")))?;
     let _network = project::network_project(project_root);
-    let mut progress = |_percent: u8, _stage: &str| {};
+    let mut progress = |_percent: u8, _stage: crate::install::ProgressStage| {};
     let mut plan = GuestBootstrap {
         runtime_tools: recipe.guest_runtimes().to_vec(),
         assets: Vec::new(),
@@ -236,7 +239,7 @@ pub struct WorkloadListOptions {
 }
 
 pub fn tool(options: ToolInstallOptions, output: &mut dyn std::io::Write) -> Result<(), Error> {
-    let mut progress = |_percent: u8, _stage: &str| {};
+    let mut progress = |_percent: u8, _stage: crate::install::ProgressStage| {};
     tool_with_progress(options, output, &mut progress)
 }
 
@@ -244,7 +247,7 @@ pub fn tool(options: ToolInstallOptions, output: &mut dyn std::io::Write) -> Res
 pub fn tool_with_progress(
     options: ToolInstallOptions,
     output: &mut dyn std::io::Write,
-    progress: &mut dyn FnMut(u8, &str),
+    progress: &mut dyn FnMut(u8, crate::install::ProgressStage),
 ) -> Result<(), Error> {
     let ToolInstallOptions {
         name: id,
@@ -260,7 +263,7 @@ pub fn tool_with_progress(
     let tools_root = dir
         .map(|value| project::resolve(&project_root, &value.to_string_lossy()))
         .unwrap_or_else(|| project::resolve(&project_root, &project_config.tools_dir));
-    progress(2, "preparing");
+    progress(2, crate::install::ProgressStage::Preparing);
     let root = tools_root.join(&id);
     let built_in = built_in_tool(&id);
     ensure_collector_dependencies(
@@ -280,11 +283,11 @@ pub fn tool_with_progress(
                 .map_err(super::io_error)?;
             return Ok(());
         }
-        progress(20, "copying source");
+        progress(20, crate::install::ProgressStage::Copying);
         fs::create_dir_all(destination.parent().expect("bin parent"))
             .map_err(|error| Error::Io(format!("cannot create {}: {error}", root.display())))?;
         install_executable_source(&source, &destination, "tool")?;
-        progress(100, "ready");
+        progress(100, crate::install::ProgressStage::Ready);
         writeln!(output, "Installed tool {id} at {}", destination.display())
             .map_err(super::io_error)?;
         return Ok(());
@@ -306,7 +309,7 @@ pub fn tool_with_progress(
     if let Some(tool) = tools::find(&id) {
         tool.post_install(&executable, progress, output)?;
     }
-    progress(100, "ready");
+    progress(100, crate::install::ProgressStage::Ready);
     let kind = built_in.expect("known tool has metadata").2;
     writeln!(output, "Installed {kind} {id} at {}", executable.display())
         .map_err(super::io_error)?;
@@ -332,7 +335,7 @@ pub(crate) fn ensure_collector_dependencies(
     project_root: &Path,
     tools_root: &Path,
     output: &mut dyn std::io::Write,
-    progress: &mut dyn FnMut(u8, &str),
+    progress: &mut dyn FnMut(u8, crate::install::ProgressStage),
     dry_run: bool,
 ) -> Result<(), Error> {
     for id in crate::collectors::dependency_tools(selected) {
@@ -361,7 +364,7 @@ pub(crate) fn ensure_collector_dependencies(
             .map_err(super::io_error)?;
             continue;
         }
-        progress(5, &format!("installing required {id}"));
+        progress(5, crate::install::ProgressStage::Dependencies);
         let installed = match recipe {
             Recipe::Host { executable } => install_host_dependency(executable, &destination)?,
             _ => install_recipe(recipe, &root, project_root, output, progress)?,
@@ -494,7 +497,7 @@ pub fn workload(
     options: WorkloadInstallOptions,
     output: &mut dyn std::io::Write,
 ) -> Result<(), Error> {
-    let mut progress = |_percent: u8, _stage: &str| {};
+    let mut progress = |_percent: u8, _stage: crate::install::ProgressStage| {};
     workload_with_progress(options, output, &mut progress)
 }
 
@@ -502,7 +505,7 @@ pub fn workload(
 pub fn workload_with_progress(
     options: WorkloadInstallOptions,
     output: &mut dyn std::io::Write,
-    progress: &mut dyn FnMut(u8, &str),
+    progress: &mut dyn FnMut(u8, crate::install::ProgressStage),
 ) -> Result<(), Error> {
     let WorkloadInstallOptions {
         source: requested,
@@ -524,7 +527,7 @@ pub fn workload_with_progress(
                 .map(PathBuf::from)
                 .unwrap_or_else(|| project::resolve(&project_root, &project_config.workloads_dir))
         });
-    progress(2, "preparing");
+    progress(2, crate::install::ProgressStage::Preparing);
     fs::create_dir_all(&directory)
         .map_err(|error| Error::Io(format!("cannot create {}: {error}", directory.display())))?;
     // A custom prompt with a coincidentally matching destination name is not
@@ -548,7 +551,7 @@ pub fn workload_with_progress(
         install_bundle(&name, bundle, &directory, output, progress)?;
         return Ok(());
     }
-    progress(30, "downloading reference");
+    progress(30, crate::install::ProgressStage::Downloading);
     let reference = directory.join(format!("{name}.reference.md"));
     install_source(&source, &reference, "workload reference")?;
     workloads::materialize_external_adapter(&name, &directory)
@@ -562,7 +565,7 @@ pub fn workload_with_progress(
             ))
         })?;
     }
-    progress(100, "ready");
+    progress(100, crate::install::ProgressStage::Ready);
     writeln!(
         output,
         "Installed workload {name} at {}",
@@ -577,13 +580,13 @@ fn install_bundle(
     bundle: workloads::SourceBundle,
     directory: &Path,
     output: &mut dyn std::io::Write,
-    progress: &mut dyn FnMut(u8, &str),
+    progress: &mut dyn FnMut(u8, crate::install::ProgressStage),
 ) -> Result<(), Error> {
     let bundle_dir = directory.join(name);
     let source_dir = bundle_dir.join("source");
     let marker = bundle_dir.join("ASB-BUNDLE");
     if marker.is_file() && source_dir.is_dir() {
-        progress(80, "validating existing bundle");
+        progress(80, crate::install::ProgressStage::Validating);
         let installed = fs::read_to_string(&marker).map_err(|error| {
             Error::Io(format!(
                 "cannot read external workload marker {}: {error}",
@@ -616,7 +619,7 @@ fn install_bundle(
             bundle_dir.display()
         )
         .map_err(super::io_error)?;
-        progress(100, "ready");
+        progress(100, crate::install::ProgressStage::Ready);
         return Ok(());
     }
     if bundle_dir.exists() {
@@ -641,9 +644,9 @@ fn install_bundle(
             extract.display()
         ))
     })?;
-    progress(20, "downloading bundle");
+    progress(20, crate::install::ProgressStage::Downloading);
     install_source(bundle.archive, &archive, "external workload bundle")?;
-    progress(45, "extracting bundle");
+    progress(45, crate::install::ProgressStage::Extracting);
     let status = Command::new("tar")
         .args(["--extract", "--gzip", "--file"])
         .arg(&archive)
@@ -705,7 +708,7 @@ fn install_bundle(
         bundle_dir.display()
     )
     .map_err(super::io_error)?;
-    progress(100, "ready");
+    progress(100, crate::install::ProgressStage::Ready);
     Ok(())
 }
 
@@ -775,7 +778,7 @@ fn install_recipe(
     root: &Path,
     project_root: &Path,
     output: &mut dyn std::io::Write,
-    progress: &mut dyn FnMut(u8, &str),
+    progress: &mut dyn FnMut(u8, crate::install::ProgressStage),
 ) -> Result<PathBuf, Error> {
     fs::create_dir_all(root)
         .map_err(|error| Error::Io(format!("cannot create {}: {error}", root.display())))?;
@@ -788,7 +791,7 @@ fn install_recipe(
                     Error::Io(format!("cannot prepare npm install manifest: {error}"))
                 })?;
             }
-            progress(15, "installing npm package");
+            progress(15, crate::install::ProgressStage::InstallingPackage);
             let mut command = Command::new("npm");
             tools::apply_runtime_path(&mut command, project_root, &root.parent().expect("tool parent").to_string_lossy())?;
             command.args(["install", "--prefix"])
@@ -815,7 +818,7 @@ fn install_recipe(
             if !created.success() {
                 return Err(Error::Io("could not create the agent Python environment; see .asb/install.log for details".into()));
             }
-            progress(35, "installing Python package");
+            progress(35, crate::install::ProgressStage::InstallingPackage);
             let python = venv.join("bin/python");
             let status = Command::new(&python)
                 .args(["-m", "pip", "install", package])
@@ -829,7 +832,7 @@ fn install_recipe(
                 )));
             }
             for dependency in dependencies {
-                progress(45, "installing Python runtime dependency");
+                progress(45, crate::install::ProgressStage::Dependencies);
                 let dependency_status = Command::new(&python)
                     .args(["-m", "pip", "install", dependency])
                     .logged_status()
@@ -847,7 +850,7 @@ fn install_recipe(
             Ok(status)
         }
         Recipe::Host { executable } => {
-            progress(55, "copying host tool");
+            progress(55, crate::install::ProgressStage::Copying);
             let source = host_executable(executable)?;
             let destination = root.join("bin").join(executable);
             fs::create_dir_all(destination.parent().expect("host tool parent"))
@@ -894,7 +897,7 @@ pub(crate) fn ensure_runtime_dependency(
     project_root: &Path,
     tools_root: &Path,
     output: &mut dyn std::io::Write,
-    progress: &mut dyn FnMut(u8, &str),
+    progress: &mut dyn FnMut(u8, crate::install::ProgressStage),
 ) -> Result<(), Error> {
     let tool = tools::find(id)
         .ok_or_else(|| Error::Input(format!("runtime dependency `{id}` is not registered")))?;
@@ -914,7 +917,10 @@ pub(crate) fn ensure_runtime_dependency(
     Ok(())
 }
 
-fn goose_archive(root: &Path, progress: &mut dyn FnMut(u8, &str)) -> Result<PathBuf, Error> {
+fn goose_archive(
+    root: &Path,
+    progress: &mut dyn FnMut(u8, crate::install::ProgressStage),
+) -> Result<PathBuf, Error> {
     let (url, checksum) = match std::env::consts::ARCH {
         "x86_64" => (GOOSE_X86_64_URL, GOOSE_X86_64_SHA256),
         "aarch64" => (GOOSE_AARCH64_URL, GOOSE_AARCH64_SHA256),
@@ -928,12 +934,15 @@ fn goose_archive(root: &Path, progress: &mut dyn FnMut(u8, &str)) -> Result<Path
     tools::runtime::cached_archive(&archive, url, checksum, progress)
 }
 
-fn install_goose(root: &Path, progress: &mut dyn FnMut(u8, &str)) -> Result<PathBuf, Error> {
+fn install_goose(
+    root: &Path,
+    progress: &mut dyn FnMut(u8, crate::install::ProgressStage),
+) -> Result<PathBuf, Error> {
     let archive = goose_archive(root, progress)?;
     let extract = root.join(format!("extract-{}", tools::runtime::unique_id()));
     fs::create_dir(&extract)
         .map_err(|error| Error::Io(format!("cannot create Goose extraction directory: {error}")))?;
-    progress(60, "extracting Goose binary");
+    progress(60, crate::install::ProgressStage::Extracting);
     let status = Command::new("tar")
         .args(["--extract", "--gzip", "--file"])
         .arg(&archive)
@@ -963,7 +972,7 @@ fn install_goose(root: &Path, progress: &mut dyn FnMut(u8, &str)) -> Result<Path
     })?;
     make_executable(&destination)?;
     let _ = fs::remove_dir_all(extract);
-    progress(100, "ready");
+    progress(100, crate::install::ProgressStage::Ready);
     Ok(destination)
 }
 
@@ -1381,7 +1390,9 @@ mod tests {
         let source = root.join("prompt.txt");
         fs::write(&source, "prompt").unwrap();
         let mut events = Vec::new();
-        let mut progress = |percent: u8, stage: &str| events.push((percent, stage.to_owned()));
+        let mut progress = |percent: u8, stage: crate::install::ProgressStage| {
+            events.push((percent, stage.to_owned()))
+        };
         let mut output = Vec::new();
         workload_with_progress(
             WorkloadInstallOptions {
@@ -1396,12 +1407,12 @@ mod tests {
         assert!(
             events
                 .iter()
-                .any(|(percent, stage)| *percent == 2 && stage == "preparing")
+                .any(|(percent, stage)| *percent == 2 && *stage == ProgressStage::Preparing)
         );
         assert!(
             events
                 .iter()
-                .any(|(percent, stage)| *percent == 100 && stage == "ready")
+                .any(|(percent, stage)| *percent == 100 && *stage == ProgressStage::Ready)
         );
         let _ = fs::remove_dir_all(root);
     }
@@ -1595,7 +1606,9 @@ mod tests {
         let mut stages = Vec::new();
         fs::write(bundle_dir.join("ASB-BUNDLE"), spec.marker).unwrap();
         let mut output = Vec::new();
-        let mut progress = |percent: u8, stage: &str| stages.push((percent, stage.to_owned()));
+        let mut progress = |percent: u8, stage: crate::install::ProgressStage| {
+            stages.push((percent, stage.to_owned()))
+        };
         install_bundle(
             "terminal-bench",
             spec,
@@ -1604,11 +1617,8 @@ mod tests {
             &mut progress,
         )
         .expect("existing bundle is reused");
-        assert_eq!(
-            stages.first().unwrap(),
-            &(80, "validating existing bundle".into())
-        );
-        assert_eq!(stages.last().unwrap(), &(100, "ready".into()));
+        assert_eq!(stages.first().unwrap(), &(80, ProgressStage::Validating));
+        assert_eq!(stages.last().unwrap(), &(100, ProgressStage::Ready));
         assert!(workload_available("terminal-bench", &directory));
         assert!(bundle_dir.join("asb-trial/ASB-ADAPTER-FIXTURE").is_file());
         let prompt = fs::read(directory.join("terminal-bench.txt")).unwrap();
