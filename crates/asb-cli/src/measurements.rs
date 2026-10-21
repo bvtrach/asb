@@ -229,6 +229,7 @@ impl ProcessTreeSnapshot {
         let handle = std::thread::Builder::new()
             .name("asb-process-tree-snapshot".into())
             .spawn(move || {
+                let started = Instant::now();
                 while !thread_stop.load(Ordering::Relaxed) {
                     if !root.matches() {
                         break;
@@ -260,6 +261,11 @@ impl ProcessTreeSnapshot {
                                 .open(&stdout_path)
                             {
                                 use std::io::Write;
+                                let _ = writeln!(
+                                    file,
+                                    "# asb-snapshot-elapsed-seconds {:.6}",
+                                    started.elapsed().as_secs_f64()
+                                );
                                 let _ = file.write_all(&output.stdout);
                             }
                             if let Ok(mut file) = OpenOptions::new()
@@ -447,6 +453,12 @@ impl Drop for Collector {
     }
 }
 
+struct StoppedCollector {
+    collector: Collector,
+    status: std::process::ExitStatus,
+    elapsed_ms: u128,
+}
+
 /// A measurement session owns all optional collector processes for one run.
 pub struct Session {
     adapters: Vec<&'static dyn collectors::CollectorAdapter>,
@@ -456,6 +468,7 @@ pub struct Session {
     pub(crate) cgroup_parent: Option<PathBuf>,
     started_unix_ms: u128,
     pub(crate) collectors: Vec<Collector>,
+    stopped_collectors: Vec<StoppedCollector>,
     states: BTreeMap<TypeId, Box<dyn Any>>,
     shared_artifacts: BTreeMap<collectors::SharedArtifact, PathBuf>,
     run_started: bool,
@@ -586,6 +599,7 @@ impl Session {
             cgroup_parent: cgroup_parent.map(Path::to_path_buf),
             started_unix_ms,
             collectors: Vec::new(),
+            stopped_collectors: Vec::new(),
             states: BTreeMap::new(),
             shared_artifacts: BTreeMap::new(),
             run_started: false,
@@ -622,20 +636,24 @@ impl Session {
         if self.lifecycle.len() >= 256 {
             return Err("too many benchmark lifecycle events".into());
         }
+        let elapsed_us = self.lifecycle_started.elapsed().as_micros();
+        // Timestamp the event before potentially slow collector shutdown or
+        // processing, so their overhead cannot become agent execution time.
+        self.record_component_event(event);
         for collector in self.adapters.clone() {
             collector.lifecycle_event(self, event)?;
         }
-        self.record_component_event(event);
         if matches!(
             event,
             collectors::LifecycleEvent::AgentExecuteEnd | collectors::LifecycleEvent::RunFailed
         ) {
             self.stop_process_tree_snapshots();
             self.stop_process_sampler();
+            self.stop_collector_processes(true)?;
         }
         self.lifecycle.push(LifecycleRecord {
             sequence: self.lifecycle.len(),
-            elapsed_us: self.lifecycle_started.elapsed().as_micros(),
+            elapsed_us,
             event,
         });
         match event {
@@ -897,7 +915,29 @@ impl Session {
     pub fn finish<'a>(mut self, measurement: RunMeasurement<'a>) -> Result<(), String> {
         self.stop_process_tree_snapshots();
         self.stop_process_sampler();
-        let collectors = std::mem::take(&mut self.collectors);
+        self.stop_collector_processes(false)?;
+        self.process_stopped_collectors()?;
+        write_json(&self.dir.join("run.json"), &measurement)?;
+        if self.run_started {
+            write_json(&self.dir.join("lifecycle.json"), &self.lifecycle)?;
+        }
+        for adapter in self.adapters.clone() {
+            adapter.finish(&mut self)?;
+        }
+        self.write_component_measurements()?;
+        update_summary(&self.dir, &measurement)?;
+        self.run_finishing = true;
+        Ok(())
+    }
+
+    fn stop_collector_processes(&mut self, execution_only: bool) -> Result<(), String> {
+        let finished_at = Instant::now();
+        let (collectors, remaining) = std::mem::take(&mut self.collectors)
+            .into_iter()
+            .partition::<Vec<_>, _>(|collector| {
+                !execution_only || collector.adapter.stop_at_execution_end()
+            });
+        self.collectors = remaining;
         for mut collector in collectors {
             let status = match collector.child.try_wait() {
                 Ok(Some(status)) => status,
@@ -913,8 +953,27 @@ impl Session {
                     ));
                 }
             };
+            let elapsed_ms = finished_at.duration_since(collector.started).as_millis();
+            self.stopped_collectors.push(StoppedCollector {
+                collector,
+                status,
+                elapsed_ms,
+            });
+        }
+        Ok(())
+    }
+
+    // Reporting remains after workload evaluation: optional export errors
+    // must never cancel a completed agent before the official grader runs.
+    fn process_stopped_collectors(&mut self) -> Result<(), String> {
+        for StoppedCollector {
+            collector,
+            status,
+            elapsed_ms,
+        } in std::mem::take(&mut self.stopped_collectors)
+        {
             let stdout = read_bounded(&collector.stdout_path);
-            let stderr = read_bounded(&collector.stderr_path);
+            let mut stderr = read_bounded(&collector.stderr_path);
             let _ = fs::remove_file(&collector.stdout_path);
             let _ = fs::remove_file(&collector.stderr_path);
             let context = collectors::ProcessContext {
@@ -923,13 +982,23 @@ impl Session {
                 stdout: &stdout,
                 stderr: &stderr,
             };
-            let data = collector.adapter.process(&mut self, &context)?;
+            let data = match collector.adapter.process(self, &context) {
+                Ok(data) => data,
+                Err(error) => {
+                    let mut data = collectors::ProcessData::from_output(&context);
+                    data.status = "failed".into();
+                    stderr = bounded(
+                        format!("collector result processing failed: {error}\n{stderr}").as_bytes(),
+                    );
+                    data
+                }
+            };
             let result = CollectorResult {
                 schema_version: 1,
                 collector: collector.name.clone(),
                 status: data.status,
                 exit_code: status.code(),
-                elapsed_ms: collector.started.elapsed().as_millis(),
+                elapsed_ms,
                 stdout,
                 stderr,
                 artifact: data.artifact,
@@ -939,16 +1008,6 @@ impl Session {
             };
             write_json(&self.dir.join(format!("{}.json", collector.name)), &result)?;
         }
-        write_json(&self.dir.join("run.json"), &measurement)?;
-        if self.run_started {
-            write_json(&self.dir.join("lifecycle.json"), &self.lifecycle)?;
-        }
-        for adapter in self.adapters.clone() {
-            adapter.finish(&mut self)?;
-        }
-        self.write_component_measurements()?;
-        update_summary(&self.dir, &measurement)?;
-        self.run_finishing = true;
         Ok(())
     }
 
@@ -1186,44 +1245,6 @@ pub(crate) fn safe_svg_name(value: &str) -> String {
         .collect()
 }
 
-pub(crate) fn parse_pidstat_series(
-    output: &str,
-    wanted: &[&str],
-    name: impl Fn(&str) -> String,
-) -> BTreeMap<String, Vec<f64>> {
-    let mut header = None;
-    let mut samples: BTreeMap<String, Vec<f64>> = BTreeMap::new();
-    for line in output.lines() {
-        let fields = line.split_whitespace().collect::<Vec<_>>();
-        if fields.first().is_some_and(|field| *field == "Average:")
-            || fields.first().is_some_and(|field| *field == "Linux")
-        {
-            continue;
-        }
-        if fields.iter().any(|field| wanted.contains(field)) {
-            header = Some(fields);
-            continue;
-        }
-        let Some(header_fields) = header.as_ref() else {
-            continue;
-        };
-        if fields.len() != header_fields.len() {
-            continue;
-        }
-        for wanted_name in wanted {
-            let Some(index) = header_fields.iter().position(|field| field == wanted_name) else {
-                continue;
-            };
-            let Some(value) = fields.get(index).and_then(|field| parse_float(field)) else {
-                continue;
-            };
-            samples.entry(name(wanted_name)).or_default().push(value);
-        }
-    }
-    samples.retain(|_, values| !values.is_empty());
-    samples
-}
-
 fn tool_binary_name(name: &str) -> &str {
     crate::tools::find(name)
         .and_then(|tool| tool.executable())
@@ -1235,49 +1256,6 @@ pub(crate) fn file_name(path: &Path) -> String {
         .and_then(|name| name.to_str())
         .unwrap_or("artifact")
         .to_owned()
-}
-
-pub(crate) fn parse_pidstat_columns(
-    output: &str,
-    wanted: &[&str],
-    name: impl Fn(&str) -> String,
-) -> BTreeMap<String, f64> {
-    let mut header = None;
-    let mut totals: BTreeMap<String, (f64, usize)> = BTreeMap::new();
-    for line in output.lines() {
-        let fields = line.split_whitespace().collect::<Vec<_>>();
-        if fields.first().is_some_and(|field| *field == "Average:") {
-            continue;
-        }
-        if fields.iter().any(|field| wanted.contains(field)) {
-            header = Some(fields);
-            continue;
-        }
-        let Some(header_fields) = header.as_ref() else {
-            continue;
-        };
-        if fields.len() != header_fields.len()
-            || fields.first().is_some_and(|field| *field == "Linux")
-        {
-            continue;
-        }
-        for wanted_name in wanted {
-            let Some(index) = header_fields.iter().position(|field| field == wanted_name) else {
-                continue;
-            };
-            let Some(value) = fields.get(index).and_then(|field| parse_float(field)) else {
-                continue;
-            };
-            let entry = totals.entry((*wanted_name).to_owned()).or_default();
-            entry.0 += value;
-            entry.1 += 1;
-        }
-    }
-    totals
-        .into_iter()
-        .filter(|(_, (_, count))| *count > 0)
-        .map(|(metric, (sum, count))| (name(&metric), sum / count as f64))
-        .collect()
 }
 
 pub(crate) fn parse_float(value: &str) -> Option<f64> {
@@ -1755,6 +1733,176 @@ mod tests {
                 .unwrap_err()
                 .contains("bpftrace profile SVG")
         );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn execution_end_finalizes_only_scoped_collectors_before_grading() {
+        use crate::collectors::CollectorAdapter;
+        struct Fixture(bool);
+        impl collectors::CollectorAdapter for Fixture {
+            fn id(&self) -> &'static str {
+                if self.0 {
+                    "execution-fixture"
+                } else {
+                    "whole-run-fixture"
+                }
+            }
+            fn requires_pid(&self) -> bool {
+                self.0
+            }
+            fn process(
+                &self,
+                _: &mut Session,
+                context: &collectors::ProcessContext<'_>,
+            ) -> Result<collectors::ProcessData, String> {
+                if self.0 {
+                    std::thread::sleep(Duration::from_millis(150));
+                }
+                Ok(collectors::ProcessData::from_output(context))
+            }
+        }
+        static SCOPED: Fixture = Fixture(true);
+        static WHOLE: Fixture = Fixture(false);
+        for end in [
+            collectors::LifecycleEvent::AgentExecuteEnd,
+            collectors::LifecycleEvent::RunFailed,
+        ] {
+            let dir = std::env::temp_dir()
+                .join(crate::workloads::TaskIdentity::local("collector-boundary", None).attempt_id);
+            let mut session = Session::start_with_collectors(&dir, &[], None).unwrap();
+            session
+                .event(collectors::LifecycleEvent::RunStarted)
+                .unwrap();
+            session
+                .event(collectors::LifecycleEvent::AgentExecuteBegin)
+                .unwrap();
+            for adapter in [&SCOPED, &WHOLE] {
+                let stdout_path = dir.join(format!("{}.stdout", adapter.id()));
+                let stderr_path = dir.join(format!("{}.stderr", adapter.id()));
+                fs::write(&stdout_path, "bounded fixture counter\n").unwrap();
+                fs::write(&stderr_path, "").unwrap();
+                session.collectors.push(Collector {
+                    name: adapter.id().into(),
+                    adapter,
+                    child: Command::new("sleep").arg("86400").spawn().unwrap(),
+                    started: Instant::now(),
+                    stdout_path,
+                    stderr_path,
+                });
+            }
+            session.event(end).unwrap();
+            assert_eq!(session.collectors.len(), 1);
+            assert!(session.collectors[0].child.try_wait().unwrap().is_none());
+            assert_eq!(session.stopped_collectors.len(), 1);
+            assert!(
+                session.stopped_collectors[0]
+                    .collector
+                    .child
+                    .try_wait()
+                    .unwrap()
+                    .is_some()
+            );
+            assert!(!dir.join("execution-fixture.json").exists());
+            assert!(!dir.join("whole-run-fixture.json").exists());
+            let recorded_end = session.lifecycle.last().unwrap().elapsed_us;
+            // Simulate grading after the safe execution boundary. Reporting
+            // and its deliberately slow processor run only after that phase.
+            std::thread::sleep(Duration::from_millis(150));
+            session.stop_collector_processes(false).unwrap();
+            session.process_stopped_collectors().unwrap();
+            assert!(session.lifecycle_started.elapsed().as_micros() >= recorded_end + 100_000);
+            if end == collectors::LifecycleEvent::AgentExecuteEnd {
+                assert!(
+                    session.lifecycle_started.elapsed().as_millis()
+                        >= session.component_timings["agent.execute"].wall_ms + 100
+                );
+            }
+            // Final session processing must not process an already finalized
+            // execution collector again or replace its retained report.
+            fs::write(dir.join("execution-fixture.json"), "preserved").unwrap();
+            session.stop_collector_processes(false).unwrap();
+            session.process_stopped_collectors().unwrap();
+            assert!(session.collectors.is_empty());
+            assert!(dir.join("whole-run-fixture.json").is_file());
+            assert_eq!(
+                fs::read_to_string(dir.join("execution-fixture.json")).unwrap(),
+                "preserved"
+            );
+            drop(session);
+            fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn failing_optional_collector_processing_does_not_preempt_grading() {
+        struct Failing;
+        impl collectors::CollectorAdapter for Failing {
+            fn id(&self) -> &'static str {
+                "failing-export"
+            }
+            fn requires_pid(&self) -> bool {
+                true
+            }
+            fn process(
+                &self,
+                _: &mut Session,
+                _: &collectors::ProcessContext<'_>,
+            ) -> Result<collectors::ProcessData, String> {
+                Err("fixture SVG export failed".into())
+            }
+        }
+        static FAILING: Failing = Failing;
+        let dir = std::env::temp_dir().join(
+            crate::workloads::TaskIdentity::local("collector-export-failure", None).attempt_id,
+        );
+        let mut session = Session::start_with_collectors(&dir, &[], None).unwrap();
+        let stdout_path = dir.join("failing-export.stdout");
+        let stderr_path = dir.join("failing-export.stderr");
+        fs::write(&stdout_path, "bounded counter\n").unwrap();
+        fs::write(&stderr_path, "").unwrap();
+        session.collectors.push(Collector {
+            name: "failing-export".into(),
+            adapter: &FAILING,
+            child: Command::new("sleep").arg("86400").spawn().unwrap(),
+            started: Instant::now(),
+            stdout_path,
+            stderr_path,
+        });
+        session
+            .event(collectors::LifecycleEvent::AgentExecuteEnd)
+            .unwrap();
+        assert!(!dir.join("failing-export.json").exists());
+        assert!(session.collectors.is_empty());
+        assert!(
+            session.stopped_collectors[0]
+                .collector
+                .child
+                .try_wait()
+                .unwrap()
+                .is_some()
+        );
+        // Evaluation can complete before the intentionally failing export is
+        // even invoked. Its report must fail honestly, not erase that grade.
+        fs::write(dir.join("official-grade.json"), "{\"resolved\":true}").unwrap();
+        session.process_stopped_collectors().unwrap();
+        let result: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(dir.join("failing-export.json")).unwrap())
+                .unwrap();
+        assert_eq!(result["status"], "failed");
+        assert!(
+            result["stderr"]
+                .as_str()
+                .unwrap()
+                .contains("fixture SVG export failed")
+        );
+        assert_eq!(
+            fs::read_to_string(dir.join("official-grade.json")).unwrap(),
+            "{\"resolved\":true}"
+        );
+        drop(session);
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

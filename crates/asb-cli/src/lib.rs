@@ -2,6 +2,7 @@
 
 mod agents;
 mod benchmark;
+pub mod cassette;
 mod collectors;
 mod compare;
 mod completion;

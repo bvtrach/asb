@@ -1,0 +1,599 @@
+use super::*;
+use std::fs::{self, File};
+use std::io::{Read, Seek, SeekFrom, Write};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
+use zip::{CompressionMethod, ZipWriter, write::SimpleFileOptions};
+
+static NEXT: AtomicU64 = AtomicU64::new(0);
+
+struct Fixture(PathBuf);
+
+impl Fixture {
+    fn new() -> Self {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/cassette-tests")
+            .join(format!(
+                "{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+        fs::create_dir_all(&path).unwrap();
+        Self(path)
+    }
+
+    fn zip(&self, manifest: &Manifest, payloads: &[(&str, &[u8])]) -> PathBuf {
+        self.zip_with_method(manifest, payloads, CompressionMethod::Deflated)
+    }
+
+    fn zip_with_method(
+        &self,
+        manifest: &Manifest,
+        payloads: &[(&str, &[u8])],
+        method: CompressionMethod,
+    ) -> PathBuf {
+        let path = self.0.join("fixture.zip");
+        let mut writer = ZipWriter::new(File::create(&path).unwrap());
+        let options = SimpleFileOptions::default().compression_method(method);
+        writer.start_file("manifest.json", options).unwrap();
+        writer
+            .write_all(&serde_json::to_vec(manifest).unwrap())
+            .unwrap();
+        for (name, bytes) in payloads {
+            writer.start_file(*name, options).unwrap();
+            writer.write_all(bytes).unwrap();
+        }
+        writer.finish().unwrap();
+        path
+    }
+}
+
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        // Positively-owned per-test directory, never a shared workspace root.
+        fs::remove_dir_all(&self.0).unwrap();
+    }
+}
+
+fn manifest(count: u64) -> Manifest {
+    Manifest {
+        schema_version: SCHEMA_VERSION,
+        recording_id: "fixture-recording-1".into(),
+        compatibility: Compatibility {
+            agent: "fixture-agent".into(),
+            provider: "fixture-provider".into(),
+            model: "fixture/model".into(),
+            workload: "fixture-workload".into(),
+            task: "task-1".into(),
+            dataset_sha256: None,
+            prompt_sha256: digest(b"prompt"),
+            material_sha256: digest(b"initial material"),
+        },
+        concurrency: 1,
+        tracks: (1..=count)
+            .map(|id| Track {
+                id,
+                batch: id,
+                replica: 1,
+                complete: true,
+                process_success: Some(true),
+                workload_success: Some(true),
+                bytes: 3,
+                sha256: digest(b"{}\n"),
+                statistics: Statistics {
+                    tokens: Some(id * 10),
+                    duration_ms: Some(id * 100),
+                    requests: Some(id),
+                    steps: None,
+                },
+            })
+            .collect(),
+    }
+}
+
+#[test]
+fn schema_identity_bounds_order_and_checked_slot_mapping() {
+    let limits = Limits::default();
+    let original = manifest(3);
+    original.validate(limits).unwrap();
+    assert_eq!(limits.max_tracks, 65_533);
+    assert!(
+        original
+            .validate(Limits {
+                max_tracks: 65_534,
+                ..limits
+            })
+            .is_err()
+    );
+    let mutations: [fn(&mut Manifest); 11] = [
+        |m| m.schema_version = 2,
+        |m| m.recording_id = "../elsewhere".into(),
+        |m| m.concurrency = 65,
+        |m| m.compatibility.prompt_sha256 = "G".repeat(64),
+        |m| m.compatibility.agent = "\x1b[2J".into(),
+        |m| m.tracks.swap(0, 1),
+        |m| m.tracks[0].batch = 0,
+        |m| m.tracks[0].replica = 2,
+        |m| m.tracks[0].id = 0,
+        |m| m.tracks[0].sha256 = "not a hash".into(),
+        |m| {
+            m.concurrency = 64;
+            m.tracks[0].batch = u64::MAX;
+        },
+    ];
+    for mutate in mutations {
+        let mut invalid = original.clone();
+        mutate(&mut invalid);
+        assert!(invalid.validate(limits).is_err(), "accepted {invalid:?}");
+    }
+    for limits in [
+        Limits {
+            max_tracks: 2,
+            ..limits
+        },
+        Limits {
+            max_track_bytes: 2,
+            ..limits
+        },
+        Limits {
+            max_total_bytes: 8,
+            ..limits
+        },
+    ] {
+        assert!(original.validate(limits).is_err());
+    }
+    let mut gapped = original.clone();
+    gapped.tracks.remove(1);
+    gapped.validate(limits).unwrap();
+    assert_eq!(gapped.track(3).unwrap().id, 3);
+    assert!(gapped.track(2).is_err());
+}
+
+#[test]
+fn compatibility_covers_every_declared_identity_but_not_runtime_settings() {
+    let identity = manifest(1).compatibility;
+    identity.require_match(&identity).unwrap();
+    let mut json = serde_json::to_value(&identity).unwrap();
+    for field in [
+        "agent",
+        "provider",
+        "model",
+        "workload",
+        "task",
+        "dataset_sha256",
+        "prompt_sha256",
+        "material_sha256",
+    ] {
+        let original = json[field].clone();
+        json[field] = serde_json::Value::String(if field.ends_with("sha256") {
+            digest(b"different")
+        } else {
+            "different".into()
+        });
+        let changed: Compatibility = serde_json::from_value(json.clone()).unwrap();
+        assert!(identity.require_match(&changed).is_err(), "missed {field}");
+        json[field] = original;
+    }
+}
+
+#[test]
+fn selectors_parse_strictly_and_numeric_selection_allows_incomplete() {
+    for invalid in [
+        "0",
+        "-1",
+        "",
+        "1.0",
+        "max:steps",
+        "min:Tokens",
+        "median:requests:extra",
+        "maximum:tokens",
+        "18446744073709551616",
+    ] {
+        assert!(invalid.parse::<Selector>().is_err(), "accepted {invalid}");
+    }
+    assert_eq!("7".parse::<Selector>().unwrap(), Selector::Id(7));
+    assert_eq!(
+        "max:duration".parse::<Selector>().unwrap(),
+        Selector::Max(Metric::Duration)
+    );
+    let mut m = manifest(1);
+    m.tracks[0].complete = false;
+    assert_eq!(Selector::Id(1).resolve(&m).unwrap(), 1);
+    assert!(Selector::Id(2).resolve(&m).is_err());
+    assert!(Selector::Min(Metric::Tokens).resolve(&m).is_err());
+}
+
+#[test]
+fn statistics_ties_nulls_and_even_lower_median_are_defined() {
+    let mut m = manifest(6);
+    for metric in [Metric::Tokens, Metric::Duration, Metric::Requests] {
+        assert_eq!(Selector::Min(metric).resolve(&m).unwrap(), 1);
+        assert_eq!(Selector::Max(metric).resolve(&m).unwrap(), 6);
+        assert_eq!(Selector::Median(metric).resolve(&m).unwrap(), 3);
+    }
+    m.tracks[5].statistics.tokens = Some(50);
+    assert_eq!(Selector::Max(Metric::Tokens).resolve(&m).unwrap(), 5);
+    m.tracks[0].statistics.tokens = None;
+    m.tracks[1].complete = false;
+    m.tracks[2].bytes = 0;
+    m.tracks[3].process_success = Some(false);
+    m.tracks[3].workload_success = Some(false);
+    assert_eq!(Selector::Min(Metric::Tokens).resolve(&m).unwrap(), 4);
+    assert_eq!(Selector::Median(Metric::Tokens).resolve(&m).unwrap(), 5);
+    for track in &mut m.tracks {
+        track.statistics.tokens = None;
+    }
+    assert!(Selector::Max(Metric::Tokens).resolve(&m).is_err());
+    assert_eq!(
+        serde_json::to_value(Statistics::default()).unwrap()["tokens"],
+        serde_json::Value::Null
+    );
+}
+
+#[test]
+fn sampling_has_a_portable_golden_vector_and_replacement() {
+    let m = manifest(3);
+    let plan = SelectionPlan::build(&m, 3, 4, 42, None, 100).unwrap();
+    assert_eq!(plan.tracks, [3, 1, 2, 2, 1, 3, 3, 1, 2, 3, 3, 2]);
+    assert_eq!(plan, SelectionPlan::build(&m, 6, 2, 42, None, 100).unwrap());
+    assert_ne!(
+        plan.tracks,
+        SelectionPlan::build(&m, 3, 4, 43, None, 100)
+            .unwrap()
+            .tracks
+    );
+    let saved = serde_json::to_vec(&plan).unwrap();
+    assert_eq!(
+        serde_json::from_slice::<SelectionPlan>(&saved).unwrap(),
+        plan
+    );
+    for selector in [Selector::Id(2), Selector::Median(Metric::Tokens)] {
+        assert_eq!(
+            SelectionPlan::build(&m, 5, 4, 1, Some(selector), 20)
+                .unwrap()
+                .tracks,
+            vec![2; 20]
+        );
+    }
+}
+
+#[test]
+fn selection_counts_and_eligibility_do_not_depend_on_success() {
+    let mut m = manifest(1);
+    m.tracks[0].process_success = Some(false);
+    m.tracks[0].workload_success = Some(false);
+    assert_eq!(
+        SelectionPlan::build(&m, 5, 4, 0, None, 20).unwrap().tracks,
+        vec![1; 20]
+    );
+    for (repeat, concurrency, limit) in [
+        (0, 1, 100),
+        (1, 0, 100),
+        (1, 65, 100),
+        (u64::MAX, 64, 100),
+        (2, 4, 7),
+    ] {
+        assert!(SelectionPlan::build(&m, repeat, concurrency, 0, None, limit).is_err());
+    }
+    for incomplete in [true, false] {
+        let mut m = m.clone();
+        if incomplete {
+            m.tracks[0].complete = false;
+        } else {
+            m.tracks[0].bytes = 0;
+        }
+        assert!(SelectionPlan::build(&m, 1, 1, 0, None, 10).is_err());
+    }
+}
+
+#[test]
+fn zip_round_trip_inspection_and_only_selected_payload_is_verified() {
+    let fixture = Fixture::new();
+    let mut m = manifest(2);
+    // Deliberately wrong digest in unselected payload: opening/reading track 1
+    // must not inflate or verify track 2. Selecting it must fail clearly.
+    m.tracks[1].sha256 = digest(b"different bytes");
+    let path = fixture.zip(
+        &m,
+        &[("tracks/1.jsonl", b"{}\n"), ("tracks/2.jsonl", b"{}\n")],
+    );
+    let mut archive = Archive::open(&path, Limits::default()).unwrap();
+    assert_eq!(archive.manifest(), &m);
+    assert_eq!(archive.read_track(1).unwrap(), b"{}\n");
+    assert!(
+        archive
+            .read_track(2)
+            .unwrap_err()
+            .to_string()
+            .contains("checksum")
+    );
+    assert!(archive.read_track(3).is_err());
+}
+
+#[test]
+fn zip_rejects_bad_catalogue_methods_names_and_lengths() {
+    let fixture = Fixture::new();
+    let m = manifest(1);
+    for payloads in [
+        vec![],
+        vec![("tracks/2.jsonl", &b"{}\n"[..])],
+        vec![("../track.jsonl", &b"{}\n"[..])],
+        vec![("tracks/01.jsonl", &b"{}\n"[..])],
+        vec![("tracks/1.jsonl", &b"too long"[..])],
+    ] {
+        let path = fixture.zip(&m, &payloads);
+        assert!(Archive::open(&path, Limits::default()).is_err());
+    }
+    let path = fixture.zip_with_method(
+        &m,
+        &[("tracks/1.jsonl", b"{}\n")],
+        CompressionMethod::Stored,
+    );
+    assert!(Archive::open(&path, Limits::default()).is_err());
+    let mut wrong = m.clone();
+    wrong.schema_version = 2;
+    let path = fixture.zip(&wrong, &[("tracks/1.jsonl", b"{}\n")]);
+    assert!(
+        Archive::open(&path, Limits::default())
+            .unwrap_err_text()
+            .contains("schema")
+    );
+}
+
+// Avoid requiring Debug for a live archive handle just to inspect test errors.
+trait ArchiveResult {
+    fn unwrap_err_text(self) -> String;
+}
+impl ArchiveResult for Result<Archive, Error> {
+    fn unwrap_err_text(self) -> String {
+        match self {
+            Ok(_) => panic!("expected invalid archive"),
+            Err(error) => error.to_string(),
+        }
+    }
+}
+
+#[test]
+fn zip_limits_truncation_and_directory_preflight() {
+    let fixture = Fixture::new();
+    let path = fixture.zip(
+        &manifest(2),
+        &[("tracks/1.jsonl", b"{}\n"), ("tracks/2.jsonl", b"{}\n")],
+    );
+    let normal = Limits::default();
+    for limits in [
+        Limits {
+            max_archive_bytes: 10,
+            ..normal
+        },
+        Limits {
+            max_directory_bytes: 1,
+            ..normal
+        },
+        Limits {
+            max_manifest_bytes: 1,
+            ..normal
+        },
+        Limits {
+            max_track_bytes: 2,
+            ..normal
+        },
+        Limits {
+            max_tracks: 1,
+            ..normal
+        },
+        Limits {
+            max_total_bytes: 5,
+            ..normal
+        },
+        Limits {
+            max_tracks: 0,
+            ..normal
+        },
+    ] {
+        assert!(Archive::open(&path, limits).is_err(), "accepted {limits:?}");
+    }
+    let original = fs::read(&path).unwrap();
+    for length in [0, 21, original.len() / 2, original.len() - 1] {
+        fs::write(&path, &original[..length]).unwrap();
+        assert!(Archive::open(&path, normal).is_err());
+    }
+    let mut changed = original;
+    let end = changed.len() - 22;
+    // A false central-directory size must be rejected before zip metadata reads.
+    changed[end + 12..end + 16].copy_from_slice(&u32::MAX.to_le_bytes());
+    fs::write(&path, changed).unwrap();
+    assert!(Archive::open(&path, normal).is_err());
+}
+
+#[test]
+fn public_selection_rejects_invalid_manifests_and_unallocatable_counts() {
+    let original = manifest(3);
+    for field in ["schema", "duplicate", "unsorted", "zero", "compatibility"] {
+        let mut invalid = original.clone();
+        match field {
+            "schema" => invalid.schema_version = 2,
+            "duplicate" => invalid.tracks[1] = invalid.tracks[0].clone(),
+            "unsorted" => invalid.tracks.swap(0, 2),
+            "zero" => invalid.tracks[0].id = 0,
+            _ => invalid.compatibility.model.clear(),
+        }
+        assert!(
+            Selector::Id(1).resolve(&invalid).is_err(),
+            "accepted {field}"
+        );
+        assert!(
+            SelectionPlan::build(&invalid, 1, 1, 1, None, 100).is_err(),
+            "sampled {field}"
+        );
+    }
+    assert!(SelectionPlan::build(&original, u64::MAX, 1, 0, None, usize::MAX).is_err());
+    assert!(SelectionPlan::build(&original, 1_000_001, 1, 0, None, usize::MAX).is_err());
+}
+
+#[test]
+fn persisted_selection_is_bound_to_algorithm_manifest_and_every_slot() {
+    let m = manifest(3);
+    let original = SelectionPlan::build(&m, 2, 4, 42, None, 100).unwrap();
+    original.validate(&m, 2, 4, 100).unwrap();
+    assert!(original.validate(&m, 2, 3, 100).is_err());
+    let mut other = m.clone();
+    other.recording_id = "another-recording".into();
+    assert!(original.validate(&other, 2, 4, 100).is_err());
+    for mutation in 0..5 {
+        let mut plan = original.clone();
+        match mutation {
+            0 => plan.algorithm = "unknown".into(),
+            1 => {
+                plan.tracks.pop();
+            }
+            2 => plan.tracks[0] = 0,
+            3 => plan.tracks[0] = 2,
+            _ => plan.manifest_sha256 = digest(b"wrong"),
+        }
+        assert!(plan.validate(&m, 2, 4, 100).is_err(), "accepted {mutation}");
+    }
+    let mut unknown = serde_json::to_value(original).unwrap();
+    unknown["unknown_field"] = true.into();
+    assert!(serde_json::from_value::<SelectionPlan>(unknown).is_err());
+}
+
+fn replace_name(bytes: &mut [u8], from: &[u8], to: &[u8]) {
+    assert_eq!(from.len(), to.len());
+    let positions: Vec<_> = bytes
+        .windows(from.len())
+        .enumerate()
+        .filter(|(_, window)| *window == from)
+        .map(|(index, _)| index)
+        .collect();
+    for offset in positions {
+        bytes[offset..offset + to.len()].copy_from_slice(to);
+    }
+}
+
+#[test]
+fn inspection_does_not_inflate_corrupt_unselected_deflate_data() {
+    let fixture = Fixture::new();
+    let path = fixture.zip(
+        &manifest(2),
+        &[("tracks/1.jsonl", b"{}\n"), ("tracks/2.jsonl", b"{}\n")],
+    );
+    let mut raw = zip::ZipArchive::new(File::open(&path).unwrap()).unwrap();
+    let offset = raw.by_index(2).unwrap().data_start().unwrap() as usize;
+    let mut bytes = fs::read(&path).unwrap();
+    bytes[offset] = 0xff; // Reserved Deflate block encoding, not just a digest edit.
+    fs::write(&path, bytes).unwrap();
+    let mut archive = Archive::open(&path, Limits::default()).unwrap();
+    assert_eq!(archive.read_track(1).unwrap(), b"{}\n");
+    assert!(archive.read_track(2).is_err());
+}
+
+#[test]
+fn zip_rejects_duplicates_encryption_symlinks_and_lying_inflated_lengths() {
+    let fixture = Fixture::new();
+    let path = fixture.zip(
+        &manifest(2),
+        &[("tracks/1.jsonl", b"{}\n"), ("tracks/2.jsonl", b"{}\n")],
+    );
+    let original = fs::read(&path).unwrap();
+    let central: Vec<_> = original
+        .windows(4)
+        .enumerate()
+        .filter(|(_, bytes)| *bytes == b"PK\x01\x02")
+        .map(|(index, _)| index)
+        .collect();
+    for variant in 0..5 {
+        let mut bytes = original.clone();
+        let track = central[2];
+        match variant {
+            0 => replace_name(&mut bytes, b"tracks/2.jsonl", b"tracks/1.jsonl"),
+            1 => bytes[track + 8] |= 1, // encrypted flag
+            2 => {
+                // Unix creator and symbolic-link mode in external attributes
+                bytes[track + 5] = 3;
+                bytes[track + 38..track + 42].copy_from_slice(&(0o120777u32 << 16).to_le_bytes());
+            }
+            3 => bytes[track + 24..track + 28].copy_from_slice(&2u32.to_le_bytes()),
+            _ => bytes[track + 34..track + 36].copy_from_slice(&1u16.to_le_bytes()),
+        }
+        fs::write(&path, bytes).unwrap();
+        assert!(
+            Archive::open(&path, Limits::default()).is_err(),
+            "accepted variant {variant}"
+        );
+    }
+}
+
+#[test]
+fn metadata_view_hides_real_payload_until_validation_and_accepts_comments() {
+    let fixture = Fixture::new();
+    let path = fixture.zip(&manifest(1), &[("tracks/1.jsonl", b"{}\n")]);
+    let (mut reader, phase, _, directory) =
+        super::metadata::MetadataReader::new(File::open(&path).unwrap(), Limits::default())
+            .unwrap();
+    let mut magic = [0; 4];
+    reader.read_exact(&mut magic).unwrap();
+    assert_eq!(magic, [0; 4]); // Underlying local-header bytes are never exposed.
+    reader.seek(SeekFrom::Start(directory)).unwrap();
+    reader.read_exact(&mut magic).unwrap();
+    assert_eq!(&magic, b"PK\x01\x02");
+    phase.store(false, Ordering::Release);
+    reader.seek(SeekFrom::Start(0)).unwrap();
+    reader.read_exact(&mut magic).unwrap();
+    assert_eq!(&magic, b"PK\x03\x04");
+    let mut bytes = fs::read(&path).unwrap();
+    let length = bytes.len();
+    bytes[length - 2..].copy_from_slice(&7u16.to_le_bytes());
+    bytes.extend_from_slice(b"comment");
+    fs::write(&path, bytes).unwrap();
+    Archive::open(&path, Limits::default()).unwrap();
+}
+
+#[test]
+fn alternate_eocd_and_cross_boundary_headers_cannot_bypass_preflight() {
+    let fixture = Fixture::new();
+    let path = fixture.zip(&manifest(1), &[("tracks/1.jsonl", b"{}\n")]);
+    let original = fs::read(&path).unwrap();
+    // A plausible small final EOCD points to the old EOCD, not central headers.
+    // A ZIP library may fall back to the original valid archive; ASB must not.
+    let mut bytes = original.clone();
+    let mut end = original[original.len() - 22..].to_vec();
+    end[8..12].copy_from_slice(&[1, 0, 1, 0]);
+    end[12..16].copy_from_slice(&22u32.to_le_bytes());
+    end[16..20].copy_from_slice(&((original.len() - 22) as u32).to_le_bytes());
+    bytes.extend_from_slice(&end);
+    fs::write(&path, bytes).unwrap();
+    assert!(Archive::open(&path, Limits::default()).is_err());
+    let directory = original
+        .windows(4)
+        .position(|bytes| bytes == b"PK\x01\x02")
+        .unwrap();
+    for field in [28, 30, 32] {
+        let mut bytes = original.clone();
+        bytes[directory + field..directory + field + 2].copy_from_slice(&u16::MAX.to_le_bytes());
+        fs::write(&path, bytes).unwrap();
+        assert!(Archive::open(&path, Limits::default()).is_err());
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn nonregular_archive_paths_are_rejected_without_opening_a_blocking_stream() {
+    let fixture = Fixture::new();
+    let path = fixture.0.join("stream.zip");
+    assert!(
+        std::process::Command::new("mkfifo")
+            .arg(&path)
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        Archive::open(&path, Limits::default())
+            .unwrap_err_text()
+            .contains("regular file")
+    );
+    let mut value = serde_json::to_value(manifest(1)).unwrap();
+    value["unknown_manifest_field"] = true.into();
+    assert!(serde_json::from_value::<Manifest>(value).is_err());
+}

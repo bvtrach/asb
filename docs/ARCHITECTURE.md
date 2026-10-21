@@ -73,16 +73,29 @@ ASB is deliberately split into a small CLI and a file-backed workload directory:
   execution boundary and reject reused or reparented tasks;
   the mpstat/iostat result names use process-scoped `pidstat` sampling for the
   agent process and its child tasks, retaining bounded raw output and exposing
-  averaged, unit-named CPU and I/O metrics under a machine-readable `metrics`
-  object plus bounded per-sample `series` arrays. `perf stat` uses the same
-  interval contract. `ASB_MEASURE_INTERVAL_MS` accepts 100--60000 ms and
+  unit-named CPU and I/O metrics averaged over process-tree interval totals
+  under a machine-readable `metrics` object plus bounded `series` arrays.
+  Process rows in the same observation are summed, not plotted as extra time
+  points. `series_timestamps` uses monotonic observation-completion offsets;
+  historical files fall back to pidstat clock offsets with midnight handling.
+  Average and child-summary rows are excluded. `perf stat` uses the same
+  interval contract. Perf scalar counters sum the emitted interval deltas,
+  rather than reporting only the final interval. Unsupported counters remain
+  absent, not zero. `ASB_MEASURE_INTERVAL_MS` accepts 100--60000 ms and
   defaults to 1000 ms; pidstat rounds sub-second requests to whole seconds,
   while perf supports millisecond periods. Comparisons emit line SVGs for
   series with at least two points and expose the same hover, zoom, pan, reset,
   and enlarge controls as bar charts. Built-in BPFTrace profiles remain
   bounded cumulative one-second snapshots and final aggregates (custom
   interval programs may add series), while Perfetto retains its timestamped
-  trace and extracts timestamped scheduler-event and scheduler-duration
+  trace. Process-attached collector processes stop at the agent-execution
+  boundary (also on run failure), before grading. Report processing/export
+  stays after workload evaluation; an optional processor failure becomes a
+  failed collector record, never cancellation before official grading.
+  Shutdown/processing overhead does not extend the recorded agent execution
+  interval. Whole-run tracing can explicitly opt out through
+  the collector trait. Perfetto does so to capture the complete typed lifecycle,
+  and extracts timestamped scheduler-event and scheduler-duration
   series; those trace timestamps are used as line-chart x coordinates;
   the `system` record also captures bounded host-comparison metadata: CPU model,
   vendor and Arm implementer/part, package/core/thread topology, frequency
@@ -850,6 +863,14 @@ record and replay instead use the tape endpoint. This routing does not itself
 guarantee that a particular model can complete an agent workload.
 The ASB source checkout is not a benchmark project: `init` rejects its
 distinctive workspace layout before creating any files.
+
+The reusable `cassette` backend defines multi-track manifests, compatibility
+identities, bounded selective ZIP reading and reproducible selection plans.
+It neither starts providers nor changes workloads. Metadata parsing uses a
+validated bounded central-directory snapshot before enabling payload reads;
+selected entries receive CRC, length and SHA-256 validation. This backend is a
+delivery foundation, not yet a change to run/sweep's JSONL CLI behavior. See
+[multi-track delivery contracts](MULTITRACK.md) for the integration sequence.
 
 Recording and replay are implemented as a separate `tape` module behind the
 runner boundary. The `run --record` and `run --replay` flags enable the
