@@ -46,6 +46,26 @@ prevent the fast-forward, and no stash is automatically discarded.
 
 These checks are offline: replay tests start the embedded tape proxy and test
 clients on loopback, but CI never starts a real agent, bridge, or live provider.
+`cargo test --locked --offline --lib install::source` checks atomic installation
+with local fake downloads and version probes. The shared private `OwnedReaper`
+is established fallibly before each downloader or version subprocess starts.
+Normal errors and unwinding bound the caller's cleanup wait; an unconfirmed
+direct child transfers to that already-owned worker rather than being dropped
+or delaying the caller indefinitely. Uncertain cleanup prevents publication
+and preserves the original failure alongside its cleanup diagnostic. Worker
+creation failure launches no tool. Linux-only deterministic fault fixtures
+verify pending/error handoff, idle-worker exit, pidfd-backed reaping, unrelated
+sentinel survival and unchanged previously installed bytes/mode. No network,
+host settings or arbitrary descendant-tree supervision is involved.
+`cargo test --locked --offline --lib publication_tests` exercises source-file
+publication with an offline fake curl executable and real SHA-256 computation.
+It checks partial HTTP failures, empty/oversized bodies, checksum/probe failures,
+missing transport, timeout/child reaping, symlinks, rename failure and successful
+local/remote replacement, including nonblocking rejection of FIFO sources.
+Staged version-probe failure and timeout also retain the prior installation.
+A blocked downloader proves that the previous ready
+executable remains visible until complete validated bytes are committed. These
+tests make no network requests and install no host packages.
 Perf-stat regression fixtures process a complete synthetic file larger than
 the diagnostic cap, retain missing-interval timestamps and hybrid CPU counter
 totals, and reject invalid or excessive input without publishing partial totals.
