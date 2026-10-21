@@ -30,7 +30,21 @@ Independent final evidence review, current-main coordination, hosted/package
 CI, merge, both post-merge jobs and a coordinated release remain pending.
 No push or PR accompanied this evidence-only checkpoint. See
 [setup integration](SETUP_PUBLICATION_INTEGRATION.md) for exact scope and limits.
-Latest verified delivery: collector [PR #304](https://github.com/martin-beck/asb/pull/304)
+Latest verified delivery: setup [PR #305](https://github.com/martin-beck/asb/pull/305)
+merged as `4caaab14bbbcfd2f30a99e58b522394dbd5a29cc`, with exact-head CI
+`39684689249` and both post-merge jobs `39686295128` successful. Signed
+annotated v0.2.40 tag `2afd95ae592371fd5a72dd588c9a5f81b53ffff4` targets that
+commit with GitHub-verified valid signature; release published at
+2026-10-21 22:36:19 UTC.
+
+Official-binding PR #306 passed exact-head CI `39687408084` and merged with an
+identical tree as `fb4cce4d8f82547b998228685a2659b839118b20`. Its post-merge run
+`39688437266` is in progress; signed v0.2.41 remains pending. Termination stage42
+preserves this actual-main ancestry in `cab2dd4f`; production/tests remain
+byte-identical to independently qualified source `9b843ee3`. Its hosted
+delivery is still pending.
+
+Earlier collector [PR #304](https://github.com/martin-beck/asb/pull/304)
 merged as `c612c6c9a4b743c206840908e6a9c91915e75f26`. Exact-head CI
 `39683131129` and both enabled post-merge jobs `39684518488` passed. Signed
 annotated tag `v0.2.39` (`72eda8b095eb25cbb0d9e890b28eed7bd16a5780`)
@@ -39,10 +53,10 @@ targets that commit with GitHub-verified valid signature; release published on
 
 Setup PR #305 passed exact-head CI `39684689249` and merged with an identical
 tree as `4caaab14bbbcfd2f30a99e58b522394dbd5a29cc`. Its post-merge run
-`39686295128` is in progress; signed v0.2.40 remains pending. Official engine
+`39686295128` and signed v0.2.40 are complete as recorded above. Official engine
 binding stage 0.2.41 preserves that actual-main ancestry in signed merge
 `4ec464b5`; production/tests remain identical to independently qualified source
-`453898c0`. Its hosted delivery remains pending.
+`453898c0`. Its later hosted merge is recorded above; post-merge delivery is pending.
 
 Earlier runtime discovery [PR #303](https://github.com/martin-beck/asb/pull/303)
 merged as `54ecdcd1c62099a65a3da87ebffdb4d4f619f900`. Exact-head CI
