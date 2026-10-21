@@ -78,8 +78,18 @@ impl Recorded {
             "failure_reason",
             "workload_failure",
             "adapter_smoke_success",
+            "workload_resource_disposition",
+            "workload_artifacts",
         ] {
-            if self.summary[field] != measured[field] {
+            let agrees = if matches!(
+                field,
+                "workload_resource_disposition" | "workload_artifacts"
+            ) {
+                self.summary.get(field) == measured.get(field)
+            } else {
+                self.summary[field] == measured[field]
+            };
+            if !agrees {
                 return Err(invalid(
                     &self.path,
                     &format!(
@@ -153,6 +163,9 @@ impl Recorded {
         }
         if !self.workload_cleanup || !self.proxy_cleanup {
             status.push_str("; owned-resource cleanup not confirmed");
+        }
+        if self.summary["workload_resource_disposition"] == "stopped-preserved" {
+            status.push_str("; workload resources stopped and preserved, not removed");
         }
         status
     }
@@ -244,6 +257,20 @@ pub(crate) fn load(directory: &Path, total: usize) -> Result<BTreeMap<usize, Rec
                 "outcome identity or result fields are malformed",
             ));
         }
+        if !crate::workloads::ResourceDisposition::matches_record(
+            raw.get("workload_resource_disposition"),
+            raw["workload_cleanup_confirmed"] == true,
+            summary,
+        ) {
+            return Err(invalid(
+                &path,
+                if raw["workload_cleanup_confirmed"] == false {
+                    "outcome workload or proxy cleanup is unconfirmed; resource disposition contradicts cleanup"
+                } else {
+                    "outcome resource disposition contradicts cleanup confirmation"
+                },
+            ));
+        }
         if outcomes
             .insert(
                 replica.index,
@@ -273,9 +300,20 @@ pub(crate) fn load_run(
     config_path: &Path,
     config: &crate::benchmark::BenchmarkConfig,
 ) -> Result<BTreeMap<usize, Recorded>, Error> {
+    load_logs(config_path, config, |_| true)
+}
+
+fn load_logs(
+    config_path: &Path,
+    config: &crate::benchmark::BenchmarkConfig,
+    include: impl Fn(usize) -> bool,
+) -> Result<BTreeMap<usize, Recorded>, Error> {
     use std::io::{Seek, SeekFrom};
     let mut records = BTreeMap::new();
     for index in 1..=config.concurrency {
+        if !include(index) {
+            continue;
+        }
         let selected = crate::runner::replica::configuration(
             config,
             Identity {
@@ -295,11 +333,22 @@ pub(crate) fn load_run(
             }
             Ok(_) => (),
         }
-        let mut file = match fs::File::open(&path) {
+        let mut options = fs::OpenOptions::new();
+        options.read(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+        }
+        let mut file = match options.open(&path) {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
             result => result.map_err(|error| invalid(&path, &error.to_string()))?,
         };
-        let size = file.metadata().map_err(crate::io_error)?.len();
+        let metadata = file.metadata().map_err(crate::io_error)?;
+        if !metadata.is_file() {
+            return Err(invalid(&path, "run log must be a regular file"));
+        }
+        let size = metadata.len();
         let offset = size.saturating_sub(super::MAX_BYTES);
         file.seek(SeekFrom::Start(offset))
             .map_err(crate::io_error)?;
@@ -350,6 +399,58 @@ pub(crate) fn load_run(
         );
     }
     Ok(records)
+}
+
+/// Sweep execution owns these fixed isolated log paths. Logs supply reporting
+/// evidence only, never completion records or resume/sealing permission. Compare
+/// subsequently validates selected configuration/task/policy/cohort bindings.
+pub(crate) fn add_sweep_logs(
+    records: &mut BTreeMap<usize, Recorded>,
+    directory: &Path,
+    configuration: &crate::benchmark::BenchmarkConfig,
+) -> Result<(), Error> {
+    let mut isolated = configuration.clone();
+    // Ignore the source benchmark's user-controlled log location: the actual
+    // sweep executor rewrites it into this isolated result directory.
+    isolated.log_file = std::path::absolute(directory.join("run.log"))
+        .map_err(crate::io_error)?
+        .to_string_lossy()
+        .into_owned();
+    // Explicit retained-grade imports/closures intentionally leave execution
+    // observations unknown. Their partial logs stay diagnostic, not competing
+    // execution evidence, and may be incomplete or malformed after interruption.
+    let logs = load_logs(&directory.join("benchmark.toml"), &isolated, |slot| {
+        !records.get(&slot).is_some_and(|record| {
+            matches!(
+                record.source,
+                "imported-official-grade" | "recovered-official-grade"
+            )
+        })
+    })?;
+    for (slot, log) in logs {
+        let declared = log.summary["replica_index"].as_u64();
+        if declared.is_some_and(|index| index != slot as u64)
+            || (configuration.concurrency > 1 && declared != Some(slot as u64))
+        {
+            return Err(invalid(
+                &log.path,
+                "latest sweep log does not match its replica slot",
+            ));
+        }
+        if let Some(recorded) = records.get_mut(&slot) {
+            // A newer/different log cannot silently borrow an older outcome's
+            // grade or cleanup. Reject conflicting observations before publish.
+            recorded.check_measurement(&log.summary)?;
+            for field in ["planning", "effective_budgets"] {
+                if let Some(value) = recorded_object(&log.summary, Some(recorded), field)? {
+                    recorded.summary[field] = value;
+                }
+            }
+        } else {
+            records.insert(slot, log);
+        }
+    }
+    Ok(())
 }
 
 pub(super) fn add_imports(
@@ -476,6 +577,31 @@ mod log_boundary_tests;
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn measurements_preserve_settlement_and_artifact_agreement() {
+        let mut record = super::Recorded {
+            path: std::path::PathBuf::from("outcome.json"),
+            summary: serde_json::json!({}),
+            workload_cleanup: true,
+            proxy_cleanup: true,
+            source: "task-outcome",
+        };
+        assert!(record.check_measurement(&serde_json::json!({})).is_ok());
+        record.summary = serde_json::json!({
+            "workload_resource_disposition":"stopped-preserved",
+            "workload_artifacts":["/owned/attempt"]});
+        assert!(record.check_measurement(&record.summary).is_ok());
+        for field in ["workload_resource_disposition", "workload_artifacts"] {
+            let mut measured = record.summary.clone();
+            measured.as_object_mut().unwrap().remove(field);
+            assert!(record.check_measurement(&measured).is_err());
+            measured[field] = serde_json::Value::Null;
+            assert!(record.check_measurement(&measured).is_err());
+        }
+        let mut measured = record.summary.clone();
+        measured["workload_resource_disposition"] = serde_json::json!("removed");
+        assert!(record.check_measurement(&measured).is_err());
+    }
     use super::*;
 
     struct Fixture {
@@ -1158,6 +1284,39 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains("duplicate actual attempt")
+        );
+    }
+
+    #[test]
+    fn settlement_diagnostics_distinguish_unconfirmed_cleanup_from_valid_unknown_state() {
+        let fixture = Fixture::new("swe-bench-lite", 1);
+        let mut record = fixture.record(1, json!(true), true, true);
+        record["workload_resource_disposition"] = json!("removed");
+        record["summary"]["workload_resource_disposition"] = json!("removed");
+        fixture.publish(1, &record);
+        assert!(load(&fixture.directory(), 1).is_ok());
+        record["workload_cleanup_confirmed"] = json!(false);
+        fixture.publish(1, &record);
+        assert!(
+            load(&fixture.directory(), 1)
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("outcome workload or proxy cleanup is unconfirmed")
+        );
+        record["workload_resource_disposition"] = Value::Null;
+        record["summary"]["workload_resource_disposition"] = Value::Null;
+        fixture.publish(1, &record);
+        let observed = load(&fixture.directory(), 1).unwrap();
+        assert!(!observed[&1].workload_cleanup);
+        record["workload_cleanup_confirmed"] = json!(true);
+        fixture.publish(1, &record);
+        assert!(
+            load(&fixture.directory(), 1)
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("resource disposition contradicts cleanup confirmation")
         );
     }
 

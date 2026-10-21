@@ -1,8 +1,13 @@
 //! Private, bounded JSON-lines transport to workload-owned execution engines.
+#[cfg(test)]
+use super::session::ResourceDisposition;
+#[cfg(test)]
+use super::task_protocol::{CompletedGrade, EventKind};
 use serde_json::Value;
-use std::io::{BufRead, BufReader, Read, Write};
-use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::mpsc::{self, Receiver};
+use std::io::Write;
+#[cfg(test)]
+use std::process::Command;
+#[cfg(test)]
 use std::time::{Duration, Instant};
 
 const MAX_MESSAGE: u64 = 1024 * 1024;
@@ -44,6 +49,70 @@ pub(crate) fn publish_asset(path: &std::path::Path, source: &str) -> Result<(), 
 pub(crate) fn publish_support(root: &std::path::Path) -> Result<(), crate::Error> {
     for (name, source) in [
         (
+            "asb_material_direct.py",
+            include_str!("../../assets/benchmarks/asb_material_direct.py"),
+        ),
+        (
+            "asb_material_shared_network.py",
+            include_str!("../../assets/benchmarks/asb_material_shared_network.py"),
+        ),
+        (
+            "asb_material_network_runtime.py",
+            include_str!("../../assets/benchmarks/asb_material_network_runtime.py"),
+        ),
+        (
+            "asb_material_network_identity.py",
+            include_str!("../../assets/benchmarks/asb_material_network_identity.py"),
+        ),
+        (
+            "asb_material_networks.py",
+            include_str!("../../assets/benchmarks/asb_material_networks.py"),
+        ),
+        (
+            "asb_terminal_session.py",
+            include_str!("../../assets/benchmarks/asb_terminal_session.py"),
+        ),
+        (
+            "asb_material_environment.py",
+            include_str!("../../assets/benchmarks/asb_material_environment.py"),
+        ),
+        (
+            "asb_material_runtime.py",
+            include_str!("../../assets/benchmarks/asb_material_runtime.py"),
+        ),
+        (
+            "asb_material_services.py",
+            include_str!("../../assets/benchmarks/asb_material_services.py"),
+        ),
+        (
+            "asb_material_declarations.py",
+            include_str!("../../assets/benchmarks/asb_material_declarations.py"),
+        ),
+        (
+            "asb_material_mounts.py",
+            include_str!("../../assets/benchmarks/asb_material_mounts.py"),
+        ),
+        (
+            "asb_material_bind_graph.py",
+            include_str!("../../assets/benchmarks/asb_material_bind_graph.py"),
+        ),
+        (
+            "asb_material_binds.py",
+            include_str!("../../assets/benchmarks/asb_material_binds.py"),
+        ),
+        (
+            "asb_material_exec.py",
+            include_str!("../../assets/benchmarks/asb_material_exec.py"),
+        ),
+        (
+            "asb_material_root.py",
+            include_str!("../../assets/benchmarks/asb_material_root.py"),
+        ),
+        (
+            "asb_material.py",
+            include_str!("../../assets/benchmarks/asb_material.py"),
+        ),
+        (
             "asb_harness.py",
             include_str!("../../assets/benchmarks/asb_harness.py"),
         ),
@@ -74,6 +143,10 @@ pub(crate) fn publish_support(root: &std::path::Path) -> Result<(), crate::Error
         (
             "asb_runtime.py",
             include_str!("../../assets/benchmarks/asb_runtime.py"),
+        ),
+        (
+            "asb_staging.py",
+            include_str!("../../assets/benchmarks/asb_staging.py"),
         ),
         (
             "asb_relay.py",
@@ -132,216 +205,30 @@ pub(crate) fn decode_base64(value: &Value) -> Result<Vec<u8>, String> {
     Ok(result)
 }
 
-pub(crate) struct Controller {
-    child: Child,
-    input: Option<ChildStdin>,
-    events: Option<Receiver<Result<Value, String>>>,
-}
-
-impl Controller {
-    pub(crate) fn spawn(command: &mut Command) -> Result<Self, String> {
-        let mut child = command
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .spawn()
-            .map_err(|error| format!("cannot start workload controller: {error}"))?;
-        let input = child.stdin.take();
-        let stdout = child.stdout.take().expect("piped controller stdout");
-        let (sender, events) = mpsc::sync_channel(8);
-        std::thread::spawn(move || {
-            let mut reader = BufReader::new(stdout);
-            loop {
-                let mut line = Vec::new();
-                let result = reader
-                    .by_ref()
-                    .take(MAX_MESSAGE + 1)
-                    .read_until(b'\n', &mut line);
-                let event = match result {
-                    Ok(0) => break,
-                    Ok(_) if line.len() as u64 > MAX_MESSAGE || !line.ends_with(b"\n") => {
-                        Err("workload controller message exceeded its framing limit".into())
-                    }
-                    Ok(_) => serde_json::from_slice(&line)
-                        .map_err(|_| "workload controller returned invalid JSON".into()),
-                    Err(_) => Err("cannot read workload controller response".into()),
-                };
-                let failed = event.is_err();
-                if sender.send(event).is_err() || failed {
-                    break;
-                }
-            }
-        });
-        Ok(Self {
-            child,
-            input,
-            events: Some(events),
-        })
-    }
-
-    pub(crate) fn send(&mut self, request: &Value) -> Result<(), String> {
-        let mut bytes =
-            serde_json::to_vec(request).map_err(|_| "cannot encode workload request")?;
-        if bytes.len() as u64 >= MAX_MESSAGE {
-            return Err("workload request exceeds 1 MiB".into());
-        }
-        bytes.push(b'\n');
-        self.input
-            .as_mut()
-            .ok_or("workload controller is closed")?
-            .write_all(&bytes)
-            .map_err(|_| "cannot send private workload request".to_owned())
-    }
-
-    pub(crate) fn receive(&mut self, deadline: Instant) -> Result<Value, String> {
-        let event = self.receive_raw(deadline)?;
-        if event.get("event").and_then(Value::as_str) == Some("error") {
-            // ExecutionError reasons are fixed local diagnostics from our
-            // engine, not arbitrary SDK HTTP bodies or request dumps.
-            if event["error_class"] == "ExecutionError"
-                && let Some(reason) = event["reason"]
-                    .as_str()
-                    .filter(|reason| reason.len() <= 512 && !reason.contains(['\n', '\r']))
-            {
-                return Err(format!("workload execution failed: {reason}"));
-            }
-            return Err("workload controller could not complete the operation; inspect the private task artifacts".into());
-        }
-        Ok(event)
-    }
-
-    fn receive_raw(&mut self, deadline: Instant) -> Result<Value, String> {
-        let event = self
-            .events
-            .as_ref()
-            .ok_or("workload controller is closed")?
-            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
-            .map_err(|error| match error {
-                mpsc::RecvTimeoutError::Timeout => {
-                    "workload controller exceeded its response deadline".to_owned()
-                }
-                mpsc::RecvTimeoutError::Disconnected => {
-                    "workload controller exited before completing its operation".to_owned()
-                }
-            })??;
-        Ok(event)
-    }
-
-    /// EOF interrupts active work; continue draining its bounded event stream
-    /// until the owner confirms teardown. Cancellation's nonzero child exit
-    /// is expected, but it never substitutes for confirmed resource quiescence.
-    pub(crate) fn cancel(&mut self, timeout: Duration) -> Result<(), String> {
-        let deadline = Instant::now() + timeout;
-        self.input.take();
-        loop {
-            if Instant::now() >= deadline {
-                return Err("workload cancellation exceeded its cleanup deadline".into());
-            }
-            let event = self.receive_raw(deadline)?;
-            if event["event"] == "closed" {
-                if !matches!(
-                    event["cleanup"].as_str(),
-                    Some("removed" | "not_created" | "stopped-preserved")
-                ) {
-                    return Err("cancelled workload cleanup did not confirm removal or stopped preservation; inspect private task cleanup artifacts".into());
-                }
-                return self.wait_for_exit(deadline, false);
-            }
-            // A command already in flight can produce output, an error or a
-            // final result before the input reader observes EOF. No payload
-            // from those discarded events is echoed to human diagnostics.
-        }
-    }
-
-    pub(crate) fn request(
-        &mut self,
-        request: Value,
-        expected: &str,
-        timeout: Duration,
-    ) -> Result<Value, String> {
-        self.send(&request)?;
-        let response = self.receive(Instant::now() + timeout)?;
-        if response.get("event").and_then(Value::as_str) != Some(expected) {
-            return Err("workload controller returned an unexpected protocol event".into());
-        }
-        Ok(response)
-    }
-
-    pub(crate) fn finish(&mut self, timeout: Duration) -> Result<(), String> {
-        let deadline = Instant::now() + timeout;
-        self.send(&serde_json::json!({"op":"close"}))?;
-        // Keep stdin open until cleanup acknowledges completion. EOF is
-        // cancellation and is only the fallback for a failed caller.
-        let response = self.receive(deadline)?;
-        if response["event"] != "closed" || response["cleanup"] != "removed" {
-            return Err("workload resource cleanup did not confirm removal; inspect private task cleanup artifacts".into());
-        }
-        self.input.take();
-        self.wait_for_exit(deadline, true)
-    }
-
-    pub(crate) fn complete_response(&mut self, deadline: Instant) -> Result<(), String> {
-        self.input.take();
-        self.wait_for_exit(deadline, true)
-    }
-
-    fn wait_for_exit(&mut self, deadline: Instant, require_success: bool) -> Result<(), String> {
-        loop {
-            if let Some(status) = self
-                .child
-                .try_wait()
-                .map_err(|_| "cannot check completed workload controller")?
-            {
-                return if status.success() || !require_success {
-                    Ok(())
-                } else {
-                    Err("workload controller failed after resource cleanup".into())
-                };
-            }
-            if Instant::now() >= deadline {
-                return Err("workload controller did not exit after resource cleanup".into());
-            }
-            std::thread::sleep(Duration::from_millis(20));
-        }
-    }
-}
-
-impl Drop for Controller {
-    fn drop(&mut self) {
-        // EOF is cancellation, including while a command/evaluator is active.
-        self.input.take();
-        self.events.take();
-        let started = Instant::now();
-        loop {
-            if self.child.try_wait().ok().flatten().is_some() {
-                return;
-            }
-            if started.elapsed() > Duration::from_secs(3) {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        #[cfg(unix)]
-        {
-            // Signal only this owned child, never a process-name match/group.
-            let _ = Command::new("kill")
-                .args(["-TERM", &self.child.id().to_string()])
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status();
-        }
-        while started.elapsed() < Duration::from_secs(15) {
-            if self.child.try_wait().ok().flatten().is_some() {
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
+#[cfg(unix)]
+#[path = "controller/unix.rs"]
+mod implementation;
+#[cfg(not(unix))]
+#[path = "controller/legacy.rs"]
+mod implementation;
+pub(crate) use implementation::Controller;
+#[cfg(test)]
+#[path = "../../tests/unit/controller_transport.rs"]
+mod transport_tests;
 
 #[cfg(test)]
 mod tests {
+    fn completed_grade() -> super::CompletedGrade {
+        let identity = crate::workloads::TaskIdentity::local("fixture", Some("task"));
+        super::CompletedGrade::decode(
+            &serde_json::json!({"event":"evaluated", "result":{
+                "workload":"fixture", "task_id":"task", "dataset":null,
+                "outcome":"unresolved", "resolved":false
+            }}),
+            &identity,
+        )
+        .unwrap()
+    }
     #[test]
     fn published_harbor_assets_import_without_the_terminal_bench_1_adapter() {
         let root = std::env::temp_dir()
@@ -418,8 +305,10 @@ mod tests {
         controller
             .receive(Instant::now() + Duration::from_secs(3))
             .unwrap();
-        controller.finish(Duration::from_secs(8)).unwrap();
-        assert!(controller.child.try_wait().unwrap().unwrap().success());
+        controller
+            .finish(completed_grade(), Duration::from_secs(8))
+            .unwrap();
+        assert!(controller.child().try_wait().unwrap().unwrap().success());
     }
 
     #[test]
@@ -439,20 +328,26 @@ mod tests {
             controller
                 .receive(Instant::now() + Duration::from_secs(3))
                 .unwrap();
-            assert!(controller.finish(Duration::from_secs(3)).is_err());
+            let result = controller.finish(completed_grade(), Duration::from_secs(3));
+            if matches!(cleanup, "not_created" | "removed") && event == "closed" {
+                let settled = result.unwrap();
+                assert!(settled.diagnostic.is_some());
+            } else {
+                assert!(result.is_err());
+            }
         }
     }
 
     #[test]
     fn cancellation_drains_inflight_events_and_waits_for_owned_cleanup() {
         let mut command = Command::new("python3");
-        command.args(["-u", "-c", "import json,sys,time\nprint(json.dumps(dict(event='ready')),flush=True)\nassert sys.stdin.read()==''\nfor event in ['output','execution_ended','completed','error']:\n print(json.dumps(dict(event=event,private='never print this')),flush=True)\ntime.sleep(3.2)\nprint(json.dumps(dict(event='closed',cleanup='removed')),flush=True)\nsys.exit(1)\n"]);
+        command.args(["-u", "-c", "import json,sys,time\nprint(json.dumps(dict(event='ready')),flush=True)\nassert sys.stdin.read()==''\nfor event in ['output','execution_ended','completed','error','future',None]:\n print(json.dumps(dict(event=event,private='never print this')),flush=True)\ntime.sleep(3.2)\nprint(json.dumps(dict(event='closed',cleanup='removed')),flush=True)\nsys.exit(1)\n"]);
         let mut controller = Controller::spawn(&mut command).unwrap();
         controller
             .receive(Instant::now() + Duration::from_secs(3))
             .unwrap();
         controller.cancel(Duration::from_secs(8)).unwrap();
-        assert!(!controller.child.try_wait().unwrap().unwrap().success());
+        assert!(!controller.child().try_wait().unwrap().unwrap().success());
     }
 
     #[test]
@@ -502,9 +397,16 @@ mod tests {
                 .receive(Instant::now() + Duration::from_secs(3))
                 .unwrap();
             if normal {
-                assert!(controller.finish(Duration::from_secs(3)).is_err());
+                let settled = controller
+                    .finish(completed_grade(), Duration::from_secs(3))
+                    .unwrap();
+                assert_eq!(settled.disposition, ResourceDisposition::StoppedPreserved);
+                assert!(settled.diagnostic.is_some());
             } else {
-                controller.cancel(Duration::from_secs(3)).unwrap();
+                assert_eq!(
+                    controller.cancel(Duration::from_secs(3)).unwrap(),
+                    ResourceDisposition::StoppedPreserved
+                );
             }
         }
     }
@@ -520,6 +422,70 @@ mod tests {
         let started = Instant::now();
         assert!(controller.cancel(Duration::from_millis(50)).is_err());
         assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[test]
+    fn acknowledged_resources_do_not_settle_before_controller_reaping() {
+        for normal in [false, true] {
+            #[cfg(target_os = "linux")]
+            let scope = crate::process_cleanup::test_support::Scope::new();
+            let mut command = Command::new("python3");
+            command.args(["-u","-c","import json,sys,time\nprint(json.dumps(dict(event='ready')),flush=True)\nsys.stdin.readline()\nprint(json.dumps(dict(event='closed',cleanup='stopped-preserved')),flush=True)\ntime.sleep(10)\n"]);
+            let mut controller = Controller::spawn(&mut command).unwrap();
+            controller
+                .receive(Instant::now() + Duration::from_secs(3))
+                .unwrap();
+            let failed = if normal {
+                controller
+                    .finish(completed_grade(), Duration::from_millis(100))
+                    .unwrap_err()
+            } else {
+                controller.cancel(Duration::from_millis(100)).unwrap_err()
+            };
+            assert!(failed.contains("did not exit"), "{failed}");
+            #[cfg(unix)]
+            {
+                // Expired bounded cleanup has already transferred the child;
+                // an acknowledgement alone cannot claim successful settlement.
+                assert!(failed.contains("retains custody"), "{failed}");
+                drop(controller);
+                #[cfg(target_os = "linux")]
+                {
+                    scope.wait_finished();
+                    assert_eq!(scope.count(), 1);
+                }
+            }
+            #[cfg(not(unix))]
+            {
+                assert!(controller.child().try_wait().unwrap().is_none());
+                controller.child().kill().unwrap();
+                controller.child().wait().unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn cancellation_reports_each_actual_disposition_only_after_reaping() {
+        for (status, expected) in [
+            ("removed", ResourceDisposition::Removed),
+            ("not_created", ResourceDisposition::NotCreated),
+            ("stopped-preserved", ResourceDisposition::StoppedPreserved),
+        ] {
+            let script = format!(
+                "import json,sys\nprint(json.dumps(dict(event='ready')),flush=True)\nassert sys.stdin.read()==''\nprint(json.dumps(dict(event='closed',cleanup='{status}')),flush=True)\nsys.exit(3)\n"
+            );
+            let mut command = Command::new("python3");
+            command.args(["-u", "-c", &script]);
+            let mut controller = Controller::spawn(&mut command).unwrap();
+            controller
+                .receive(Instant::now() + Duration::from_secs(3))
+                .unwrap();
+            assert_eq!(controller.cancel(Duration::from_secs(3)).unwrap(), expected);
+            assert_eq!(
+                controller.child().try_wait().unwrap().unwrap().code(),
+                Some(3)
+            );
+        }
     }
 
     #[test]
@@ -554,12 +520,12 @@ mod tests {
         let response = controller
             .request(
                 json!({"value":"private fixture"}),
-                "completed",
+                EventKind::Completed,
                 Duration::from_secs(5),
             )
             .unwrap();
         assert_eq!(response["value"], "private fixture");
-        let pid = controller.child.id();
+        let pid = controller.child().id();
         drop(controller);
         #[cfg(target_os = "linux")]
         assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists());
@@ -580,5 +546,66 @@ mod tests {
             assert!(!error.contains("private fixture"));
             assert!(error.contains("JSON") || error.contains("framing"));
         }
+    }
+
+    #[test]
+    fn typed_error_events_keep_local_diagnostics_but_never_expose_sdk_bodies() {
+        for (class, reason, expected) in [
+            (
+                "ExecutionError",
+                "fixed local reason".to_owned(),
+                Some("workload execution failed: fixed local reason"),
+            ),
+            ("SdkError", "private SDK response".to_owned(), None),
+            ("ExecutionError", "private\nSDK response".to_owned(), None),
+            ("ExecutionError", "private\rSDK response".to_owned(), None),
+            ("ExecutionError", "private".repeat(100), None),
+        ] {
+            let mut command = Command::new("python3");
+            command
+                .args([
+                    "-I",
+                    "-S",
+                    "-B",
+                    "-u",
+                    "-c",
+                    "import json,sys;print(sys.argv[1],flush=True);sys.stdin.read()",
+                ])
+                .arg(json!({"event":"error","error_class":class,"reason":reason}).to_string());
+            let mut controller = Controller::spawn(&mut command).unwrap();
+            let error = controller
+                .receive(Instant::now() + Duration::from_secs(3))
+                .unwrap_err();
+            match expected {
+                Some(expected) => assert_eq!(error, expected),
+                None => {
+                    assert_eq!(
+                        error,
+                        "workload controller could not complete the operation; inspect the private task artifacts"
+                    );
+                    assert!(!error.contains("private SDK"));
+                }
+            }
+            controller
+                .complete_response(Instant::now() + Duration::from_secs(3))
+                .unwrap();
+        }
+    }
+
+    #[test]
+    fn generic_transport_still_accepts_untagged_one_shot_inspection_responses() {
+        let mut command = Command::new("python3");
+        command.args(["-I", "-S", "-B", "-u", "-c",
+            "import json,sys;json.loads(sys.stdin.readline());print(json.dumps(dict(ok=True,scope='inspection')),flush=True);sys.stdin.read()"]);
+        let mut controller = Controller::spawn(&mut command).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        controller
+            .send(&json!({"reference":"fixture"}), deadline)
+            .unwrap();
+        assert_eq!(
+            controller.receive(deadline).unwrap(),
+            json!({"ok":true,"scope":"inspection"})
+        );
+        controller.complete_response(deadline).unwrap();
     }
 }

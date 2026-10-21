@@ -215,6 +215,10 @@ fn previous_real_abi_hello_is_rejected_before_new_target_wire_can_execute() {
             .to_string()
             .contains("ABI is incompatible")
     );
+    assert!(
+        !gate.admitted,
+        "malformed Hello must retain Starting cleanup without CONT"
+    );
     gate.stop().unwrap();
     drop(gate);
     scope.wait_finished();
@@ -319,6 +323,55 @@ fn managed_cancellation_quiesces_real_double_forked_term_resistant_writers() {
     );
     std::fs::write(&release, "after confirmed quiescence").unwrap();
     assert!(!late_write.exists());
+    drop(gate);
+    scope.wait_finished();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn verified_stopped_guardian_cancels_without_launching_the_application() {
+    let scope = test_support::Scope::new();
+    let root = root();
+    let marker = root.join("must-not-start");
+    let binary = std::env::current_exe()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("asb");
+    let (mut command, route) = command(
+        &binary,
+        "/bin/sh",
+        &[
+            "-c".into(),
+            "printf unsafe > \"$1\"".into(),
+            "fixture".into(),
+            marker.to_str().unwrap().into(),
+        ],
+    );
+    let admission = Admission::new(route.validate_gate(&mut command).unwrap()).unwrap();
+    let mut gate = admission.spawn().unwrap();
+    gate.wait_stopped().unwrap();
+    assert!(
+        gate.admitted,
+        "validated current gate must retain supervision while waiting for siblings"
+    );
+    let startup_deadline = gate.startup_deadline;
+    gate.wait_stopped().unwrap();
+    assert_eq!(
+        gate.startup_deadline, startup_deadline,
+        "readiness revalidation cannot restart its budget"
+    );
+    assert!(!marker.exists());
+    let pid = gate.id();
+    gate.stop().unwrap();
+    assert!(gate.receiver.quiescent.is_some());
+    assert!(
+        !marker.exists(),
+        "cancelling a stopped guardian must not start its application"
+    );
+    assert!(!Path::new(&format!("/proc/{pid}")).exists());
     drop(gate);
     scope.wait_finished();
     std::fs::remove_dir_all(root).unwrap();

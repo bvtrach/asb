@@ -1,5 +1,6 @@
 """SWE-bench-owned preparation and submission capture, using generic execution."""
 import hashlib
+import time
 from pathlib import Path
 import uuid
 
@@ -46,7 +47,9 @@ class SweBenchTask:
             base = self.row["base_commit"]
             self.checked(["git", "cat-file", "-e", base + "^{commit}"])
             # This is an ASB-owned container, never the user's host checkout.
-            self.checked(["git", "reset", "--hard", base])
+            self.checked(["git", "reset", "--hard", base], environment={
+                "GIT_COMMITTER_NAME":"ASB workload preparation",
+                "GIT_COMMITTER_EMAIL":"asb-workload@localhost"})
             self.checked(["git", "clean", "-fd"])
             observed = self.checked(["git", "rev-parse", "HEAD"]).strip().decode("ascii")
             if observed != base:
@@ -70,8 +73,8 @@ class SweBenchTask:
             self.__exit__(None, None, None)
             raise
 
-    def checked(self, argv, output_limit=256 * 1024):
-        result = self.workspace.execute(argv, timeout=60, output_limit=output_limit, cancelled=self.cancelled)
+    def checked(self, argv, output_limit=256 * 1024, environment=None):
+        result = self.workspace.execute(argv, environment=environment, timeout=60, output_limit=output_limit, cancelled=self.cancelled)
         if result["timed_out"] or result["cancelled"] or result["exit_code"] != 0 or result["output_truncated"]:
             # Command output can contain agent-controlled data. Keep diagnostics
             # structured and do not echo it into human/measurement records.
@@ -96,6 +99,44 @@ class SweBenchTask:
                       "patch_bytes": len(patch), "artifact": "candidate.patch"}
         atomic_write(self.artifacts / "submission.json", encoded(submission))
         return submission
+
+    def initial_material(self, binary=None):
+        from asb_material import MaterialError, capture_task
+        if self.invocation is None:
+            raise ExecutionError("official task must be prepared before material capture")
+        deadline = time.monotonic() + 420
+        def checked(arguments, limit=256*1024):
+            if time.monotonic() >= deadline or (self.cancelled is not None and self.cancelled.is_set()):
+                raise ExecutionError("prepared material capture was cancelled or exceeded its deadline")
+            return self.checked(arguments, limit)
+        # Index timestamps and reflogs are SDK reset artifacts. Bind the actual
+        # index entries/flags and clean base separately; retain config, hooks,
+        # attributes and all other Git/worktree bytes in the archive identity.
+        def git_state():
+            prefix = ["git", "-c", "core.fsmonitor=false"]
+            observed = checked(prefix + ["rev-parse", "HEAD"]).strip().decode("ascii")
+            if observed != self.row["base_commit"] or checked(prefix + ["status", "--porcelain", "--untracked-files=all"]).strip():
+                raise ExecutionError("prepared repository changed before material capture")
+            return {"base_commit":observed,
+                "index_sha256":hashlib.sha256(checked(prefix + ["ls-files", "--stage", "-z"], 4*1024**2)).hexdigest(),
+                "flags_sha256":hashlib.sha256(checked(prefix + ["ls-files", "-v", "-z"], 4*1024**2)).hexdigest(),
+                # Ref/index, commit, action and actor remain bound. Only raw
+                # timestamp/timezone fields are omitted; SDK reset actors are
+                # explicitly stable rather than inherited from container names.
+                "reflog_sha256":hashlib.sha256(checked(prefix + ["reflog", "show", "--all",
+                    "--format=%gD%x00%H%x00%gs%x00%gn%x00%ge%x00"], 4*1024**2)).hexdigest()}
+        before = git_state()
+        try:
+            result = capture_task(self, {"baseline":self.invocation["baseline"],
+                "dataset":self.invocation["identity"]["dataset"],"sdk":self.invocation["sdk"],"git":before},
+                exclusions=[".git/index", ".git/logs"], deadline=deadline, binary=binary)
+        except MaterialError as error:
+            raise ExecutionError(str(error)) from None
+        except Exception as error:
+            raise ExecutionError("prepared material transport failed: " + type(error).__name__) from None
+        if git_state() != before:
+            raise ExecutionError("prepared repository changed during material capture")
+        return result
 
     def __exit__(self, *_exception):
         self.interrupted = self.interrupted or bool(_exception and _exception[0] is not None)

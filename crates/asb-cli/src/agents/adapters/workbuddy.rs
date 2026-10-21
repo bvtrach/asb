@@ -12,6 +12,7 @@ pub(super) static ADAPTER: StaticAdapter = StaticAdapter::new(
     prepare_adapter,
 )
 .with_replay_credential_vars(&["CODEBUDDY_API_KEY", "CODEBUDDY_AUTH_TOKEN"])
+.with_state_environment_vars(&["CODEBUDDY_CONFIG_DIR"])
 .with_output_usage(output_usage)
 .with_step_count(step_count);
 

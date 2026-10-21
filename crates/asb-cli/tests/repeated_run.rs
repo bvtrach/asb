@@ -1,0 +1,887 @@
+//! Provider-free real CLI qualification of fresh repeated execution.
+#![cfg(unix)]
+mod support;
+use serde_json::{Value, json};
+use std::fs;
+use std::path::PathBuf;
+use std::process::{Command, Output};
+use support::IsolatedEnvironment;
+
+struct Project(PathBuf);
+impl Project {
+    fn new() -> Self {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let path = std::env::temp_dir().join(format!(
+            "asb-repeated-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(path.join(".asb")).unwrap();
+        fs::write(
+            path.join(".asb/project.toml"),
+            "tools_dir='tools'\nworkloads_dir='workloads'\nworkspace_dir='workspace'\n",
+        )
+        .unwrap();
+        fs::create_dir(path.join("workloads")).unwrap();
+        fs::write(
+            path.join("workloads/bug-fix.txt"),
+            "Repair src/parser.py so parse_path ignores empty components.",
+        )
+        .unwrap();
+        fs::create_dir(path.join("workspace")).unwrap();
+        fs::write(
+            path.join("workspace/preserve-user-file"),
+            "untouched user material",
+        )
+        .unwrap();
+        let body = json!({"model":"fixture","tools":[{"type":"function","function":{"name":"fixture","parameters":{"type":"object"}}}],"messages":[]});
+        fs::write(path.join("input.jsonl"), format!("{}\n",json!({"request":{"method":"POST","url":"/v1/chat/completions","body":body.to_string()},"response":{"status":200,"headers":{"content-type":"application/json"},"body":"{}"}}))).unwrap();
+        let script = path.join("fixture-agent");
+        fs::write(&script, r##"#!/usr/bin/env python3
+import json, os, pathlib, sys, time, urllib.request
+root = pathlib.Path(__file__).parent
+workspace = pathlib.Path.cwd()
+batch = int(workspace.parent.name.split('-')[-1])
+replica = int(workspace.name.split('-')[-1]) if '-concurrency-' in workspace.name else 1
+before = (workspace/'src/parser.py').read_text()
+runtime = pathlib.Path(str(workspace)+'.asb-agent-runtime')
+runtime.mkdir(exist_ok=True)
+(runtime/'session').write_text(str(os.getpid()))
+start = time.monotonic_ns()
+(root/f'barrier-{batch}-{replica}').write_text('ready')
+expected = int((root/'expected-concurrency').read_text())
+deadline = time.monotonic()+5
+while not all((root/f'barrier-{batch}-{index}').exists() for index in range(1,expected+1)):
+    assert time.monotonic()<deadline, 'replicas did not overlap'
+    time.sleep(.005)
+body = {'model':'fixture','tools':[{'type':'function','function':{'name':'fixture','parameters':{'type':'object'}}}],'messages':[]}
+url = os.environ['ASB_PROVIDER_BASE_URL'].rstrip('/')
+if url.endswith('/v1'): url = url[:-3]
+with urllib.request.urlopen(urllib.request.Request(url+'/v1/chat/completions',data=json.dumps(body).encode(),headers={'Content-Type':'application/json'}),timeout=5) as response:
+    assert response.status == 200
+time.sleep(.06)
+(workspace/'src/parser.py').write_text("def parse_path(value: str) -> list[str]:\n    return [segment for segment in value.split('/') if segment]\n")
+row = json.dumps({'batch':batch,'replica':replica,'workspace':str(workspace),'before':before,'runtime':str(runtime),'start':start,'end':time.monotonic_ns()})+'\n'
+fd = os.open(root/'attempts.jsonl',os.O_WRONLY|os.O_CREAT|os.O_APPEND,0o600)
+os.write(fd,row.encode()); os.close(fd)
+if batch == 1 and replica == 1:
+    if (root/'block-outcome-first').exists(): (workspace.parent/'.asb-completions').write_text('retain this blocking fixture')
+    if (root/'grader-error-first').exists(): (workspace/'src/parser.py').write_bytes(bytes([255]))
+    if (root/'false-grade-first').exists(): (workspace/'src/parser.py').write_text(before)
+    if (root/'mutate-source').exists(): (root/'input.jsonl').write_text('changed after planning')
+    if (root/'mutate-prompt').exists(): (root/'workloads/bug-fix.txt').write_text('Changed instructions must not launch another batch.')
+    if (root/'capture-overflow-first').exists(): sys.stdout.buffer.write(b'x'*(9*1024*1024)); sys.stdout.buffer.flush()
+sys.exit(7 if (root/'fail-first').exists() and batch == 1 and replica == 1 else 0)
+"##).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
+        Self(path)
+    }
+    fn config(&self, concurrency: usize) {
+        fs::write(self.0.join("expected-concurrency"), concurrency.to_string()).unwrap();
+        fs::write(self.0.join("benchmark.toml"),format!("agent='{}'\nprovider='fixture'\nmodel='fixture'\nworkload='bug-fix'\nworkspace='workspace'\nlog_file='original.log'\nconcurrency={concurrency}\n",self.0.join("fixture-agent").display())).unwrap();
+    }
+    fn run(&self, repeat: &str) -> Output {
+        self.run_extra(repeat, &[])
+    }
+    fn run_extra(&self, repeat: &str, extra: &[&str]) -> Output {
+        Command::new(env!("CARGO_BIN_EXE_asb"))
+            .current_dir(&self.0)
+            .isolated_env()
+            .env("HOME", &self.0)
+            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+            .args([
+                "run",
+                "benchmark.toml",
+                "--replay",
+                "--cassette",
+                "input.jsonl",
+                "--repeat",
+                repeat,
+                "--json",
+            ])
+            .args(extra)
+            .output()
+            .unwrap()
+    }
+}
+impl Drop for Project {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+fn records(bytes: &[u8]) -> Vec<Value> {
+    String::from_utf8_lossy(bytes)
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect()
+}
+
+#[test]
+fn missing_optional_outcome_keeps_grade_but_stops_repeated_batch_admission() {
+    let project = Project::new();
+    project.config(1);
+    fs::write(
+        project.0.join("block-outcome-first"),
+        "inject outcome storage failure",
+    )
+    .unwrap();
+    let output = project.run("2");
+    assert!(!output.status.success());
+    let rows = records(&output.stdout);
+    let summaries: Vec<_> = rows
+        .iter()
+        .filter(|row| row.get("process_success").is_some())
+        .collect();
+    assert_eq!(summaries.len(), 1, "{rows:?}");
+    assert_eq!(summaries[0]["process_success"], true);
+    assert_eq!(summaries[0]["workload_success"], true);
+    assert!(
+        rows.iter().any(|row| row["event"] == "continuation_warning"
+            && row["code"] == "task_outcome_unavailable")
+    );
+    assert_eq!(
+        fs::read_to_string(project.0.join("attempts.jsonl"))
+            .unwrap()
+            .lines()
+            .count(),
+        1
+    );
+    assert!(!project.0.join("barrier-2-1").exists());
+}
+
+#[test]
+fn incomplete_capture_preserves_file_grades_but_cannot_admit_another_batch() {
+    for grade in [true, false] {
+        let project = Project::new();
+        project.config(2);
+        fs::write(
+            project.0.join("capture-overflow-first"),
+            "overflow one admitted slot",
+        )
+        .unwrap();
+        if !grade {
+            fs::write(
+                project.0.join("false-grade-first"),
+                "retain independently failed file grade",
+            )
+            .unwrap();
+        }
+        let output = project.run("2");
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("capture limit"));
+        let rows = records(&output.stdout);
+        let summaries: Vec<_> = rows
+            .iter()
+            .filter(|row| row.get("task").is_some())
+            .collect();
+        assert_eq!(summaries.len(), 2, "the admitted sibling must finish");
+        let failed = summaries
+            .iter()
+            .find(|row| row["execution"]["replica"] == 1)
+            .unwrap();
+        // Whole-stream agent success is unknown after incomplete capture even
+        // though the independent file evaluator still returns its own grade.
+        assert_eq!(failed["process_success"], false);
+        assert_eq!(failed["workload_success"], grade);
+        assert_eq!(failed["failure_kind"], "run_error");
+        assert_eq!(failed["workload_resource_disposition"], "not-required");
+        assert!(
+            failed["failure_reason"]
+                .as_str()
+                .unwrap()
+                .contains("capture limit")
+        );
+        let campaign = PathBuf::from(rows[0]["path"].as_str().unwrap())
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        assert!(!campaign.join("batch-2").exists());
+        assert!(!campaign.join("batch-1/outcomes/1.json").exists());
+        assert!(campaign.join("batch-1/outcomes/2.json").is_file());
+        assert!(!campaign.join(".checkpoint").exists());
+        let log: Value = serde_json::from_slice(
+            &fs::read(campaign.join("batch-1/run-concurrency-1.jsonl")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(log["workload_success"], grade);
+        assert_eq!(log["failure_kind"], "run_error");
+        assert_eq!(
+            log["workload_resource_disposition"],
+            failed["workload_resource_disposition"]
+        );
+        assert_eq!(log["workload_artifacts"], failed["workload_artifacts"]);
+        let finished: Value =
+            serde_json::from_slice(&fs::read(campaign.join("finished.json")).unwrap()).unwrap();
+        assert_eq!(finished["stopped"], true);
+        assert_eq!(
+            fs::read_to_string(project.0.join("attempts.jsonl"))
+                .unwrap()
+                .lines()
+                .count(),
+            2
+        );
+        assert!(!project.0.join("barrier-2-1").exists());
+        let private = campaign.join("batch-1/.asb-completions");
+        for entry in fs::read_dir(private).unwrap() {
+            let record: Value =
+                serde_json::from_slice(&fs::read(entry.unwrap().path()).unwrap()).unwrap();
+            assert_ne!(record["summary"]["execution"]["replica"], 1);
+        }
+    }
+}
+
+#[test]
+fn unknown_grading_outcome_remains_null_and_later_fresh_batches_continue() {
+    let project = Project::new();
+    project.config(2);
+    fs::write(
+        project.0.join("grader-error-first"),
+        "inject invalid evaluator input",
+    )
+    .unwrap();
+    let output = project.run("2");
+    assert!(!output.status.success());
+    let rows = records(&output.stdout);
+    assert_eq!(rows.len(), 5, "{}", String::from_utf8_lossy(&output.stderr));
+    let failed = &rows[1];
+    assert_eq!(failed["process_success"], true);
+    assert!(failed["workload_success"].is_null());
+    assert!(failed["success_rate"].is_null());
+    assert_eq!(failed["failure_kind"], "grader_error");
+    assert_eq!(failed["workload_resource_disposition"], "not-required");
+    let mut attempts = std::collections::BTreeSet::new();
+    for row in &rows[1..] {
+        assert!(attempts.insert(row["task"]["attempt_id"].as_str().unwrap()));
+        assert_eq!(row["process_success"], true);
+    }
+    assert_eq!(attempts.len(), 4);
+    assert!(rows[2..].iter().all(|row| row["workload_success"] == true));
+    let campaign = PathBuf::from(rows[0]["path"].as_str().unwrap())
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    let finished: Value =
+        serde_json::from_slice(&fs::read(campaign.join("finished.json")).unwrap()).unwrap();
+    assert_eq!(finished["completed_batches"], 2);
+    assert_eq!(finished["failed_batches"], 1);
+    assert_eq!(finished["stopped"], false);
+}
+
+#[test]
+fn repeated_native_clients_have_fresh_home_xdg_and_temporary_state() {
+    let project = Project::new();
+    project.config(2);
+    let state_names = [
+        "HOME",
+        "XDG_CONFIG_HOME",
+        "XDG_DATA_HOME",
+        "XDG_CACHE_HOME",
+        "XDG_STATE_HOME",
+        "XDG_RUNTIME_DIR",
+        "TMPDIR",
+    ];
+    let script = project.0.join("fixture-agent");
+    let original = fs::read_to_string(&script).unwrap();
+    let check = r#"
+names = ['HOME','XDG_CONFIG_HOME','XDG_DATA_HOME','XDG_CACHE_HOME','XDG_STATE_HOME','XDG_RUNTIME_DIR','TMPDIR']
+(root/f'state-observed-{batch}-{replica}.json').write_text(json.dumps({name:os.environ.get(name) for name in names}))
+state = {}
+for name in names:
+    directory = pathlib.Path(os.environ[name])
+    assert directory.is_absolute() and directory != root/'parent-state'/name, 'inherited mutable state: '+name
+    assert directory != root and workspace not in directory.parents, 'state must be outside workload'
+    assert directory.is_dir() and directory.stat().st_mode & 0o777 == 0o700, 'private state directory required'
+    assert not list(directory.iterdir()), 'state was not fresh: '+name
+    (directory/'owned-session').write_text(str(os.getpid()))
+    state[name] = str(directory)
+assert os.environ['ASB_MODEL'] == 'fixture', 'model configuration lost'
+assert all(name not in os.environ for name in ['CODEX_HOME','PI_CODING_AGENT_DIR','HERMES_HOME','CODEX_SESSION_ID']), 'parent agent state leaked'
+(root/f'state-{batch}-{replica}.json').write_text(json.dumps(state))
+"#;
+    let modified = original
+        .replace(
+            "before = (workspace/",
+            &format!("{check}\nbefore = (workspace/"),
+        )
+        .replace("runtime.mkdir()", "runtime.mkdir(exist_ok=True)");
+    assert_ne!(modified, original);
+    fs::write(&script, modified).unwrap();
+    let mut command = Command::new(env!("CARGO_BIN_EXE_asb"));
+    command
+        .current_dir(&project.0)
+        .isolated_env()
+        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+        .env("CODEX_HOME", project.0.join("parent-state/CODEX_HOME"))
+        .env(
+            "PI_CODING_AGENT_DIR",
+            project.0.join("parent-state/PI_CODING_AGENT_DIR"),
+        )
+        .env("HERMES_HOME", project.0.join("parent-state/HERMES_HOME"))
+        .env("CODEX_SESSION_ID", "parent-session-fixture")
+        .args([
+            "run",
+            "benchmark.toml",
+            "--replay",
+            "--cassette",
+            "input.jsonl",
+            "--repeat",
+            "2",
+            "--json",
+        ]);
+    for name in state_names {
+        let directory = project.0.join("parent-state").join(name);
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(directory.join("parent-marker"), "preserve inherited state").unwrap();
+        command.env(name, directory);
+    }
+    let output = command.output().unwrap();
+    let observed = fs::read_to_string(project.0.join("state-observed-1-1.json")).unwrap();
+    assert!(
+        output.status.success(),
+        "observed state={observed}\nstdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let mut roots = std::collections::BTreeSet::new();
+    for batch in 1..=2 {
+        for replica in 1..=2 {
+            let state: Value = serde_json::from_slice(
+                &fs::read(project.0.join(format!("state-{batch}-{replica}.json"))).unwrap(),
+            )
+            .unwrap();
+            for name in state_names {
+                assert!(
+                    roots.insert(state[name].as_str().unwrap().to_owned()),
+                    "shared state path"
+                );
+            }
+        }
+    }
+    assert_eq!(roots.len(), 28);
+    for name in state_names {
+        let directory = project.0.join("parent-state").join(name);
+        assert_eq!(
+            fs::read_to_string(directory.join("parent-marker")).unwrap(),
+            "preserve inherited state"
+        );
+        assert_eq!(fs::read_dir(directory).unwrap().count(), 1);
+    }
+}
+
+#[test]
+fn measurement_overrides_never_choose_perfetto_authority_from_output_location() {
+    use std::os::unix::fs::PermissionsExt;
+    let project = Project::new();
+    let foreign = Project::new();
+    let outside = Project::new();
+    // A writable non-project destination, and a destination under a differently
+    // configured project, must both retain the benchmark's own authority.
+    fs::remove_file(outside.0.join(".asb/project.toml")).unwrap();
+    fs::write(
+        foreign.0.join(".asb/project.toml"),
+        "perfetto_instances=['foreign-instance']\n",
+    )
+    .unwrap();
+    project.config(2);
+    let path = project.0.join("benchmark.toml");
+    let config = fs::read_to_string(&path).unwrap();
+    fs::write(&path, format!("{config}\n[measurements]\nenabled=true\ndirectory='measurements'\ncollectors=['perfetto']\n")).unwrap();
+    let tools = project.0.join("tools/perfetto/bin");
+    fs::create_dir_all(&tools).unwrap();
+    for name in ["tracebox", "trace_processor_shell"] {
+        let path = tools.join(name);
+        fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    for destination in [
+        outside.0.join("measurements"),
+        foreign.0.join("measurements"),
+    ] {
+        let output = project.run_extra("2", &["--measurements", destination.to_str().unwrap()]);
+        assert!(!output.status.success());
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            error.contains("Perfetto needs delegated, isolated tracefs instances"),
+            "{error}"
+        );
+        assert!(!error.contains("configuration does not belong"), "{error}");
+        assert!(!project.0.join("attempts.jsonl").exists());
+        assert!(!foreign.0.join(".asb/perfetto").exists());
+        assert!(!outside.0.join(".asb/perfetto").exists());
+    }
+}
+
+#[test]
+fn legacy_native_run_keeps_explicit_parent_home_and_xdg_state() {
+    let project = Project::new();
+    project.config(1);
+    fs::write(project.0.join("fixture-agent"),r#"#!/usr/bin/env python3
+import json,os,pathlib,urllib.request
+root=pathlib.Path(__file__).parent
+(root/'legacy-state.json').write_text(json.dumps({name:os.environ.get(name) for name in ['HOME','XDG_STATE_HOME']}))
+body={'model':'fixture','tools':[{'type':'function','function':{'name':'fixture','parameters':{'type':'object'}}}],'messages':[]}
+url=os.environ['ASB_PROVIDER_BASE_URL'].rstrip('/')
+if url.endswith('/v1'): url=url[:-3]
+with urllib.request.urlopen(urllib.request.Request(url+'/v1/chat/completions',data=json.dumps(body).encode(),headers={'Content-Type':'application/json'}),timeout=5) as response:
+    assert response.status==200
+pathlib.Path('src/parser.py').write_text("def parse_path(value: str) -> list[str]:\n    return [segment for segment in value.split('/') if segment]\n")
+"#).unwrap();
+    let state = project.0.join("parent-xdg");
+    fs::create_dir(&state).unwrap();
+    fs::write(state.join("preserve"), "parent state").unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_asb"))
+        .current_dir(&project.0)
+        .isolated_env()
+        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+        .env("HOME", &project.0)
+        .env("XDG_STATE_HOME", &state)
+        .args([
+            "run",
+            "benchmark.toml",
+            "--replay",
+            "--cassette",
+            "input.jsonl",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let observed: Value =
+        serde_json::from_slice(&fs::read(project.0.join("legacy-state.json")).unwrap()).unwrap();
+    assert_eq!(observed["HOME"], project.0.to_str().unwrap());
+    assert_eq!(observed["XDG_STATE_HOME"], state.to_str().unwrap());
+    assert_eq!(
+        fs::read_to_string(state.join("preserve")).unwrap(),
+        "parent state"
+    );
+}
+
+#[test]
+fn repeats_fresh_batches_preserve_users_collect_all_outcomes_and_continue_ordinary_failures() {
+    let project = Project::new();
+    project.config(2);
+    fs::write(project.0.join("fail-first"), "fixture").unwrap();
+    let output = project.run("3");
+    assert!(!output.status.success());
+    let out = String::from_utf8_lossy(&output.stdout);
+    let err = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        err.contains("1 failed batch(es)"),
+        "stdout={out} stderr={err}"
+    );
+    let attempts = records(&fs::read(project.0.join("attempts.jsonl")).unwrap());
+    assert_eq!(attempts.len(), 6);
+    let initial = attempts[0]["before"].as_str().unwrap();
+    assert!(initial.contains("split"));
+    assert!(attempts.iter().all(|row| row["before"] == initial));
+    let paths: std::collections::BTreeSet<_> = attempts
+        .iter()
+        .map(|row| row["workspace"].as_str().unwrap())
+        .collect();
+    assert_eq!(paths.len(), 6);
+    for batch in 1..3 {
+        let previous = attempts
+            .iter()
+            .filter(|row| row["batch"] == batch)
+            .map(|row| row["end"].as_u64().unwrap())
+            .max()
+            .unwrap();
+        let next = attempts
+            .iter()
+            .filter(|row| row["batch"] == batch + 1)
+            .map(|row| row["start"].as_u64().unwrap())
+            .min()
+            .unwrap();
+        assert!(previous < next);
+    }
+    for batch in 1..=3 {
+        let latest_start = attempts
+            .iter()
+            .filter(|row| row["batch"] == batch)
+            .map(|row| row["start"].as_u64().unwrap())
+            .max()
+            .unwrap();
+        let earliest_end = attempts
+            .iter()
+            .filter(|row| row["batch"] == batch)
+            .map(|row| row["end"].as_u64().unwrap())
+            .min()
+            .unwrap();
+        assert!(
+            latest_start < earliest_end,
+            "batch {batch} replicas must overlap"
+        );
+    }
+    let rows = records(&output.stdout);
+    assert_eq!(rows.len(), 7);
+    assert_eq!(rows[0]["type"], "execution-plan");
+    let root = PathBuf::from(rows[0]["path"].as_str().unwrap());
+    let plan: Value = serde_json::from_slice(&fs::read(&root).unwrap()).unwrap();
+    assert_eq!(plan["slots"].as_array().unwrap().len(), 6);
+    assert_eq!(plan["replay_inputs"].as_array().unwrap().len(), 1);
+    let root = root.parent().unwrap();
+    for (index, row) in rows[1..].iter().enumerate() {
+        assert_eq!(row["execution"]["slot"], index + 1);
+        assert_eq!(row["workload_success"], true);
+        assert_eq!(row["execution"]["total"], 6);
+        assert_eq!(row["planning"]["repetition"]["index"], index / 2 + 1);
+        assert_eq!(row["planning"]["repetition"]["total"], 3);
+        assert_eq!(row["execution"]["admission"], plan["admission"]);
+        assert_eq!(
+            row["execution_plan_fingerprint"],
+            rows[1]["execution_plan_fingerprint"]
+        );
+        let policy: Value =
+            serde_json::from_slice(&fs::read(row["execution_plan"].as_str().unwrap()).unwrap())
+                .unwrap();
+        assert_eq!(policy["policy"], row["planning"]);
+    }
+    assert_eq!(plan["admission"]["material_seconds"], 1800);
+    assert_eq!(plan["admission"]["launch_seconds"], 1800);
+    for batch in 1..=3 {
+        assert!(root.join(format!("batch-{batch}/prepared.json")).is_file());
+        assert_eq!(
+            fs::read_dir(root.join(format!("batch-{batch}/outcomes")))
+                .unwrap()
+                .count(),
+            2
+        );
+    }
+    assert_eq!(
+        fs::read_to_string(project.0.join("workspace/preserve-user-file")).unwrap(),
+        "untouched user material"
+    );
+    assert_eq!(
+        fs::read_dir(project.0.join("workspace")).unwrap().count(),
+        1
+    );
+    assert!(!project.0.join("original.log").exists());
+}
+
+#[test]
+fn repeated_execution_rejects_conflicting_manual_identity_and_invalid_policy_before_publication() {
+    for extra in [
+        "[planning.repetition]\nindex=2\ntotal=3\n",
+        "[planning]\nrequired_policies=['not-enforceable']\n",
+    ] {
+        let project = Project::new();
+        project.config(2);
+        let config = project.0.join("benchmark.toml");
+        fs::write(
+            &config,
+            format!("{}{extra}", fs::read_to_string(&config).unwrap()),
+        )
+        .unwrap();
+        let output = project.run("2");
+        assert!(!output.status.success());
+        assert!(
+            output.stdout.is_empty(),
+            "{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        assert!(!project.0.join("results").exists());
+        assert!(!project.0.join("attempts.jsonl").exists());
+        assert!(!project.0.join(".asb/execution-plans").exists());
+    }
+}
+
+#[test]
+fn repeated_native_clients_obey_selected_execution_cap_without_stopping_later_batches() {
+    let project = Project::new();
+    project.config(2);
+    let config = project.0.join("benchmark.toml");
+    fs::write(
+        &config,
+        format!(
+            "{}[planning.budgets]\nexecution_seconds=1\n",
+            fs::read_to_string(&config).unwrap()
+        ),
+    )
+    .unwrap();
+    let client = project.0.join("fixture-agent");
+    fs::write(
+        &client,
+        fs::read_to_string(&client)
+            .unwrap()
+            .replace("time.sleep(.06)", "time.sleep(5)"),
+    )
+    .unwrap();
+    let output = project.run("2");
+    assert!(!output.status.success());
+    let rows = records(&output.stdout);
+    assert_eq!(rows.len(), 5, "{}", String::from_utf8_lossy(&output.stderr));
+    for row in &rows[1..] {
+        assert_eq!(row["planning"]["budgets"]["execution_seconds"], 1);
+        assert_eq!(row["effective_budgets"]["execution_seconds"], 1.0);
+        assert_eq!(row["process_success"], false);
+        assert_eq!(row["workload_success"], false);
+        assert!(row["elapsed_ms"].as_u64().unwrap() < 5000);
+    }
+    let campaign = PathBuf::from(rows[0]["path"].as_str().unwrap());
+    let finished: Value = serde_json::from_slice(
+        &fs::read(campaign.parent().unwrap().join("finished.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(finished["completed_batches"], 2);
+    assert_eq!(finished["stopped"], false);
+}
+
+#[test]
+fn replay_inputs_are_bound_and_private_even_when_original_changes_between_batches() {
+    let project = Project::new();
+    project.config(2);
+    let original = fs::read(project.0.join("input.jsonl")).unwrap();
+    fs::write(project.0.join("mutate-source"), "fixture").unwrap();
+    let output = project.run("2");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let rows = records(&output.stdout);
+    let path = PathBuf::from(rows[0]["path"].as_str().unwrap());
+    let plan: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    assert_eq!(
+        plan["replay_inputs"][0]["sha256"],
+        asb_cli::cassette::digest(&original)
+    );
+    assert_eq!(plan["replay_inputs"][0]["bytes"], original.len());
+    let private = path
+        .parent()
+        .unwrap()
+        .join(plan["replay_inputs"][0]["private"].as_str().unwrap());
+    assert_eq!(fs::read(private).unwrap(), original);
+    assert_ne!(fs::read(project.0.join("input.jsonl")).unwrap(), original);
+    assert_eq!(
+        records(&fs::read(project.0.join("attempts.jsonl")).unwrap()).len(),
+        4
+    );
+}
+
+#[test]
+fn changed_prompt_stops_later_agents_and_preparation_errors_retain_actionable_reason() {
+    for first_batch_failure in [false, true] {
+        let project = Project::new();
+        project.config(2);
+        if first_batch_failure {
+            fs::write(project.0.join("workloads/bug-fix.txt"), [255]).unwrap();
+        } else {
+            fs::write(project.0.join("mutate-prompt"), "fixture").unwrap();
+        }
+        let output = project.run("3");
+        assert!(!output.status.success());
+        let expected = if first_batch_failure {
+            "UTF-8"
+        } else {
+            "differs within/across batches"
+        };
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains(expected),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let rows = records(&output.stdout);
+        let plan = PathBuf::from(rows[0]["path"].as_str().unwrap());
+        let root = plan.parent().unwrap();
+        let failed_batch = if first_batch_failure { 1 } else { 2 };
+        let finished: Value = serde_json::from_slice(
+            &fs::read(root.join(format!("batch-{failed_batch}/finished.json"))).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            finished["failure_reason"]
+                .as_str()
+                .unwrap()
+                .contains(expected)
+        );
+        assert_eq!(finished["stopped"], true);
+        assert!(!root.join(format!("batch-{}/", failed_batch + 1)).exists());
+        if first_batch_failure {
+            assert!(!project.0.join("attempts.jsonl").exists());
+        } else {
+            assert_eq!(
+                records(&fs::read(project.0.join("attempts.jsonl")).unwrap()).len(),
+                2
+            );
+        }
+    }
+}
+
+#[test]
+fn measurement_override_only_relocates_measurement_outputs() {
+    let project = Project::new();
+    project.config(1);
+    let output = project.run_extra("1", &["--measurements", "alternate-measurements"]);
+    assert!(
+        output.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let rows = records(&output.stdout);
+    let path = PathBuf::from(rows[0]["path"].as_str().unwrap());
+    assert!(path.starts_with(project.0.join("results/asb-executions")));
+    let plan: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    let measurements = PathBuf::from(plan["measurement_root"].as_str().unwrap());
+    assert!(measurements.starts_with(project.0.join("alternate-measurements")));
+    assert!(measurements.join("batch-1/measurements/run.json").is_file());
+    assert!(!measurements.join("batch-1/workspace").exists());
+    assert!(
+        path.parent()
+            .unwrap()
+            .join("batch-1/workspace/src/parser.py")
+            .is_file()
+    );
+}
+
+#[test]
+fn sparse_legacy_replica_64_is_resolved_bound_and_replayed() {
+    let project = Project::new();
+    project.config(2);
+    fs::rename(
+        project.0.join("input.jsonl"),
+        project.0.join("input-concurrency-64.jsonl"),
+    )
+    .unwrap();
+    let output = project.run("1");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let rows = records(&output.stdout);
+    let plan: Value =
+        serde_json::from_slice(&fs::read(rows[0]["path"].as_str().unwrap()).unwrap()).unwrap();
+    assert!(
+        plan["replay_inputs"][0]["source"]
+            .as_str()
+            .unwrap()
+            .ends_with("input-concurrency-64.jsonl")
+    );
+    assert_eq!(plan["slots"][0]["replay_input"], 0);
+    assert_eq!(plan["slots"][1]["replay_input"], 0);
+    assert_eq!(rows.len(), 3);
+}
+
+#[test]
+fn closed_output_stops_admission_after_joining_the_current_batch() {
+    closed_output_stops_admission(false);
+}
+
+#[test]
+fn closed_output_with_grader_failure_stops_after_joining_the_current_batch() {
+    closed_output_stops_admission(true);
+}
+
+fn closed_output_stops_admission(grader_failure: bool) {
+    use std::io::BufRead;
+    use std::process::Stdio;
+    let project = Project::new();
+    project.config(2);
+    if grader_failure {
+        fs::write(
+            project.0.join("grader-error-first"),
+            "inject grader failure",
+        )
+        .unwrap();
+    }
+    let mut child = Command::new(env!("CARGO_BIN_EXE_asb"))
+        .current_dir(&project.0)
+        .isolated_env()
+        .env("HOME", &project.0)
+        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+        .args([
+            "run",
+            "benchmark.toml",
+            "--replay",
+            "--cassette",
+            "input.jsonl",
+            "--repeat",
+            "3",
+            "--json",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut source = std::io::BufReader::new(child.stdout.take().unwrap());
+    let mut line = String::new();
+    source.read_line(&mut line).unwrap();
+    let event: Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(event["type"], "execution-plan");
+    drop(source);
+    let output = child.wait_with_output().unwrap();
+    assert!(!output.status.success());
+    let path = PathBuf::from(event["path"].as_str().unwrap());
+    let root = path.parent().unwrap();
+    let finished: Value =
+        serde_json::from_slice(&fs::read(root.join("batch-1/finished.json")).unwrap()).unwrap();
+    assert_eq!(finished["stopped"], true);
+    assert!(!root.join("batch-2").exists());
+    assert_eq!(
+        records(&fs::read(project.0.join("attempts.jsonl")).unwrap()).len(),
+        2
+    );
+    assert_eq!(
+        fs::read_dir(root.join("batch-1/outcomes")).unwrap().count(),
+        2
+    );
+    if grader_failure {
+        let summaries: Vec<Value> = fs::read_dir(root.join("batch-1/outcomes"))
+            .unwrap()
+            .map(|entry| {
+                let link: Value =
+                    serde_json::from_slice(&fs::read(entry.unwrap().path()).unwrap()).unwrap();
+                let outcome: Value = serde_json::from_slice(
+                    &fs::read(root.join(link["path"].as_str().unwrap())).unwrap(),
+                )
+                .unwrap();
+                outcome["summary"].clone()
+            })
+            .collect();
+        assert_eq!(
+            summaries
+                .iter()
+                .filter(|row| row["failure_kind"] == "grader_error"
+                    && row["workload_success"].is_null())
+                .count(),
+            1
+        );
+    }
+}
+
+#[test]
+fn explicit_one_is_fresh_and_invalid_products_publish_nothing() {
+    let project = Project::new();
+    project.config(1);
+    let output = project.run("1");
+    assert!(
+        output.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        records(&fs::read(project.0.join("attempts.jsonl")).unwrap()).len(),
+        1
+    );
+    assert_eq!(
+        fs::read_dir(project.0.join("workspace")).unwrap().count(),
+        1
+    );
+    let invalid = Project::new();
+    invalid.config(64);
+    for repeat in ["0", "1024", "18446744073709551615"] {
+        assert!(!invalid.run(repeat).status.success());
+        assert!(!invalid.0.join("results").exists());
+        assert!(!invalid.0.join("attempts.jsonl").exists());
+    }
+}

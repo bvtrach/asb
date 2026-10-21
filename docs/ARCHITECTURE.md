@@ -48,7 +48,39 @@ ASB is deliberately split into a small CLI and a file-backed workload directory:
   configured `tools_dir`, `workloads_dir`, and `workspace_dir`;
   every command resolves relative paths from this project root;
 - `runner`: configuration loading, bounded agent-output logging, and live agent
-  process execution;
+  process execution. Its common child-pipe pump owns both readers without
+  reader threads or an output queue. Each stream retains at most 8 MiB while
+  continuing to drain excess; two 16 KiB read buffers and bounded batches keep
+  aggregate capture/working storage bounded during execution. These are evidence
+  prefixes, not whole-stream totals or diagnostic tails; the existing 1 MiB
+  persisted-log prefix is a separate presentation budget. Interrupted reads retry;
+  permanent read errors are never EOF. Execution, one-second post-exit draining
+  and six-second direct-child cleanup have separate absolute deadlines. The
+  owned child's confirmed exit freezes execution timing before pump drain work;
+  native gates retain their existing quiescence-confirmed exit boundary.
+  Direct-child fallback custody is established before spawn, including for
+  unwinding; uncertain cleanup transfers the owned child rather than waiting
+  indefinitely or dropping it. Native gate admission and descendant ownership
+  remain separate. Incomplete capture is an operational failure that withholds
+  continuation receipts, not a replacement official grade. It suppresses
+  transcript-derived answer/usage/step assertions while retaining independently
+  collected adapter artifacts and actually validated cassette accounting.
+  Unix readers use nonblocking descriptors; Windows has a private-pipe
+  availability pump, source-reviewed but not runtime-qualified on Linux.
+  Other std platforms fail before direct spawn until a cancellable pipe backend
+  exists. Arbitrary borrowed `Write` implementations remain caller-controlled
+  and can block inside a write: there is no claim of hard cancellation there.
+  The Unix quiescent guest route instead owns deadline-aware duplicates of its
+  controller pipe/socket endpoints; it rejects terminals/regular files before
+  changing flags, restores the shared file-description flags on destruction,
+  and cancels on transport failure. The controller owns only the opposite read
+  ends; no unrelated producer shares these private write descriptions. Native
+  presentation errors preserve evidence. Non-Unix guest presentation still has
+  the borrowed-writer limitation. Retained ThroughEvaluation service lifetime
+  and its existing bounded capture/ownership are unchanged. Shared native launch
+  failures notify waiting peers before bounded child settlement. Repeated
+  execution cannot admit another batch from an incomplete captured slot, even
+  when an independent file grade and sibling outcome are available;
 - `compare`: offline reports use explicit loaded, globally validated, prepared,
   rendered and published phases. Stable row identities and typed result sources
   bind original evaluation evidence; preparation computes population coverage
@@ -452,7 +484,47 @@ boundary with actual upstream catalogs, submissions, environments and
 evaluators; a session by itself is not proof of full benchmark support.
 An adapter can also expose a read-only `PlanningCatalog`: dataset identity,
 available task IDs and evaluator scope, without preparing an environment.
-Sweep planning caches this once per installed workload and saves a bounded
+Verified preparation additionally has an internal opt-in material-ready gate:
+native file sessions fingerprint adapter-owned initial files before baseline
+evaluation and reject evaluator mutation. Workers retain their sessions locally;
+only immutable identities cross the cancellable rendezvous before proxy/agent
+startup. Early failure and timeout release peers, and explicit cancellation
+retains official workload preservation semantics. Legacy runs do not acquire
+these scans. The native `run --repeat` prototype publishes an intended-slot plan,
+allocates fresh campaigns and batches, freezes private legacy replay inputs and
+links every completed outcome. Batches continue only after confirmed preparation,
+complete output publication and cleanup. Measurement overrides relocate only
+measurements, not project-local workspaces/logs. Collector preflight and sessions
+receive the benchmark's project root explicitly: an external measurement path,
+even beneath a different project, never selects its tracing capabilities or
+service registry. Official sessions now expose an
+on-demand versioned material identity through the workload controller, separate
+from evaluator baseline evidence. The shared capture verifies declared resource
+ownership and binds actual prepared file content plus image/runtime definition.
+The controller stages the running ASB helper into an absent owned root, verifies
+its exact bounded TAR tree before reuse/execution, and composes two complete
+image-anchored root observations with change/deletion inventories plus
+full-content shared memory. The complete composer covers declared mounts,
+services and supported owned/default-bridge runtime/network topology;
+unsupported coverage has no narrow fallback in verified CLI execution. Owned
+local bind sources additionally receive a joint multi-root census for cross-service
+regular-file and symlink hardlink relationships. `PreparedSampler` exposes bind
+views only after a successful guest census matched exact source/root witnesses.
+Every new census or failed callback invalidates that authorization. A complete
+initial guest round precedes host content reads and must agree with both later
+rounds. Joint host observations bracket each later whole guest round and recheck
+service authority, source chains and locality. Identical source paths share a
+logical root, but only subtrees hidden in every view are excluded; each binding's
+nested/semantic exclusions remain explicit. Host paths and numeric inode
+witnesses are private, never public identities. Host and guest reads share one
+bounded allowance without resets. This adds relevant owned local filesystem
+observations, not a portable host snapshot or provenance guarantee.
+The TAR reader never extracts files; legacy runs never
+request the capture. Broader
+official material coverage and real SDK qualification, bundled recording/replay
+and campaign-aware comparison remain integration work; see
+[the execution design](MULTITRACK-EXECUTION-DESIGN.md).
+Sweep planning caches each read-only planning catalog once per installed workload and saves a bounded
 `plan.json` before running anything. A `TaskSelection` is requested intent,
 not an actual `TaskIdentity`, measured baseline, or evaluator result. Compare
 uses that snapshot when preparation failed, validates source configuration
@@ -484,7 +556,14 @@ from an executable's pathname.
 After workload cleanup and measurement completion, the runner writes private
 `.asb-completions/` outcome records beside the run log, including unresolved
 outcomes, actual task identity, cleanup status and workload-owned evaluator
-evidence paths. These records omit agent stdout/stderr. When one replica
+evidence paths. These records omit agent stdout/stderr. Resource settlement
+remains independent of its grade: removed,
+not-created, not-required, or positively stopped-preserved resources may admit
+later fresh batches. Unknown settlement stops admission. Preserved resources
+retain their artifact locations and never authorize an implicit verifier retry.
+New outcome, log and measurement records agree on disposition and artifact
+references. Legacy handling requires both outcome disposition fields absent;
+explicit null denotes unknown settlement, not a legacy omission. When one replica
 finishes, a generic completion observer can independently bind its
 one-based slot, selected population, original input digest, private outcome
 record, workspace, log, native runtime state (if present), measurements and
@@ -993,6 +1072,24 @@ through runtime validation and checksum-pinned prefetch; protocol-only unit
 fixtures cannot enable a production preparation bypass. Dispatch, bounded event
 receipt, measured-target resume and completion decoding remain separate phases
 inside the same failure/cancellation envelope.
+The private task protocol uses typed request/event identifiers and validated
+ready/completed views above the generic JSON-lines transport. Ready validation
+binds the selected dataset instance, baseline, public input and effective task
+budget; completion validates guest metadata, output encoding and quiescence or
+the declared namespace-owned service handoff. Measured attachment and end-boundary
+proofs remain in the measured phase; unmeasured completion gains no invented
+collector requirement. Untagged one-shot retained-inspection responses remain
+supported by the generic transport.
+Workload-owned launch transports sit beneath the shared Docker workspace
+gate/deadline/output state machine. The default transport uses the Docker exec
+identity; a different launcher supplies its actual stopped client identity and
+child status without treating a bridge's PID or exit code as the agent's.
+Namespace-only targets cannot satisfy host collector verification. A retained
+workload keeps the entire iterable transport until namespace teardown, not only
+its output stream. Closure is idempotent but sticky failures, including
+cancellation exceptions in a drain worker, prevent false cleanup confirmation.
+The SDK-shell launch strategy is still pending; this abstraction alone does not
+change Terminal's current direct-exec client launch semantics.
 Failed preparation/execution cancels the controller through EOF and drains its
 bounded protocol until cleanup acknowledgement and child exit, retaining the
 original error and any cleanup failure. Normal completion still requires a
@@ -1010,8 +1107,10 @@ checks precede stopping resources. A changed journal or unconfirmed stop is a
 preservation failure, not successful cleanup. `interruption.json` explicitly
 states that preservation is neither grading nor retry permission.
 Cancellation accepts a stopped-preserved acknowledgement and still reports
-the interrupted operation as failed; normal completion requires removal and
-cannot accept that acknowledgement as a completed attempt. A preserved
+the interrupted operation as failed. Positive preservation can admit later
+fresh attempts, but is not successful normal removal or a completed grade.
+Normal-close preservation retains an explicit teardown failure diagnostic.
+A preserved
 environment's filesystem is retained, not its running process/shell state.
 Official sessions also track whether their latest evaluator response actually
 completed a matching task grade. Errors, missing/contradictory resolved flags
@@ -1019,8 +1118,54 @@ and mismatched identities cannot take the normal close/removal path. Session
 finish cancels into stopped preservation and reports the artifact location
 instead. Valid unresolved and empty-submission outcomes are completed grades,
 not permission to repeat the client. A later evaluator failure invalidates
-the previous completion flag rather than allowing old evidence to delete
+the previous completion permission rather than allowing old evidence to delete
 new or ungraded work.
+That permission is a private matching-completed-grade token, cleared before
+each evaluator request and consumed by normal close, rather than a writable
+Boolean. True and false official binary grades can construct it; evaluator
+errors, pending/unknown outcomes and mismatched identities cannot. Distinct
+normal-close and cancellation acknowledgement validators retain their different
+cleanup and child-exit requirements. Cancellation deliberately drains in-flight
+and unknown events without printing their payloads. The wire spellings, adapter
+evaluation-kind extension strings and structured/native outcome APIs do not
+change. Existing official Python task sessions still supply binary grades;
+this refactoring does not add native-reward transport to those SDK sessions.
+On Unix, controller stdin/stdout retain private standard process pipes with
+nonblocking parent ends and blocking child ends. One caller-owned duplex pump
+keeps an eight-event queue and a 1 MiB frame bound (one oversize probe byte);
+there is no detached
+reader or blocking reader join. Requests start one absolute deadline before
+encoding/writing, and the same deadline covers the response. One-shot inspection
+also constrains error cleanup and child-exit observation to its deadline. Task
+sessions retain their separate preserving-cancellation budget after an execution
+or evaluator failure. Agent dispatch and
+resume writes consume the existing execution-protocol deadline rather than
+starting another clock. A partial failed write closes stdin: it cannot be retried
+as a new request or interpreted as normal close.
+Normal close, cancellation and final exit observation share the earliest
+cleanup deadline, so a failed close does not restart another cleanup budget.
+Only the existing validated acknowledgements can confirm resource cleanup.
+Unix destruction closes its owned pipes, gives EOF up to three seconds, then
+signals only the still-owned direct controller with TERM inside a total
+fifteen-second fallback budget. An existing shorter cleanup deadline takes
+precedence. Deadline/poll uncertainty sends KILL to that direct child and
+transfers custody to an `OwnedReaper` established fallibly before spawn; caller
+cleanup never performs an unconditional child wait or creates a Drop worker.
+This is bounded caller observation, not proof that a kernel-stuck controller
+has exited or that its Docker resources were preserved. Resource recovery still
+requires the adapter's journal/ownership checks. The fallback is neither
+descendant supervision nor crash-persistent recovery.
+Python task-loop waits use actual monotonic deadlines, including checking a
+late dequeued request before it can authorize close; idle, collector attachment,
+queue publication and execution/evaluation defaults retain purpose-specific
+names and existing values. The non-Unix controller intentionally retains its
+legacy blocking pipes, reader and Drop behavior for compatibility. It is not
+qualified by the Unix tests and does not gain this bounded-I/O/custody guarantee;
+cancellable non-Unix transport remains unresolved portability work. Process
+spawn, operating-system scheduling and arbitrary SDK operations are not given
+a new hard real-time guarantee. Shared preparation retains its independent
+remaining-time allowance: dispatch writes cannot consume the later execution
+budget. Initial-material request writing and response reading share one deadline.
 Task controllers now persist a private `resources.json` before creating their
 declared containers, Compose networks and volumes. The journal binds the exact
 names to one attempt, a random ownership label and the Docker daemon identity;
@@ -1527,7 +1672,18 @@ its run record is absent. It validates actual identity and slot mapping, rejects
 conflicts with existing measurement records and discloses its result source.
 Grades do not disappear merely because collection was disabled, and missing
 collector/host/time-series data is never fabricated. Outcome reporting does not
-prove resume eligibility or historical integrity. The report links every result artifact and explains the
+prove resume eligibility or historical integrity. If no private outcome was
+published (including incomplete capture), comparison can use the most recent
+bounded schema-2 record from the sweep's fixed isolated replica log. It strips
+transcripts, validates configuration/task/slot/policy bindings and rejects a
+latest-log conflict with a recorded outcome or measurement before publication.
+The original benchmark's configured log location cannot redirect this fallback.
+Log evidence has unknown cleanup confirmation and is explicitly reporting-only:
+it creates no outcome, completion/group receipt or resume permission. A failed
+latest record cannot silently borrow an earlier grade. Explicit imported or
+grade-only recovered outcomes keep their existing unknown-execution policy;
+their interrupted partial logs remain diagnostic and are not promoted by this
+fallback. The report links every result artifact and explains the
 measurement fields. Its dependency-free JavaScript can enable or disable
 benchmarks, agents, providers, models, and workloads without rerunning the
 sweep. Each chart

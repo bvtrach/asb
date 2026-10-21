@@ -35,6 +35,7 @@ fn prepared_typed_collector_data_reaches_configure_without_cross_session_sharing
     #[derive(Default)]
     struct Prepared {
         directory: PathBuf,
+        project_root: Option<PathBuf>,
         configured: bool,
     }
     struct Adapter;
@@ -44,24 +45,36 @@ fn prepared_typed_collector_data_reaches_configure_without_cross_session_sharing
             "fixture-prepared-state"
         }
         fn preflight(&self, context: &mut collectors::PreflightContext<'_>) -> Result<(), String> {
-            context.states.state::<Prepared>().borrow_mut().directory =
-                context.measurement_dir.to_path_buf();
+            let state = context.states.state::<Prepared>();
+            let mut state = state.borrow_mut();
+            state.directory = context.measurement_dir.to_path_buf();
+            state.project_root = context.project_root.map(Path::to_path_buf);
             Ok(())
         }
         fn configure(&self, session: &mut Session, _: &[String]) -> Result<(), String> {
             let state = session.state::<Prepared>();
             let mut state = state.borrow_mut();
             assert_eq!(state.directory, session.dir);
+            assert_eq!(state.project_root, session.project_root);
             state.configured = true;
             Ok(())
         }
     }
     let first = Fixture::new();
     let second = Fixture::new();
-    let mut one =
-        Session::start_with_adapters(&first.0, &[], None, None, vec![&ADAPTER], true).unwrap();
+    let mut one = Session::start_with_adapters(
+        &first.0,
+        &[],
+        None,
+        None,
+        vec![&ADAPTER],
+        true,
+        Some(&first.0),
+    )
+    .unwrap();
     let mut two =
-        Session::start_with_adapters(&second.0, &[], None, None, vec![&ADAPTER], true).unwrap();
+        Session::start_with_adapters(&second.0, &[], None, None, vec![&ADAPTER], true, None)
+            .unwrap();
     let a = one.state::<Prepared>();
     let b = two.state::<Prepared>();
     assert!(a.borrow().configured && b.borrow().configured);
@@ -154,7 +167,7 @@ impl Fixture {
         Self(root)
     }
     fn session(&self) -> Session {
-        Session::start_with_adapters(&self.0, &[], None, None, vec![], true).unwrap()
+        Session::start_with_adapters(&self.0, &[], None, None, vec![], true, None).unwrap()
     }
 }
 impl Drop for Fixture {
@@ -284,7 +297,8 @@ fn lifecycle_population_is_bounded_and_invalid_namespace_selection_fails_before_
     assert_eq!(session.lifecycle.len(), 256);
     let file = fixture.0.join("not-a-directory");
     fs::write(&file, "block directory creation").unwrap();
-    let result = Session::start_with_adapters(&file.join("child"), &[], None, None, vec![], true);
+    let result =
+        Session::start_with_adapters(&file.join("child"), &[], None, None, vec![], true, None);
     let Err(error) = result else {
         panic!("non-directory parent accepted");
     };
@@ -413,6 +427,8 @@ fn summary_retention_is_bounded_and_unscored_success_is_not_a_resolved_task() {
         .collect::<Vec<_>>();
     fs::write(&path, serde_json::to_vec(&json!({"runs":runs})).unwrap()).unwrap();
     let run = RunMeasurement {
+        workload_resource_disposition: None,
+        workload_artifacts: &[],
         execution_plan_fingerprint: None,
         module: None,
         benchmark_outcome: None,
