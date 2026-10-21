@@ -3970,18 +3970,29 @@ http.createServer((req,res) => {
     );
     let records = project.0.join("bridges.jsonl");
     let calls = project.0.join("calls.jsonl");
+    let node_errors = project.0.join("node-errors");
+    project.write("observe-node.cjs", "const fs=require('fs');let retained=0;const write=process.stderr.write.bind(process.stderr);process.stderr.write=(chunk,...args)=>{const bytes=Buffer.from(chunk);const keep=bytes.subarray(0,Math.max(0,16384-retained));if(keep.length){fs.appendFileSync(process.env.ASB_TEST_NODE_ERRORS,keep);retained+=keep.length;}return write(chunk,...args);};\n");
+    let node_options = format!("--require {}", project.0.join("observe-node.cjs").display());
     let result = project.command_with_env(
         &["run", "benchmark.toml", "--json"],
         &[
             ("ASB_TEST_BRIDGES", records.to_str().unwrap()),
             ("ASB_TEST_CALLS", calls.to_str().unwrap()),
+            ("NODE_OPTIONS", &node_options),
+            ("ASB_TEST_NODE_ERRORS", node_errors.to_str().unwrap()),
         ],
     );
     let summaries = stdout(&result)
         .lines()
         .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
         .collect::<Vec<_>>();
-    assert_eq!(summaries.len(), 2, "{}", stderr(&result));
+    assert_eq!(
+        summaries.len(),
+        2,
+        "{}; fixture Node stderr: {}",
+        stderr(&result),
+        std::fs::read_to_string(&node_errors).unwrap_or_default()
+    );
     assert!(
         summaries.iter().all(|row| row["process_success"] == true),
         "{}",

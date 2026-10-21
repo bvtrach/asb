@@ -285,7 +285,7 @@ fn embedded_proxy_finish_cancels_and_reaps_its_owned_curl_before_exit() {
     let root = root.canonicalize().unwrap();
     std::fs::write(root.join("proxy.mjs"), super::super::BUILTIN_COMPAT_PROXY).unwrap();
     std::fs::write(root.join("network-fetch.mjs"), super::super::NETWORK_FETCH).unwrap();
-    std::fs::write(root.join("observe.mjs"), "import {writeFileSync} from 'node:fs';process.on('exit',code=>writeFileSync('exit-status',String(code)));\n").unwrap();
+    std::fs::write(root.join("observe.mjs"), "import http from 'node:http';import {writeFileSync} from 'node:fs';process.on('exit',code=>writeFileSync('exit-status',String(code)));const create=http.createServer;http.createServer=function(...args){const server=create.apply(this,args);server.on('request',request=>{if(request.url==='/v1/abort'||request.url==='/v1/unfinished'){const name=request.url==='/v1/abort'?'abort':'unfinished';writeFileSync(name+'-seen','yes');request.once('aborted',()=>writeFileSync(name+'-aborted','yes'));}});return server;};\n").unwrap();
     let node = crate::tools::host_executable(std::path::Path::new("node")).unwrap();
     let curl = crate::tools::host_executable(std::path::Path::new("curl")).unwrap();
     let held = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -320,28 +320,42 @@ fn embedded_proxy_finish_cancels_and_reaps_its_owned_curl_before_exit() {
         .set_write_timeout(Some(Duration::from_secs(2)))
         .unwrap();
     request.write_all(b"GET /v1/held HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer fixture-only-key\r\nConnection: close\r\n\r\n").unwrap();
-    let deadline = Instant::now() + Duration::from_secs(3);
-    let mut upstream = loop {
-        match held.accept() {
-            Ok((stream, _)) => break stream,
-            Err(error)
-                if error.kind() == std::io::ErrorKind::WouldBlock && Instant::now() < deadline =>
-            {
-                std::thread::sleep(POLL)
-            }
-            Err(error) => panic!("owned curl did not reach loopback fixture: {error}"),
-        }
-    };
-    upstream
+    let mut first_upstream = accept_held_request(&held);
+    let mut aborted = TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port)).unwrap();
+    aborted
+        .write_all(
+            b"POST /v1/abort HTTP/1.1\r\nHost: localhost\r\nContent-Length: 10000\r\n\r\npartial",
+        )
+        .unwrap();
+    wait_fixture_receipt(&root.join("abort-seen"));
+    aborted.shutdown(std::net::Shutdown::Both).unwrap();
+    drop(aborted);
+    wait_fixture_receipt(&root.join("abort-aborted"));
+    // The sibling request must complete even after an ordinary body abort.
+    first_upstream
+        .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\nlive")
+        .unwrap();
+    request
         .set_read_timeout(Some(Duration::from_secs(2)))
         .unwrap();
-    let mut header = Vec::new();
+    let mut response = String::new();
+    request.read_to_string(&mut response).unwrap();
+    assert!(
+        response.contains("live"),
+        "ordinary client abort crashed its sibling: {response}"
+    );
+    drop(first_upstream);
+    let mut request = TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port)).unwrap();
+    request
+        .write_all(
+            b"GET /v1/held-shutdown HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+        )
+        .unwrap();
+    let mut upstream = accept_held_request(&held);
+    let mut unfinished = TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port)).unwrap();
+    unfinished.write_all(b"POST /v1/unfinished HTTP/1.1\r\nHost: localhost\r\nContent-Length: 10000\r\n\r\npartial").unwrap();
+    wait_fixture_receipt(&root.join("unfinished-seen"));
     let mut chunk = [0; 1024];
-    while !header.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
-        let count = upstream.read(&mut chunk).unwrap();
-        assert!(count > 0 && header.len() + count < 8192);
-        header.extend_from_slice(&chunk[..count]);
-    }
     let children =
         std::fs::read_to_string(format!("/proc/{proxy_pid}/task/{proxy_pid}/children")).unwrap();
     let pids = children
@@ -375,10 +389,63 @@ fn embedded_proxy_finish_cancels_and_reaps_its_owned_curl_before_exit() {
     for pid in [proxy_pid, curl_pid] {
         assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists());
     }
+    for connection in [&mut unfinished, &mut request] {
+        connection
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let mut bytes = Vec::new();
+        match connection.read_to_end(&mut bytes) {
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => {}
+            Err(error) => panic!("incoming connection remained open after finish: {error}"),
+        }
+        assert!(
+            bytes.is_empty(),
+            "closing/aborted requests must not receive a late 502"
+        );
+    }
     drop(request);
     drop(upstream);
     drop(held);
     std::fs::remove_dir_all(root).unwrap();
+}
+
+fn wait_fixture_receipt(path: &std::path::Path) {
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while !path.exists() {
+        assert!(
+            Instant::now() < deadline,
+            "fixture did not observe {}",
+            path.display()
+        );
+        std::thread::sleep(POLL);
+    }
+}
+
+fn accept_held_request(listener: &std::net::TcpListener) -> std::net::TcpStream {
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let mut stream = loop {
+        match listener.accept() {
+            Ok((stream, _)) => break stream,
+            Err(error)
+                if error.kind() == std::io::ErrorKind::WouldBlock && Instant::now() < deadline =>
+            {
+                std::thread::sleep(POLL)
+            }
+            Err(error) => panic!("owned curl did not reach loopback fixture: {error}"),
+        }
+    };
+    stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    let mut header = Vec::new();
+    let mut chunk = [0; 1024];
+    while !header.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
+        let count = stream.read(&mut chunk).unwrap();
+        assert!(count > 0 && header.len() + count < 8192);
+        header.extend_from_slice(&chunk[..count]);
+    }
+    stream
 }
 
 #[test]

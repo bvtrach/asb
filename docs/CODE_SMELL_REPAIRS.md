@@ -170,6 +170,13 @@ observes declared curl close events before success. Its at-most-two-second
 grace consumes the existing shared five-second budget before direct-child
 escalation. Real embedded-hop/held-loopback/curl and ignored-EOF fixtures verify
 both paths; forced or unsuccessful cooperative exit reports uncertainty.
+Follow-up review found that incoming-body collection previously escaped the
+proxy handler's error envelope. The complete handler now catches body/URL/
+forwarding errors, checks closing before forwarding and avoids late 502 writes
+to aborted/destroyed responses. Actual partial-POST abort/shutdown fixtures
+retain a sibling request and require cooperative exit/reaping. A full-suite
+concurrent-proxy startup exit remains under investigation with bounded fixture
+stderr; a passing isolated rerun is not claimed as its diagnosis.
 
 ## 6. Shared implementation and lifecycle policies
 

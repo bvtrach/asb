@@ -167,6 +167,12 @@ loopback HTTP fixture using its real owned curl child. Explicit finish must
 close the outbound connection, reap curl and exit cooperatively with status
 zero. An ignored-EOF fixture verifies escalation after the two-second grace
 inside the same five-second caller budget, with an uncertainty diagnostic.
+The same embedded fixture aborts an unfinished POST while a sibling outbound
+request completes, then shuts down with another partial POST still open. Body
+collection/URL/forwarding errors remain inside one handler envelope, and closing
+or destroyed responses receive no late 502. Request-event receipts establish
+the partial-body states without relying on a sleep. The concurrent CLI fixture
+retains bounded fixture-only Node stderr when reporting a startup failure.
 The agent-process sampler regression launches a bounded local Node fixture,
 changes its process title and checks two seconds of continued sampling, an
 unrelated Node process and the original process's exit. It uses no provider,

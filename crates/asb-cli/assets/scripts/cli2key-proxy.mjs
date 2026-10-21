@@ -48,18 +48,21 @@ function normalizeBody(path, body) {
   }
 }
 
+let closing = false;
 const server = http.createServer(async (request, response) => {
-  const chunks = [];
-  for await (const chunk of request) chunks.push(Buffer.from(chunk));
-  const raw = Buffer.concat(chunks);
-  const path = request.url || "/";
-  const body = normalizeBody(path, raw.length ? raw.toString("utf8") : "");
-  const target = new URL(path, `${upstream}/`);
-  const headers = { ...request.headers };
-  delete headers.host;
-  delete headers.connection;
-  delete headers["content-length"];
   try {
+    if (closing) { response.destroy(); return; }
+    const chunks = [];
+    for await (const chunk of request) chunks.push(Buffer.from(chunk));
+    if (closing || request.aborted || response.destroyed) return;
+    const raw = Buffer.concat(chunks);
+    const path = request.url || "/";
+    const body = normalizeBody(path, raw.length ? raw.toString("utf8") : "");
+    const target = new URL(path, `${upstream}/`);
+    const headers = { ...request.headers };
+    delete headers.host;
+    delete headers.connection;
+    delete headers["content-length"];
     const result = await networkFetch(target, {
       method: request.method,
       headers,
@@ -74,6 +77,7 @@ const server = http.createServer(async (request, response) => {
     }
     else response.end();
   } catch (error) {
+    if (closing || request.aborted || response.destroyed || response.writableEnded) return;
     response.writeHead(502, { "content-type": "application/json" });
     response.end(JSON.stringify({ error: { message: `cli2key upstream unavailable: ${error.message}` } }));
   }
@@ -86,7 +90,6 @@ server.on("error", (error) => {
 server.listen(port, "127.0.0.1", () => {
   console.log("ASB cli2key proxy ready");
 });
-let closing = false;
 const shutdown = async () => {
   if (closing) return;
   closing = true;
