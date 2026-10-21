@@ -84,6 +84,17 @@ also check that bars, series/legends and composition rows carry benchmark groups
 Reserved-`all` tests cover complete registry expansion, enabled/original trial
 populations, catalog-name collisions and provider-scoped model discovery using
 only a bounded loopback HTTP fixture with no real provider credentials.
+The agent endpoint matrix tests every declared interface/authentication pair
+and rejects every undeclared pair before configuration or command mutation.
+These are protocol-only fixtures: no agent/provider is executed. See the
+[independently checked repair ledger](CODE_SMELL_REPAIRS.md) for the broader
+code-smell audit and remaining delivery classes.
+Report identity regressions cover literal dots/brackets versus nested paths,
+empty/backslash keys, Unicode and colliding/long graph filenames, case-insensitive
+aliases, repeated configuration stems and deterministic regeneration. Numeric
+paths escape object-key separators; use `comparison.json`'s graph list rather
+than constructing filenames for unusual metric names. Conflicting collector
+identities fail explicitly instead of silently replacing a prior observation.
 `cargo test --locked cassette::` exercises the provider-free multi-track backend:
 manifest and compatibility bounds, stable seeded choices, selector edge cases,
 bounded metadata inspection, selective corruption checks and durable publication.
@@ -307,6 +318,12 @@ the lease must be reacquirable while that incidental child remains alive. This
 deterministically covers a fork-before-exec inheritance window without relying
 on scheduling sleeps. Separate tests keep inherited ownership on uncertain
 cleanup and retain the unchanged owner-SIGKILL daemon-shutdown contract.
+The daemon-identity fixture separately waits for an atomically published,
+child-authored post-exec PID/descriptor observation before checking absent
+versus deliberately inherited lease descriptors. Process creation alone is
+not that observation: a spawn fast path can resume its parent during exec,
+before close-on-exec cleanup. Both live-child lease assertions and rejection
+of the subsequently reaped child remain mandatory; no tracing service runs.
 The ignored `live_perfetto_streaming_preserves_markers_beyond_the_service_ring_capacity`
 test writes fixed, non-secret marker pressure beyond the configured 128 MiB service
 buffer, then requires complete, loss-free capture and scoped agent measurements.

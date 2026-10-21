@@ -196,7 +196,7 @@ fn prepare_adapter(context: &mut PreparationContext<'_>) -> Result<(), Error> {
     let api = match connection.interface {
         crate::endpoint::Interface::OpenAiResponses => "openai-responses",
         crate::endpoint::Interface::OpenAiChat => "openai-completions",
-        _ => unreachable!("Pi advertises only OpenAI-compatible interfaces"),
+        _ => return Err(context.unsupported_endpoint("pi")),
     };
     context.command.env(
         "ASB_AGENT_API_KEY",
