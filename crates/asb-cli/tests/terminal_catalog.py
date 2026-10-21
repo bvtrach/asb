@@ -16,6 +16,40 @@ import asb_terminal_catalog as subject
 
 
 class CatalogTests(unittest.TestCase):
+    def test_harbor_profile_resolution_requires_pinned_catalog_sdk_and_source(self):
+        import asb_harbor as harbor
+        workload = "terminal-bench-2.1"
+        spec = subject.SPECS[workload]
+        with tempfile.TemporaryDirectory() as directory, self.sdk(workload), \
+                patch.object(subject.importlib.metadata, "version", return_value=spec["version"]):
+            root = Path(directory)
+            self.fixture(root, workload)
+            subject.install(workload, root/"source.tar.gz", root/"installed")
+            path = root/"installed/catalog.json"
+            original = path.read_bytes()
+            expected = subject.verify(path, workload)
+            self.assertEqual(harbor.verify_catalog(path), expected)
+            self.assertEqual(harbor.verify_catalog(path, workload), expected)
+            for key, value in [("workload", "other-harbor"),
+                               ("sdk", {"package":"harbor", "version":"unqualified"}),
+                               ("dataset", {**expected["dataset"], "revision":"changed"}),
+                               ("source_sha256", "0"*64)]:
+                changed = json.loads(original)
+                changed[key] = value
+                path.write_text(json.dumps(changed))
+                for profile in [None, workload]:
+                    with self.subTest(key=key, profile=profile), self.assertRaises((ValueError, harbor.ExecutionError)):
+                        harbor.verify_catalog(path, profile)
+            path.write_bytes(original)
+            with self.assertRaises(harbor.ExecutionError):
+                harbor.verify_catalog(path, "terminal-bench-1.0")
+            with patch.object(subject.importlib.metadata, "version", return_value="unqualified"):
+                with self.assertRaises(subject.CatalogError):
+                    harbor.verify_catalog(path)
+            (root/"installed/source/tasks/task-0/instruction.md").write_text("tampered")
+            with self.assertRaises(subject.CatalogError):
+                harbor.verify_catalog(path)
+
     def test_runtime_probe_checks_sdk_and_transport_dependencies_without_a_daemon(self):
         for workload,spec in subject.SPECS.items():
             with patch.dict(sys.modules,{"docker":ModuleType("docker")}), patch.object(subject.importlib.metadata,"version",
