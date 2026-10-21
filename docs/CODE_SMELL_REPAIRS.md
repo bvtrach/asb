@@ -205,6 +205,35 @@ Simplify checkpoint validation into named invariants without losing checks.
 Review broad parameter lists, result structs, visibility, dead API surface and
 module names in those owning boundaries. Pending.
 
+Sweep-phase candidate (independent source/full qualification pending): audit
+found that sequential JSON writer failures still admitted later configurations,
+and early post-activation diagnostic failures skipped final input settlement
+and comparison. Consuming prepared/fresh-or-resumed/activated/settled phases
+now retain validated planning/resources, lock lifetime, joined cleanup and
+partial reporting. A sticky writer distinguishes real output failure from
+benchmark failure without parsing error strings. Worker-side typed spool
+failure stops admission before its next claim; already-admitted siblings finish.
+Cleanup is authorized only for spools created by this invocation, preserving
+unadmitted interrupted-resume output and failed-preservation/creation targets.
+Independent preliminary review found an Interrupted-I/O retry loop in the
+initial writer wrapper; Interrupted is now transient, with deterministic retry
+and subsequent-permanent-failure regressions. A fixture initially assumed JSON
+newlines were separate writes; it now covers the actual concurrent buffered
+write boundary. Those intermediate failure logs remain diagnostic evidence.
+Nine actual replay-only scenarios bind client counts, grades, completion
+metadata, plan fingerprints, final seals, partial reports and returned errors;
+the output lock is checked through final comparison. Existing native outcome,
+resource admission and checkpoint reconciliation invariants are preserved.
+Saved execution mode is also typed at this admission boundary, keeping all four
+wire values, missing historical unknown mode, rejection of null/unknown spelling
+and replay-only timing. No version change, live-provider/host qualification,
+transactional preservation, arbitrary crash recovery or delivery of the other
+orchestration/protocol repairs is claimed. Focused qualification passed: 73
+sweep-library tests (one optional skip), 72 runner tests (three optional skips),
+the shared isolation helper and 21 tests across six actual CLI targets. Strict
+all-target/all-feature Clippy, formatting and unchanged executable hashes pass.
+Independent final source review and a full suite remain pending.
+
 Checkpoint candidate, staged patch **0.2.20**: completion group/replica sealing, partial continuation
 and retained-outcome reconciliation now consume a private validated outcome
 instead of passing an unchecked wire record after a long Boolean expression.

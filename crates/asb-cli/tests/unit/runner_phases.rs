@@ -1,9 +1,8 @@
 //! Offline evidence/grade/resource transition contracts, not SDK qualification.
 use super::*;
+use crate::test_support as support;
 use std::cell::RefCell;
 use std::rc::Rc;
-#[path = "../support/mod.rs"]
-mod support;
 
 struct Fixture(PathBuf);
 impl Fixture {

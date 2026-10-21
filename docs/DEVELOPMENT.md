@@ -418,6 +418,20 @@ Build the actual binary first, as for the phase tests below.
 
 Runner phase regressions use `cargo test --locked --offline --lib runner::phases`
 and `cargo test --locked --offline --lib workloads::remote::execution_tests`.
+`cargo test --locked --offline --lib sweep::` also runs the consuming sweep
+phase regressions. Nine isolated actual-runner cases exercise sequential JSON
+writer failure, completion of an admitted replica group, reuse without client
+reruns, rejected changed execution mode, initial/history presentation failures,
+ordinary benchmark failure continuing, and combined benchmark/presentation/
+comparison or final-input-seal failures. They retain grades, task/plan metadata,
+receipts, partial reports and unadmitted interrupted-output sentinels. Actual
+bounded spool failure with a held sibling proves worker-side admission stop
+and joined permit release; failed spool preservation/creation cannot claim
+cleanup ownership. Sticky-writer tests distinguish transient Interrupted I/O
+from permanent write/flush failure and WriteZero. Existing planning/resources,
+native reward, false-grade and reconciliation invariant fixtures remain required.
+These fixtures use only project-local programs and loopback replay; build the
+current binary first and never rebuild it during runtime tests.
 For a focused library-only invocation, run `cargo build --locked --offline`
 first: the full-entry regression executes the actual ASB binary beside the
 test executable as its native process gate. Ordinary full `cargo test` builds
