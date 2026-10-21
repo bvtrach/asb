@@ -1009,6 +1009,7 @@ const fs = require('fs');
 const cfg = fs.readFileSync(process.env.CODEX_HOME + '/config.toml', 'utf8');
 const endpoint = cfg.match(/base_url = "([^"]+)"/)[1];
 if (!cfg.includes('model_provider = "asb_provider"') || !cfg.includes('web_search = "disabled"')) process.exit(11);
+fs.writeFileSync('src/parser.py', "def parse_path(value: str) -> list[str]:\n    return [segment for segment in value.split('/') if segment]\n");
 const body = JSON.stringify({model:'qwen3:0.6b',input:'offline test',tools:[{type:'function',name:'read_file'}]});
 fetch(endpoint + '/responses', {method:'POST',headers:{'content-type':'application/json'},body}).then(r => { if (!r.ok) process.exit(12); console.log('local-ollama-agent'); }).catch(() => process.exit(13));
 "##);
@@ -1133,6 +1134,7 @@ const endpoint = cfg.match(/base_url = "([^"]+)"/)[1];
 if (!cfg.includes('model_provider = "asb_provider"') || !cfg.includes('wire_api = "responses"') || !cfg.includes('env_key = "ASB_AGENT_API_KEY"')) process.exit(11);
 if (process.env.OPENROUTER_API_KEY === 'live-secret' && process.env.ASB_AGENT_API_KEY !== 'live-secret') process.exit(12);
 if (process.env.OPENROUTER_API_KEY === 'asb-replay' && process.env.ASB_AGENT_API_KEY !== 'asb-replay') process.exit(13);
+fs.writeFileSync('src/parser.py', "def parse_path(value: str) -> list[str]:\n    return [segment for segment in value.split('/') if segment]\n");
 const body = JSON.stringify({model:'fixture/model',input:'offline test',tools:[{type:'function',name:'read_file'}]});
 fetch(endpoint + '/responses', {method:'POST',headers:{'content-type':'application/json','authorization':'Bearer '+process.env.ASB_AGENT_API_KEY},body}).then(r => {if (!r.ok) process.exit(14); console.log('provider-neutral-agent');}).catch(() => process.exit(15));
 "##);
@@ -4560,6 +4562,7 @@ fn record_uses_benchmark_project_proxy_even_when_invoked_elsewhere() {
         project.write(agent, r##"#!/usr/bin/env node
 const fs = require('fs');
 if (!(process.env.http_proxy || process.env.all_proxy) || !process.env.no_proxy.includes('127.0.0.1')) process.exit(16);
+fs.writeFileSync('src/parser.py', "def parse_path(value: str) -> list[str]:\n    return [segment for segment in value.split('/') if segment]\n");
 const cfg = fs.readFileSync(process.env.CODEX_HOME + '/config.toml', 'utf8');
 const endpoint = cfg.match(/base_url = "([^"]+)"/)[1];
 const body = JSON.stringify({model:'fixture/model',input:'offline test',tools:[{type:'function',name:'read_file'}]});
@@ -4672,7 +4675,12 @@ fetch(endpoint + '/responses', {method:'POST',headers:{'content-type':'applicati
             2,
             "model discovery and recorded request must both use the proxy"
         );
-        let tape = std::fs::read_to_string(cassette).unwrap();
+        let mut archive =
+            asb_cli::cassette::Archive::open(&cassette, asb_cli::cassette::Limits::default())
+                .unwrap();
+        assert_eq!(archive.manifest().tracks.len(), 1);
+        assert!(archive.manifest().tracks[0].complete);
+        let tape = String::from_utf8(archive.read_track(1).unwrap()).unwrap();
         assert!(tape.contains("resp_fixture"));
         assert!(!tape.contains("fixture-secret"));
     }

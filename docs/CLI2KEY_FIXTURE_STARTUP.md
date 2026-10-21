@@ -68,7 +68,8 @@ Six focused cli2key tests passed with zero failures/ignored tests in
 `target/cli2key-fixture-red.log` retains its deliberate failure and EADDRINUSE
 evidence. Actual main-30 ASB was built first; its SHA-256 remained unchanged:
 `169aa0af5b52021b82f12fd0eaa0145fe615c5df42b3108e1219168ff22b79f7`.
-All production source, Cargo files and version 0.2.30 are unchanged. Entire
+At that historical checkpoint, production source, Cargo files and version
+0.2.30 were unchanged. Entire
 offline target and strict lint verification follow independent source review;
 hosted CI, main repair and release remain pending.
 
@@ -84,5 +85,22 @@ and `target/cli2key-fixture-fmt.log`. The before/after actual CLI hash files
 
 The source checkpoint is unchanged; this qualification addition is docs-only.
 No local full-crate suite, hosted/package CI, PR publication, merge or release
-is claimed here. Root owns the separate main-30 repair and release decision;
-queued patch versions are not changed by this fixture-only repair.
+is claimed by that historical checkpoint. The then-planned main-30 repair was
+subsequently superseded by the peer main-31 integration below.
+
+## Current main-31 integration (qualification pending)
+
+Actual main advanced to `cabaa576` through peer PR294 (version 0.2.31).
+The fixture branch retains that exact production, Cargo, workflow and version
+tree; its only delta is this document and the fixture repair in `offline_cli.rs`.
+The incoming cassette compatibility changes remain: fresh fake clients repair
+their own task material, and recorded output is read as a bounded cassette
+archive with complete-track validation rather than assumed plain JSONL. CI's
+new capture-session and tape-normalization script packaging checks are retained.
+
+The preceding version-30 test counts/hash are historical evidence, not proof of
+this integrated head. A fresh actual CLI build, complete offline target and
+strict lint/format qualification are required. No version bump, version-30
+release from version-31 main or replacement of the peer release is authorized
+by this fixture-only integration. Hosted CI, PR and release decisions remain
+with root after exact integration review and new qualification.

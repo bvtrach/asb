@@ -397,9 +397,12 @@ registered external and locally defined workloads; it does not install missing
 workloads or bypass their trial-selection requirements. Paths (`--output`,
 `--workspace`) and the single numeric `--concurrency` are not selection options.
 
-`asb run CONFIG --record` runs the same configuration through ASB's built-in
-local tape proxy and writes a JSONL cassette (by default below `cassettes/`
-next to the configuration). ASB materializes this small proxy in a private
+`asb run CONFIG --record` runs fresh isolated workload executions through ASB's
+built-in local tape proxy and publishes a versioned ZIP cassette (by default
+`cassettes/*.asb.zip` next to the configuration). `--repeat N` runs N sequential
+batches at the configured concurrency: repeat 5 at concurrency 4 records 20
+tracks. Existing user workspaces are preserved and fresh baseline material is
+checked before clients launch. ASB materializes its small proxy in a private
 temporary session directory beside the cassette; no external recorder package is required.
 It does not search the host `PATH` implicitly. To deliberately use another
 compatible executable, set `ASB_LLM_TAPE`. Use `--cassette FILE` to choose an
@@ -410,13 +413,41 @@ not start cli2key or connect to any live provider. Add
 the bounded response delays recorded in each cassette entry. Cassettes are local test
 artifacts and should not be committed when they contain provider responses.
 
+```sh
+asb run benchmark.toml --record --repeat 5 --cassette trials.asb.zip
+asb run benchmark.toml --replay --repeat 10 --cassette trials.asb.zip --seed 42
+asb run benchmark.toml --replay --cassette trials.asb.zip --track max:tokens
+```
+
+Bundle replay chooses whole complete nonempty tracks uniformly with replacement;
+failed client/workload outcomes do not exclude a complete trace. Choices are
+saved before launch, independent of scheduling; output discloses the seed,
+algorithm and track IDs. `--track` accepts a positive ID or
+`min|max|median:tokens|duration|requests`. Unknown statistics are excluded from
+metric selection; ties use the lowest ID and median uses the lower middle.
+Explicit numeric selection warns before launch when a trace is incomplete
+(a structured `replay-warning` under `--json`) but never bypasses
+strict request matching and full-consumption checks. Each execution has private
+workspace/session state and proxy progress. Repeat/concurrency/measurements may
+differ from recording; agent/provider/model, prompt and workload/harness material
+must match. This is response replay, not a snapshot of tools or external state.
+
+Bundle detection uses content, not filename extensions. Legacy JSONL and sparse
+`-concurrency-N` recordings remain readable; no-repeat legacy replay retains its
+old workspace behavior, while explicit repeat/track selection uses fresh material.
+Legacy statistics/completeness remain unknown; numeric selection works, but
+`--seed` and statistic selectors need a bundle. Default replay prefers an existing
+legacy default base/layout over the new default ZIP; use `--cassette` explicitly
+to select the bundle when both exist. New recordings refuse existing destinations.
+
 The tape layer is a provider-neutral proxy chain. `--record` and `--replay`
 enable the default `llmtape` adapter; future adapters can be chained by setting
 `ASB_PROXY_CHAIN` to comma-separated names ordered from agent to provider. The
 agent always receives only the chain's loopback ingress endpoint, so enabling,
 disabling, or extending the chain does not change agent configuration.
 
-For a sweep, keep the sweep entries and their order unchanged, and use the same
+Sweep bundle/repeat integration is a separate delivery step; its existing JSONL
+record/replay path is unchanged. For a sweep, keep entries and their order unchanged, and use the same
 `--cassette-root DIR` for recording and replay (or omit it for both). To record
 once and replay eight concurrent replicas, record with `concurrency = 1` in
 each benchmark TOML, then set `concurrency = 8` in those TOMLs before replay.

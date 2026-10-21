@@ -16,6 +16,10 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// Versioned delivery of task inputs into an isolated coding-agent invocation.
+/// Bump when incompatible input/session semantics change, not for binary updates.
+pub(crate) const REPLAY_INPUT_CONTRACT: &str = "asb-agent-input-and-session-v1";
+
 pub(crate) trait AgentAdapter: Sync {
     /// Invocation inputs actually supported by this ASB adapter's transport.
     fn input_modalities(&self) -> &'static [&'static str] {

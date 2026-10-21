@@ -438,6 +438,7 @@ fn native_launch_waits_for_siblings_and_refuses_an_unverifiable_sibling_gate() {
             dataset_sha256: None,
             prompt_sha256: "a".repeat(64),
             material_sha256: "b".repeat(64),
+            protocol_sha256: None,
         }
     }
     fn run(
@@ -889,8 +890,139 @@ fn native_postexecution_event_failure_retains_actual_child_output_and_grade() {
     }
 }
 
+fn recording_identity(result: &RunResult<'_>) -> crate::cassette::Compatibility {
+    crate::cassette::Compatibility {
+        agent: result.agent.into(),
+        provider: result.provider.into(),
+        model: result.model.into(),
+        workload: result.workload.into(),
+        task: result.task.task_id.clone(),
+        dataset_sha256: None,
+        prompt_sha256: "a".repeat(64),
+        material_sha256: "b".repeat(64),
+        protocol_sha256: Some("c".repeat(64)),
+    }
+}
+
+#[test]
+fn recording_association_binds_actual_attempt_and_preserves_uncertain_raw_capture() {
+    let fixture = Fixture::new();
+    let campaign = fixture.0.canonicalize().unwrap().join("campaign-1");
+    std::fs::create_dir_all(campaign.join("batch-1")).unwrap();
+    let destination =
+        super::super::recording::preflight(&fixture.0.join("recording.asb.zip")).unwrap();
+    let recorder = super::super::recording::Recorder::new(
+        destination,
+        campaign.clone(),
+        "campaign-1".into(),
+        1,
+        1,
+    );
+    let result = result();
+    let identity = recording_identity(&result);
+    recorder.prepare(&identity, 1).unwrap();
+    let producer = super::super::recording::base(&campaign, 1);
+    std::fs::write(&producer, b"{}\n").unwrap();
+    let capture = crate::proxy::capture::CaptureEvidence {
+        adapter: "llmtape".into(),
+        output: producer.clone(),
+        complete: true,
+        accepted: 1,
+        completed: 1,
+        failed: 0,
+        recorded: 1,
+        inference_requests: 1,
+        bytes: 3,
+        sha256: crate::cassette::digest(b"{}\n"),
+    };
+    let proxy = crate::proxy::Evidence {
+        captures: vec![capture.clone()],
+        output_files: vec![producer.clone()],
+        cleanup_confirmed: false,
+    };
+    let evidence = recorder
+        .commit(1, replica::Identity::default(), &result, &proxy)
+        .unwrap();
+    let mut bytes = Vec::new();
+    render_json(&result, &mut bytes).unwrap();
+    let mut summary: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    summary["execution"] =
+        serde_json::json!({"campaign":"campaign-1","batch":1,"replica":1,"slot":1});
+    evidence
+        .validate_summary(&summary, &proxy.captures)
+        .unwrap();
+    for (field, value) in [
+        ("batch", serde_json::json!(2)),
+        ("replica", serde_json::json!(2)),
+        ("slot", serde_json::json!(2)),
+        ("campaign", serde_json::json!("foreign")),
+    ] {
+        let mut altered = summary.clone();
+        altered["execution"][field] = value;
+        assert!(
+            evidence
+                .validate_summary(&altered, &proxy.captures)
+                .is_err(),
+            "{field}"
+        );
+    }
+    let mut forged = evidence.clone();
+    forged.attempt_id = "another-attempt".into();
+    let mut altered = summary.clone();
+    altered["task"]["attempt_id"] = serde_json::json!("another-attempt");
+    assert!(
+        forged
+            .validate_summary(&altered, &proxy.captures)
+            .unwrap_err()
+            .to_string()
+            .contains("association changed")
+    );
+    assert!(
+        evidence
+            .validate_summary(&summary, &[capture.clone(), capture])
+            .is_err()
+    );
+    assert!(evidence.validate_summary(&summary, &[]).is_err());
+    let published = recorder.finalize(false).unwrap().unwrap();
+    assert!(!published.cleanup_complete);
+    assert!(producer.exists());
+    evidence
+        .validate_summary(&summary, &proxy.captures)
+        .unwrap();
+}
+
+#[test]
+fn recording_setup_failure_retains_partial_bytes_with_unknown_outcomes() {
+    let fixture = Fixture::new();
+    let campaign = fixture.0.canonicalize().unwrap().join("campaign-1");
+    std::fs::create_dir_all(campaign.join("batch-1")).unwrap();
+    let destination =
+        super::super::recording::preflight(&fixture.0.join("partial.asb.zip")).unwrap();
+    let recorder = super::super::recording::Recorder::new(
+        destination.clone(),
+        campaign.clone(),
+        "campaign-1".into(),
+        1,
+        1,
+    );
+    recorder.prepare(&recording_identity(&result()), 1).unwrap();
+    let producer = super::super::recording::base(&campaign, 1);
+    std::fs::write(&producer, b"partial trace").unwrap();
+    recorder.finalize(false).unwrap().unwrap();
+    let mut archive =
+        crate::cassette::Archive::open(&destination, crate::cassette::Limits::default()).unwrap();
+    let track = &archive.manifest().tracks[0];
+    assert!(!track.complete);
+    assert_eq!(track.process_success, None);
+    assert_eq!(track.workload_success, None);
+    assert_eq!(track.statistics, crate::cassette::Statistics::default());
+    assert_eq!(archive.read_track(1).unwrap(), b"partial trace");
+    assert!(producer.exists());
+}
+
 fn result() -> RunResult<'static> {
     RunResult {
+        recording: None,
         execution: None,
         workload_resource_disposition: Some(workloads::ResourceDisposition::Removed),
         workload_artifacts: Vec::new(),
@@ -1219,6 +1351,7 @@ fn early_provider_teardown_notifies_material_peers_before_waiting_for_cleanup() 
                 dataset_sha256: None,
                 prompt_sha256: "a".repeat(64),
                 material_sha256: "b".repeat(64),
+                protocol_sha256: None,
             };
             assert!(
                 peer.ready(identity)

@@ -8,6 +8,7 @@ use disposition::RunStatus;
 use disposition::{FailureKind, RunDisposition, RunFacts, RunFailure};
 mod native;
 mod phases;
+pub(crate) mod recording;
 mod repeated;
 use phases::{
     AdmittedAttempt, AttemptIssues, ExecutionEvidence, FinalizedAttempt, MeasuredOutput,
@@ -61,6 +62,8 @@ fn emit_warning(
 #[derive(Serialize)]
 struct RunResult<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
+    recording: Option<recording::Evidence>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     execution: Option<repeated::ExecutionIdentity>,
     planning: crate::planning::ResolvedPlan,
     effective_budgets: crate::planning::EffectiveBudgets,
@@ -104,6 +107,9 @@ struct RunResult<'a> {
 /// Execution choices shared by single runs, replicas, and sweeps.
 #[derive(Clone, Copy, Default)]
 pub(crate) struct RunOptions<'a> {
+    pub track: Option<crate::cassette::Selector>,
+    pub replay_seed: Option<u64>,
+    pub recording: Option<&'a recording::Recorder>,
     pub repeat: Option<u64>,
     pub batch: Option<&'a repeated::BatchIdentity>,
     pub verify_initial_material: bool,
@@ -141,7 +147,23 @@ pub(crate) fn run_with_diagnostics(
     let text = read_config(config_path)?;
     let config: BenchmarkConfig = toml::from_str(&text)
         .map_err(|error| Error::Input(format!("cannot parse {path}: {error}")))?;
-    if let Some(repeat) = options.repeat {
+    if (options.track.is_some() || options.replay_seed.is_some())
+        && options.mode != Some(tape::Mode::Replay)
+    {
+        return Err(Error::Input("--track and --seed require --replay".into()));
+    }
+    let bundled_replay = if options.mode == Some(tape::Mode::Replay) {
+        let source = replay_cassette(config_path, &config, options.cassette)?;
+        crate::cassette::Source::is_bundle(&source)
+            .map_err(|error| Error::Input(error.to_string()))?
+    } else {
+        false
+    };
+    if let Some(repeat) = options.repeat.or((bundled_replay
+        || options.track.is_some()
+        || options.replay_seed.is_some())
+    .then_some(1))
+    {
         return repeated::run(config_path, config, repeat, options, output, warnings);
     }
     run_loaded(config_path, config, options, output, warnings)
@@ -380,20 +402,7 @@ fn parallel_path(value: &str, index: usize) -> String {
 }
 
 fn append_path_suffix(path: &Path, index: usize) -> PathBuf {
-    let stem = path
-        .file_stem()
-        .and_then(|value| value.to_str())
-        .unwrap_or("benchmark");
-    let extension = path.extension().and_then(|value| value.to_str());
-    let name = match extension {
-        Some(extension) => format!("{stem}-concurrency-{index}.{extension}"),
-        None => format!("{stem}-concurrency-{index}"),
-    };
-    if let Some(parent) = path.parent() {
-        parent.join(name)
-    } else {
-        PathBuf::from(name)
-    }
+    crate::benchmark_paths::replica_path(path, index)
 }
 
 fn run_mode(
@@ -688,6 +697,16 @@ fn run_mode(
                         workload_session.invocation().input.instructions.as_bytes(),
                     ),
                     material_sha256,
+                    protocol_sha256: Some(crate::cassette::digest(
+                        &serde_json::to_vec(&serde_json::json!({
+                            "contract":"asb-bundled-replay-v1",
+                            "agent_input":agents::REPLAY_INPUT_CONTRACT,
+                            "tape_matching":tape::REPLAY_MATCHING_CONTRACT,
+                            "material_scope":workloads::session::REPLAY_MATERIAL_CONTRACT,
+                            "module":module,"metric_policy":metric_policy
+                        }))
+                        .map_err(|error| Error::Run(error.to_string()))?,
+                    )),
                 })
             })();
             let ready = identity.and_then(|identity| arrival.ready(identity));
@@ -1018,7 +1037,8 @@ fn run_mode(
             elapsed_ms,
             success,
         });
-        let result = RunResult {
+        let mut result = RunResult {
+            recording: None,
             execution: options.batch.map(|batch| batch.execution(options.replica)),
             planning: policy,
             effective_budgets,
@@ -1079,6 +1099,21 @@ fn run_mode(
             stdout: bounded(&child.stdout),
             stderr,
         };
+        // A recording failure changes command completion, never the actual
+        // process or official workload grade. Commit before sealing outputs.
+        let recording_error = options.recording.and_then(|recorder| {
+            let batch = options.batch.expect("campaign-owned recording");
+            match recorder.commit(batch.number(), options.replica, &result, &proxy_evidence) {
+                Ok(evidence) => {
+                    result.recording = Some(evidence);
+                    None
+                }
+                Err(error) => Some(error),
+            }
+        });
+        if let Some(error) = &recording_error {
+            result.disposition.recording_failed(error.to_string());
+        }
         let log_publication =
             phases::LogPublication::publish(config_path, &config.log_file, &result);
         let measurement_completion = phases::finish_measurements(measurement_session, &result);
@@ -1107,6 +1142,7 @@ fn run_mode(
         if log_publication.confirmed()
             && measurement_completion.confirmed()
             && provider_cleanup_error.is_none()
+            && recording_error.is_none()
             && capture_complete
         {
             match completion::persist(
@@ -1172,6 +1208,13 @@ fn run_mode(
             None => outcome,
         };
         let outcome = diagnostics::preserve_primary(outcome, presentation);
+        let outcome = match recording_error {
+            Some(error) => Err(Error::Io(match outcome {
+                Ok(()) => error.to_string(),
+                Err(primary) => format!("{primary}; {error}"),
+            })),
+            None => outcome,
+        };
         if let Some(cleanup) = provider_cleanup_error {
             match outcome {
                 Ok(()) => Err(Error::Run(cleanup)),
@@ -1552,6 +1595,40 @@ fn default_cassette(config_path: &Path, config: &BenchmarkConfig) -> std::path::
         ))
 }
 
+/// Explicit paths win. Preserve historical JSONL/base-or-replica routing when
+/// present; otherwise discover the new default ZIP recording. Presence includes
+/// invalid files/links, which must fail normally rather than silently fall back.
+fn replay_cassette(
+    config_path: &Path,
+    config: &BenchmarkConfig,
+    requested: Option<&str>,
+) -> Result<PathBuf, Error> {
+    if let Some(path) = requested {
+        return Ok(PathBuf::from(path));
+    }
+    let legacy = default_cassette(config_path, config);
+    for path in std::iter::once(legacy.clone()).chain(
+        (1..=crate::benchmark::MAX_CONCURRENCY)
+            .map(|replica| crate::benchmark_paths::replica_path(&legacy, replica)),
+    ) {
+        match std::fs::symlink_metadata(&path) {
+            Ok(_) => return Ok(legacy),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+            Err(error) => return Err(io_error(error)),
+        }
+    }
+    let bundle = default_bundle_cassette(config_path, config);
+    match std::fs::symlink_metadata(&bundle) {
+        Ok(_) => Ok(bundle),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(legacy),
+        Err(error) => Err(io_error(error)),
+    }
+}
+
+fn default_bundle_cassette(config_path: &Path, config: &BenchmarkConfig) -> PathBuf {
+    default_cassette(config_path, config).with_extension("asb.zip")
+}
+
 fn write_log(
     config_path: &Path,
     configured_path: &str,
@@ -1595,7 +1672,7 @@ pub(crate) fn resolve_log_path(config_path: &Path, configured_path: &str) -> Pat
 }
 
 fn render_json(result: &RunResult<'_>, output: &mut dyn Write) -> Result<(), Error> {
-    let summary = serde_json::json!({
+    let mut summary = serde_json::json!({
         "execution": result.execution,
         "planning": result.planning,
         "effective_budgets": result.effective_budgets,
@@ -1627,6 +1704,10 @@ fn render_json(result: &RunResult<'_>, output: &mut dyn Write) -> Result<(), Err
         "steps": result.steps,
         "token_usage": result.token_usage,
     });
+    if let Some(recording) = &result.recording {
+        summary["recording"] =
+            serde_json::to_value(recording).map_err(|error| Error::Io(error.to_string()))?;
+    }
     // Sweep output is JSONL: keep each run summary on exactly one line so
     // callers can stream and parse it without having to recover pretty JSON
     // objects from a mixed human transcript.
@@ -2520,6 +2601,7 @@ mod tests {
                 true,
                 &evidence,
                 &crate::proxy::Evidence {
+                    captures: Vec::new(),
                     output_files: Vec::new(),
                     cleanup_confirmed: true,
                 },
@@ -2592,6 +2674,7 @@ mod tests {
                     true,
                     &[],
                     &crate::proxy::Evidence {
+                        captures: Vec::new(),
                         output_files: Vec::new(),
                         cleanup_confirmed: true
                     },
@@ -2606,6 +2689,7 @@ mod tests {
 
     fn result<'a>() -> RunResult<'a> {
         RunResult {
+            recording: None,
             execution: None,
             planning: crate::planning::resolve(
                 &toml::from_str(
