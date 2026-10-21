@@ -14,7 +14,7 @@ informational, not a substitute for meaningful offline regressions. Required
 functional CI, independent review, exact-head validation and patch releases
 still apply to each repair class.
 
-Artifact integration, staged patch **0.2.35**, source-only: historical artifact
+Artifact integration, staged patch **0.2.35**, pending full qualification: historical artifact
 checkpoint `a2708632` is combined with committed publication34 `3359bfb2`.
 The incoming bundled recording/replay, selected-track capture proofs and typed
 recording-failure disposition are retained. Native exact frozen-byte evidence
@@ -29,9 +29,44 @@ its author's unfinished cross-feature tests. No runtime/collector repair is
 folded in. Earlier 511-, 1,246- and 1,258-test results describe their historical
 trees, not this combined source. Independent integration review, fresh focused
 and full qualification, hosted/package CI, merge, post-merge verification and
-release remain pending. No build, test or cache use accompanied this merge.
+release remain pending. No build, test or cache use accompanied initial `8cf06433`.
 Windows identity, publication and independent-reader qualification remains
 source-only; this merge adds no Windows runtime evidence.
+
+Root independently source-reviewed integration `8cf06433` and test-only
+cross-feature checkpoint `c4cfa8f8`. Qualified publication tests and actual-main
+ancestry were folded by `402ebee6` without production changes. Six additional
+native MiniSWE cases reuse the existing bounded loopback provider and publication
+fault scopes: true/false/nullable-native grades, failed recorder commit plus log
+or measurement publication, and selected private replay after source replacement.
+Exact frozen private trajectory bytes retain the answer, 34 tokens and four
+steps after original consumption, while validated tape usage remains authoritative
+at five tokens despite misleading stdout usage/answer. Assertions preserve
+exactly-once grading/workload/provider/client actions, failed-publication error
+ordering, locatable 0600 frozen evidence and no receipt or next-batch admission.
+
+The actual 0.2.35 CLI was built first. The focused matrix at `c4cfa8f8` passed
+**669 tests**, zero failed, with four explicit optional skips: bundle two (15
+isolated cases plus three clean replay baselines), agents 65, layout one, actual
+artifact entry two, runner 110 (excluding the already-counted bundle family),
+workloads 169, comparison 70, checkpoint 34, repeated CLI 29, benchmark protocol
+35, guest agent 14, measurements 72, evidence 18, cassette 46 and capture-session
+two. A command initially named nonexistent Cargo target `benchmark_guest`;
+`target/artifact35-guest.log` preserves that invocation failure, and the correct
+`guest_agent` target passed separately in `artifact35-guest-v2.log`. No guest test
+ran in the failed invocation; no runtime failure was retried.
+
+After all runtime handles were terminal, signed `727869da` tightened only the
+fixture's output-path guard: a missing argument or a path outside the current
+private attempt must fail before writing. Both affected bundle tests (all 15
+cases) then passed afresh. Strict workspace/all-target/all-feature Clippy and
+formatting passed at that source. Production/Cargo are byte-identical to the
+reviewed integration, and the actual executable SHA-256 stayed
+`eb1ccde0206f8afa34378522b9506efadfb049093b1dd14bdc497cf30304a0ba`
+before/after/final. Logs/hashes are `target/artifact35-*`. Only the allocated
+REPORT target cache was used. This is focused Linux/offline qualification, not
+a fresh full suite, Windows runtime, original external SDK or live-provider
+qualification. Full execution remains held for final independent review.
 
 Historical artifact integration:
 

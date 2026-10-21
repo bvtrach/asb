@@ -847,6 +847,17 @@ repeated `execution` selection object: their task/cohort/fingerprint/usage are
 checked against plan/log/streamed selection identity without inventing fields.
 No production fault switch, SDK, container, privileged collector or live LLM is
 used. Build the current ASB executable first and keep it unchanged while testing.
+The artifact-handoff test in the same module adds six actual native MiniSWE
+record/replay cases without another provider implementation. The fake executable
+writes only the adapter's actual current-private `--output` trajectory; its
+stdout deliberately disagrees with the frozen answer and claims 999 tokens.
+True/false grades must use the frozen answer, steps remain four, validated tape
+usage stays authoritative at five tokens, and the exact retained 0600 trajectory
+independently contains 34 tokens. Commit plus log/measurement failures and selected
+private replay after source replacement must retain a locatable frozen copy,
+consume only the original owned trajectory, finish/evaluate/publish once, stop
+further admission and withhold unsafe receipts. This extends the source-approved
+integration's offline evidence, not native Windows or original-SDK qualification.
 The independent-offset fixture keeps its producer at offset five while full,
 prefix and interleaved frozen readers run; this assertion also remains enabled
 on Windows. An additional cross-platform source-replacement fixture must read
