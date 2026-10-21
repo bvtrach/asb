@@ -385,6 +385,16 @@ incomplete or foreign evidence and identical diagnostics. Campaign-specific
 execution/cohort/start/path authority must be composed with this validator,
 not substituted for it or synthesized through a fake legacy entry.
 
+Checkpoint qualification after merging main `fb4cce4d` into `70fe331a`:
+formatting, strict all-target/all-feature Clippy, build, the complete offline
+`cargo test --no-fail-fast` suite (including doctests), private Rust docs and
+UML generation all passed. The full suite includes 1,221 passing library tests
+with 13 explicit opt-in ignores and all 43 repeated-run/sweep regressions.
+The actual executable SHA-256 remained unchanged across that full test run.
+Independent read-only review approved each checkpoint and the mainline merge.
+These are integrated foundation gates, not modern-resume, viewer, package,
+hosted-PR or release qualification; those delivery obligations remain open.
+
 The first current-main integrated suite retained one library failure: Linux
 returned `ETXTBSY` when the native-gate argument/environment fixture executed its
 new mock script; all other library and integration targets completed normally.
