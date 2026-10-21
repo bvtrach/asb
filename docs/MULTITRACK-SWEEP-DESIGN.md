@@ -89,6 +89,16 @@ recording proof. Grouped per-recording proof verification, retained population
 selection semantics, sweep scheduling/continuation wiring and complete feature
 qualification remain unfinished; these checkpoints are not feature readiness.
 
+Qualification checkpoint: the exact campaign-reader revision `b8dbab6b` passed
+the complete offline suite (1267 passed, 21 existing ignored, zero failures),
+strict Clippy, build, formatting, Rust docs and UML generation. Subsequent main
+integration retains the shared synthetic recording-provider fixture and the
+controller/evidence-publication repairs. Its repeated CLI suite (35 tests),
+actual bundled publication-fault qualification, nine measurement-publication
+tests and strict Clippy pass after adapting the new fixture constructor to the
+optional metadata fields. This does not substitute for full qualification of
+the integrated head or the remaining feature work.
+
 ## Ownership and shared contracts
 
 Extract a reusable runner-owned campaign plan and bounded reader from the
