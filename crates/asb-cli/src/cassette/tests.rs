@@ -884,6 +884,135 @@ fn immutable_track_evidence_survives_publication_faults_but_not_commit_tampering
 }
 
 #[test]
+fn journal_rejects_predictable_metadata_exhaustion_without_creating_outputs() {
+    for (repeat, concurrency, limit) in [(65_533, 1, 16 * 1024 * 1024), (2, 2, 1024), (1, 1, 1)] {
+        let fixture = Fixture::new();
+        let destination = fixture.0.join("budget.asb.zip");
+        let mut initial = manifest(0);
+        initial.concurrency = concurrency;
+        let error = RecordingJournal::create(
+            &destination,
+            initial,
+            repeat,
+            Limits {
+                max_manifest_bytes: limit,
+                ..Limits::default()
+            },
+        )
+        .err()
+        .expect("known impossible population must fail before reservation");
+        assert!(error.to_string().contains("metadata"), "{error}");
+        assert_eq!(
+            fs::read_dir(&fixture.0).unwrap().count(),
+            0,
+            "preflight must not create a lock, partial directory or final destination"
+        );
+    }
+}
+
+#[test]
+fn journal_metadata_reservation_covers_full_width_statistics_and_outcomes() {
+    let fixture = Fixture::new();
+    let destination = fixture.0.join("budget.asb.zip");
+    let mut initial = manifest(0);
+    initial.recording_id = "r".repeat(128);
+    initial.concurrency = 2;
+    // Discover the exact public admission boundary without duplicating the
+    // private record schemas or maintaining a separate JSON-size constant.
+    let mut low = 1;
+    let mut high = 8192;
+    while low < high {
+        let mid = low + (high - low) / 2;
+        let probe = Fixture::new();
+        let admitted = RecordingJournal::create(
+            &probe.0.join("budget.asb.zip"),
+            initial.clone(),
+            2,
+            Limits {
+                max_manifest_bytes: mid,
+                ..Limits::default()
+            },
+        )
+        .is_ok();
+        if admitted {
+            high = mid;
+        } else {
+            low = mid + 1;
+        }
+    }
+    assert!(low > 1 && low < 8192);
+    let too_small = Limits {
+        max_manifest_bytes: low - 1,
+        ..Limits::default()
+    };
+    assert!(RecordingJournal::create(&destination, initial.clone(), 2, too_small).is_err());
+    assert_eq!(fs::read_dir(&fixture.0).unwrap().count(), 0);
+    let limits = Limits {
+        max_manifest_bytes: low,
+        ..Limits::default()
+    };
+    let mut journal = RecordingJournal::create(&destination, initial, 2, limits).unwrap();
+    for id in 1..=4 {
+        let mut track = manifest(1).tracks.remove(0);
+        track.id = id;
+        track.batch = (id - 1) / 2 + 1;
+        track.replica = (id - 1) % 2 + 1;
+        track.complete = false;
+        track.process_success = Some(false);
+        track.workload_success = Some(false);
+        track.statistics = Statistics {
+            tokens: Some(u64::MAX),
+            duration_ms: Some(u64::MAX),
+            requests: Some(u64::MAX),
+            steps: Some(u64::MAX),
+        };
+        journal.begin(track.batch, track.replica).unwrap();
+        journal.commit(track, &mut &b"{}\n"[..]).unwrap();
+    }
+    drop(journal);
+    let mut journal = RecordingJournal::recover(&destination, limits).unwrap();
+    let published = journal.finalize().unwrap();
+    assert!(published.cleanup_complete);
+    assert_eq!(
+        Archive::open(&destination, Limits::default())
+            .unwrap()
+            .manifest()
+            .tracks
+            .len(),
+        4
+    );
+}
+
+#[test]
+fn journal_recovery_preserves_pre_reservation_sparse_population() {
+    let fixture = Fixture::new();
+    let destination = fixture.0.join("legacy-partial.asb.zip");
+    let mut journal =
+        RecordingJournal::create(&destination, manifest(0), 1, Limits::default()).unwrap();
+    journal.begin(1, 1).unwrap();
+    journal
+        .commit(manifest(1).tracks.remove(0), &mut &b"{}\n"[..])
+        .unwrap();
+    let intent_path = journal.partial_directory().join("intent.json");
+    drop(journal);
+    // Model an older writer's large intent with a small actual committed prefix.
+    let mut intent: serde_json::Value =
+        serde_json::from_slice(&fs::read(&intent_path).unwrap()).unwrap();
+    intent["repeat"] = serde_json::json!(40);
+    fs::write(intent_path, serde_json::to_vec(&intent).unwrap()).unwrap();
+    let limits = Limits {
+        max_manifest_bytes: 2000,
+        ..Limits::default()
+    };
+    assert!(
+        RecordingJournal::create(&fixture.0.join("new.asb.zip"), manifest(0), 40, limits).is_err()
+    );
+    let mut recovered = RecordingJournal::recover(&destination, limits).unwrap();
+    assert_eq!(recovered.snapshot().unwrap().tracks.len(), 1);
+    assert!(recovered.finalize().unwrap().cleanup_complete);
+}
+
+#[test]
 fn journal_retains_interrupted_copy_without_promoting_it_to_complete() {
     struct BrokenReader(bool);
     impl Read for BrokenReader {

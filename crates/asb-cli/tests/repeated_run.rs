@@ -255,6 +255,34 @@ fn record(project: &Project, provider: &RecordingProvider, repeat: Option<&str>)
 }
 
 #[test]
+fn recording_population_metadata_budget_fails_before_any_client_or_inference() {
+    let project = Project::new();
+    project.config(1);
+    let provider = RecordingProvider::new();
+    let output = record(&project, &provider, Some("60000"));
+    assert!(!output.status.success());
+    let diagnostic = String::from_utf8_lossy(&output.stderr);
+    assert!(diagnostic.contains("metadata"), "{diagnostic}");
+    assert_eq!(provider.calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert!(!project.0.join("attempts.jsonl").exists());
+    assert!(!project.0.join("barrier-1-1").exists());
+    for name in [
+        "new-recording.jsonl",
+        ".new-recording.jsonl.partial",
+        ".new-recording.jsonl.recording.lock",
+    ] {
+        assert!(
+            !project.0.join(name).exists(),
+            "unexpected recording output {name}"
+        );
+    }
+    assert_eq!(
+        fs::read_to_string(project.0.join("workspace/preserve-user-file")).unwrap(),
+        "untouched user material"
+    );
+}
+
+#[test]
 fn bundled_recording_uses_fresh_default_and_stable_repeated_slots_even_with_jsonl_suffix() {
     for (repeat, concurrency) in [(None, 1), (Some("2"), 2)] {
         let project = Project::new();

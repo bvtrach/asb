@@ -38,10 +38,13 @@ removal. Changed/replaced files, links, directories and unconfirmed cleanup reta
 raw diagnostics with a warning. A missing published target never silently falls
 back to leftover staging. Broader sweep/compare readers still need their planned
 artifact-aware integration and batch-index deduplication before qualification.
-Large populations also need an up-front reservation for the backend journal's
-start/commit metadata before they can be advertised as ready. Incremental bounds
-already fail conservatively, but should not discover a predictable metadata
-shortage only after earlier paid executions. Cleanup errors after unlink may mean
+New journals reserve worst-case start/commit metadata and the final manifest for
+the whole planned population before creating a lock or partial directory and
+before admitting clients. Reservation uses the backend's actual JSON schemas,
+maximum-width observations and checked arithmetic without allocating all tracks.
+The existing incremental bounds remain enforced; older partial journals recover
+against their actual metadata rather than the new full-plan admission rule.
+Cleanup errors after unlink may mean
 unconfirmed directory durability rather than a retained raw file; warnings do not
 promise retention when removal itself already succeeded.
 
