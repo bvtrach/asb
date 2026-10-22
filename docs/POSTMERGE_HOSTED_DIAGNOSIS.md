@@ -78,7 +78,9 @@ runtime discovery, unmeasured capture sweep and sweep presentation failures.
 All six logs use target/hosted-diagnosis-*; all handles are terminal. Thus the
 four hosted failures are NOT reproduced or solved on this Ubuntu24 local host.
 
-The new temporary diagnostic workflow is additive; normal CI stays intact.
+The initial temporary diagnostic workflow below was source-reviewed but NOT run;
+its unsafe outer-timeout ownership gap is superseded by the next section.
+The diagnostic workflow is additive; normal CI stays intact.
 It builds actual ASB first on ubuntu-latest, then uses a120s owned command-group
 watchdog with5s TERM-to-KILL escalation and a5min outer job bound. The static
 script imports unchanged actual production definitions, not main's catch/redaction
@@ -96,3 +98,39 @@ program probe observes ASB file metadata, not a running Rust libtest; that scope
 limitation is explicitly emitted, and original owning tests remain required.
 The workflow/script have NOT run yet. Source review precedes any push/hosted
 execution; no runner pin, skip, limit relaxation or production change is proposed.
+
+## Revised owned harness and exact image reproduction (source only)
+
+Root rejected the timeout/KILL wrapper: it could destroy the Python cleanup
+owner without observing its admitted children's actual settlement. No execution
+or hosted push used that candidate. The replacement is a private Linux library
+test using existing ProcessLaunch/Admission/ManagedGate. Admission establishes
+the real guardian and fallback keeper before Python spawn; null stdio eliminates
+new pump/read threads. Its100s caller deadline requests only normal owned gate
+cancellation. Exit is accepted only through ManagedGate's matching guardian
+exit plus QUIESCENT. Timeout/observation failure stays an error with wait-only
+guardian custody, never SIGKILL of an admitted guardian or guessed PID cleanup.
+Every namespace is retained, including failed/uncertain and successful cases.
+An unrelated separately admitted gated sentinel must remain live until its own
+explicit cleanup before assertions. Diagnostic summaries are read only after
+confirmed helper settlement, capped64KiB; no cleanup path recursively removes
+diagnostic bytes. The unchanged original normal CI checks are still run, without
+skips; the temporary owning diagnostic also runs as an ordinary Linux test.
+
+The script now resides in the packaged crate's fixtures, receives explicit
+crate/image/owned-root arguments, and hashes ASB in64KiB chunks under a256MiB
+cap rather than read_bytes. Exact loader captures retain at most256files/16MiB
+aggregate; each remains≤1MiB, and tracebacks are capped64KiB each. Summary and
+trace/loader files are0600 under the owned0700 namespace. The original nine
+declarations, production definitions/limits and redaction remain unchanged.
+
+Authoritative comparison supplied by root: successful PR311 run39710024928 job
+119598882816 used Ubuntu24.04.5 image ubuntu-24.04/20261018.339.1 (synthetic merge
+fbe742a, tree equal00ee/c725 integration); identical-tree postmain39711305901
+used Ubuntu26.04.1 image ubuntu-26.04/20261018.168.1 and failed five cases. This
+establishes different environments, not the missing exception's exact cause.
+The diagnostic-only job therefore requests official supported ubuntu-26.04;
+normal checks remain ubuntu-latest. This is reproduction, not pinning normal CI
+to Ubuntu24 to bypass failures. Label source:
+https://github.com/actions/runner-images/blob/main/README.md#available-images
+No runtime/build has run on this revised source; review precedes qualification.

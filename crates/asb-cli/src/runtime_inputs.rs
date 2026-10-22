@@ -284,6 +284,102 @@ fn stop_owned(child: &mut std::process::Child) {
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hosted_runtime_diagnostic_requires_actual_gate_settlement() {
+        use crate::launch::ProcessLaunch;
+        use crate::process_gate::Admission;
+        use std::os::unix::fs::DirBuilderExt;
+
+        let parent = Path::new(env!("CARGO_MANIFEST_DIR")).join("target");
+        std::fs::create_dir_all(&parent).unwrap();
+        let root = parent.join(format!(
+            "runtime-host-diagnostic-{}",
+            crate::tools::runtime::unique_id()
+        ));
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&root)
+            .unwrap();
+        // This namespace is deliberately retained on every outcome. A bounded
+        // caller return never permits recursive deletion under an uncertain owner.
+        let binary = std::env::current_exe()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("asb");
+        assert!(binary.is_file(), "build the actual executable first");
+        let (mut command, route) = ProcessLaunch::new("/bin/sleep").native(Some(&binary));
+        command
+            .arg("120")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let mut sentinel = Admission::new(route.validate_gate(&mut command).unwrap())
+            .unwrap()
+            .spawn()
+            .unwrap();
+        sentinel.resume().unwrap();
+        let source = include_str!("../tests/fixtures/runtime-inputs-host-diagnostic.py");
+        let (mut command, route) = ProcessLaunch::new("python3").native(Some(&binary));
+        command
+            .env_clear()
+            .env("PATH", std::env::var_os("PATH").unwrap())
+            .env("HOME", &root)
+            .args(["-I", "-S", "-B", "-c", source])
+            .arg(env!("CARGO_MANIFEST_DIR"))
+            .arg(&binary)
+            .arg(&root)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let mut gate = Admission::new(route.validate_gate(&mut command).unwrap())
+            .unwrap()
+            .spawn()
+            .unwrap();
+        gate.resume().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(100);
+        let result = loop {
+            match gate.try_wait() {
+                Ok(Some(status)) => break Ok(status),
+                Ok(None) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                Ok(None) => {
+                    // ManagedGate requests owned cancellation and requires its
+                    // actual matching quiescence proof; it never kills the gate
+                    // to manufacture exit. Uncertainty transfers wait-only to
+                    // the already established keeper, retaining this namespace.
+                    let cleanup = gate.stop();
+                    break Err(format!("diagnostic deadline; cleanup={cleanup:?}"));
+                }
+                Err(error) => break Err(format!("diagnostic observation failed: {error}")),
+            }
+        };
+        drop(gate); // Handles error/unwind through existing wait-only custody.
+        let alive = sentinel.try_wait().is_ok_and(|status| status.is_none());
+        let sentinel_cleanup = sentinel.stop();
+        assert!(
+            alive && sentinel_cleanup.is_ok(),
+            "sentinel must survive until its own cleanup"
+        );
+        let status = result.unwrap_or_else(|error| panic!("{error}; retained {}", root.display()));
+        assert!(
+            status.success(),
+            "diagnostic helper failed; retained {}",
+            root.display()
+        );
+        std::fs::write(root.join("gate-settled"), "matching guardian exit and QUIESCENT observed; unrelated sentinel settled separately\n").unwrap();
+        let summary = std::fs::File::open(root.join("summary.jsonl")).unwrap();
+        let mut bytes = Vec::new();
+        summary.take(64 * 1024 + 1).read_to_end(&mut bytes).unwrap();
+        assert!(bytes.len() <= 64 * 1024);
+        println!("{}", String::from_utf8(bytes).unwrap());
+        println!("Retained settled diagnostic fixture: {}", root.display());
+    }
+
     struct Directory(PathBuf);
     impl Directory {
         fn new() -> Self {

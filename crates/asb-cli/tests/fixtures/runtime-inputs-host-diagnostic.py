@@ -7,23 +7,22 @@ import os
 from pathlib import Path
 import shutil
 import sys
-import tempfile
 import time
 import traceback
 
 
-REPO = Path(__file__).resolve().parents[1]
-ASSETS = REPO / "crates/asb-cli/assets/benchmarks"
-ROOT = Path(tempfile.mkdtemp(prefix="runtime-host-diagnostic-", dir=REPO / "target"))
-os.chmod(ROOT, 0o700)
+CRATE, ASB, ROOT = [Path(value) for value in sys.argv[1:]]
+ASSETS = CRATE / "assets/benchmarks"
 DEADLINE = time.monotonic() + 90
 OPERATION = "initialization"
 SEQUENCE = 0
+RETAINED = 0
 
 
 def record(value):
     # Only fixed fixture labels, categorical errors and public binary metadata.
-    with (ROOT / "summary.jsonl").open("a", encoding="utf-8") as output:
+    descriptor = os.open(ROOT / "summary.jsonl", os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as output:
         output.write(json.dumps(value, sort_keys=True) + "\n")
     print(json.dumps(value, sort_keys=True), flush=True)
 
@@ -44,10 +43,13 @@ original_libraries = runtime.library_paths
 
 
 def capture_libraries(text):
-    global SEQUENCE
+    global SEQUENCE, RETAINED
     SEQUENCE += 1
     data = text.encode("utf-8")
     assert len(data) <= 1024 * 1024
+    if SEQUENCE > 256 or RETAINED + len(data) > 16 * 1024 * 1024:
+        raise RuntimeError("private diagnostic retention bound reached")
+    RETAINED += len(data)
     # Exact loader output, from hardcoded benign executables and a clean
     # environment, remains under the private fixture; never print environment.
     path = ROOT / f"loader-{SEQUENCE:03}.txt"
@@ -81,7 +83,7 @@ def inspect(label, action):
         descriptor = os.open(ROOT / f"{label}.traceback.txt",
                              os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(descriptor, "w", encoding="utf-8") as output:
-            traceback.print_exc(file=output)
+            output.write(traceback.format_exc(limit=32)[:65536])
         # The public row deliberately omits arbitrary exception text/path/env.
         record({"operation": label, "result": "error", "class": type(error).__name__})
     else:
@@ -100,9 +102,22 @@ script.chmod(0o700)
 applet = ROOT / "unshare"
 shutil.copyfile("/bin/true", applet)
 applet.chmod(0o700)
-asb = REPO / "target/debug/asb"
+def image_digest(path):
+    digest = hashlib.sha256()
+    total = 0
+    with path.open("rb") as source:
+        if os.fstat(source.fileno()).st_size > 256 * 1024 * 1024:
+            raise ValueError("diagnostic ASB image exceeds its byte bound")
+        while chunk := source.read(65536):
+            total += len(chunk)
+            if total > 256 * 1024 * 1024:
+                raise ValueError("diagnostic ASB image grew beyond its byte bound")
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 record({"stage": "image", "python": sys.version.split()[0],
-        "asb_sha256": hashlib.sha256(asb.read_bytes()).hexdigest()})
+        "asb_sha256": image_digest(ASB)})
 
 inspect("copied-true-program", lambda: discovery().program(applet))
 inspect("shell-program", lambda: discovery().program("/bin/sh"))
@@ -111,7 +126,7 @@ inspect("python-no-site", lambda: discovery().python("python3", False))
 inspect("shebang-program", lambda: discovery().program(script))
 inspect("missing-file", lambda: discovery().file(ROOT / "missing-configuration"))
 inspect("current-python-process", lambda: discovery().process(os.getpid()))
-inspect("built-asb-program", lambda: discovery().program(asb))
+inspect("built-asb-program", lambda: discovery().program(ASB))
 
 # Run original definitions and preserve their categorical boundary, not main's
 # catch/redaction wrapper. No coding client, provider or workload is executed.

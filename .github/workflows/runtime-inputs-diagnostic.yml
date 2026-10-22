@@ -9,7 +9,8 @@ permissions:
 
 jobs:
   runtime-inputs-diagnostic:
-    runs-on: ubuntu-latest
+    # Reproduce the observed failing image; normal CI remains ubuntu-latest.
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
@@ -22,11 +23,11 @@ jobs:
         run: |
           set -euo pipefail
           umask 077
-          timeout --signal=TERM --kill-after=5s 120s python3 scripts/diagnose_runtime_inputs_host.py
+          cargo test --locked --lib hosted_runtime_diagnostic_requires_actual_gate_settlement -- --nocapture
       - name: Retain exact bounded loader output and private fixture tracebacks
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: runtime-inputs-host-diagnostic
-          path: target/runtime-host-diagnostic-*
+          path: crates/asb-cli/target/runtime-host-diagnostic-*
           retention-days: 3
