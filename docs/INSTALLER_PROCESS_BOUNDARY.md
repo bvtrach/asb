@@ -841,3 +841,31 @@ acquires the uniquely owned Stage BEFORE consuming its intrinsic permission;
 Arc uniqueness is resource acquisition, never substituted for producer proof.
 That repair is deliberately NOT included before observing the requested RED.
 No full suite, PR, push, merge or release is authorized or claimed here.
+
+### Observed final-owner Drop retention failures (99736eb4)
+
+The observer fixture now uses an actual Stage-owned last-field completion
+receipt, published only after its custom Drop body and all earlier resource
+fields have dropped. Weak strong-count zero is NOT used as destructor proof.
+The local cases likewise inspect raw only after that same explicit receipt.
+
+Actual ASB built FIRST in13.29s (`installer44-retention-red-build.log`). The
+observer regression compiled in23.35s and then FAILED0/1/0 in0.05s, exit101,
+at its intended final assertion: raw was present at the custody Abort, but
+deleted after observer release and completed Stage destruction. The real
+pre_exec callback failed with fixed EIO after an owned descriptor handshake;
+the forbidden application was never admitted. The unrelated sentinel stayed
+alive through observer release and was separately stopped. Its final marker
+is ordinary-observer-review-confirmed. Transcript:
+`target/installer44-observer-ordinary-red.log`.
+
+Separately, `target/installer44-local-abort-red.log` FAILED0/1/0 in0.00s, exit101:
+BOTH validate-cancel and explicit typed Abort deleted raw after completed Stage
+destruction. Old installation bytes survived. Its final marker is
+local-abort-drop-confirmed. No external producer runs in these local cases.
+The actual binary was unchanged before/after both executions and its frozen
+copy, SHA256
+`8af09ebf7238994f094184b9f5de2874b563b3131ed5d2cabefe53cedf94ff7c`.
+Baseline binary/libtest copies remain under target/qualification with prefix
+installer44-retention-red; both failed transcripts and markers are preserved.
+This records observed failures BEFORE their production retention correction.
