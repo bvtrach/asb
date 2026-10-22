@@ -1,10 +1,11 @@
 # Known producer evaluation kinds: class47 design and baseline
 
-Current source-only integration: signed merges8b660f7e and17bf4e18 retain the
+Current qualified source integration: signed merges8b660f7e and17bf4e18 retain the
 reviewed material/fair/runner/fixture stack and qualified procfs hotfix alongside
 the independently reviewed typed extraction. Root coordinated provisional
 Cargo0.2.48; earlier45 was inherited metadata, not this patch's reserved slot.
-No combined build, runtime, full qualification, PR, push or release is claimed.
+Fresh combined local qualification at bd780473 is recorded below; actual-main
+reconciliation, independent final review and public delivery remain pending.
 
 ## Historical design/baseline checkpoint
 
@@ -273,3 +274,57 @@ qualification. All historical caches/binaries/logs are unchanged; no build,
 runtime, cache copy, PR, push, release or claim preceding patches are delivered
 has occurred in this integration step. Root independently reviews this signed
 source checkpoint before authorizing combined actual-FIRST/frozen qualification.
+
+## Fresh combined local qualification, source `bd780473`
+
+After root independently reviewed all integration seams and parity proofs, actual
+ASB built FIRST13.02s, locked/offline/jobs1/incremental0 in this owned HOME cache.
+Frozen `target/qualification/evaluation48-bd780473-asb` SHA256:
+`4d72136ae03b9fce57e83ffbdd8989e08cc54b9de7a7b7a26fa179f01922e4eb`.
+Before/after focus, before/after full and after normal gates hashes agree. No
+source edit or actual-binary relink occurred during runtime. Original baseline,
+integrated-baseline and84-test focused copies/logs remain separate and intact.
+
+Fresh focus passed211/0/0: the original84 typed/golden/extension owners,
+complete controller34 (including five actual material custody paths), guardian3,
+gate30, fair reaper7, Python Docker9/material8/task-server13/resources23. An
+earlier narrow controller::tests16 selection also passed but is excluded from
+211 because the later complete controller family includes it. Every selection
+was nonzero. Actual retained-owner/release/reap/sentinel and independent grade
+semantics ran on this combined source, without Docker/provider/SDK/privileges.
+
+Fresh locked/offline workspace/all-target/all-feature full suite exited0:
+**1495passed/0failed/21existing opt-in ignored across24outer targets**. Library
+1240/0/13, offline_cli98/0/5 and repeated_run33/0 all passed. The compact
+`target/evaluation48-full-outer-summaries.log` excludes nested reexec summaries.
+Complete evidence uses `target/evaluation48-{build,focus-*,python-*,full,doctests,
+clippy,fmt,diffcheck,make,update-tests,completion-syntax,package,package-help,
+package-assets}.log` and corresponding digest files. Doctests0/0, strict workspace
+all-target/all-feature Clippy `-D warnings`15.96s, fmt/diffcheck, sequential
+make/private Rustdocs/pinned AutoUML0.7.2/type/flow/interactive/completion gates,
+both shell syntax checks and all7 checkout-update tests passed. This is the
+update-test gate, not make update or real checkout mutation. No failure occurred
+in this combined qualification; all handles are terminal.
+
+After those handles terminated, root approved preserving only the generated
+regular/nonsymlink/zero-byte install.log with source/dev/inode/mode metadata under
+target/fixture-preservation; only its empty .asb parent was removed with rmdir.
+Crate target diagnostics remain. Locked/offline cargo package passed518files,
+6.2MiB/1.4MiB compressed, verification13.37s. Archive checks confirm typed
+core/contract/goldens, hotfix/consent fixtures, material controller/Python/guardian
+assets and both shared fixture helpers match checkout bytes; the immutable mock
+gate is0755 and no generated crate target tree is packaged. Package help passed.
+Archive SHA256 is
+`4f72c93df9eed0953d09c58a18deadf09537cf303b2f0cffd11809fb6c856dcf`.
+Package verification legitimately relinked ordinary debug ASB afterward; its
+separately frozen help-only evaluation48-bd780473-packaged-asb SHA256 is
+`065d9847fdc9dca2c136da32815dddec316b4f1b10477d57b91384f4203b56a1`,
+NOT the full-suite4d721 executable, which remains frozen alongside its libtest.
+
+Protected parent/core/golden parity checks still pass. Scope is local Linux
+x86_64 offline qualification; no ARM/Windows runtime, original SDK, Docker/live
+provider or extracted-package full-suite claim is made. Cargo48 remains staged
+provisional, not a claim preceding delivery patches have released. Independent
+final proof review and actual-main ancestry reconciliation precede any PR/push;
+hosted CI, both postmerge jobs and signed release remain pending. The removed
+coverage gate stays removed; this worker has performed no public promotion.
