@@ -1399,6 +1399,24 @@ fn resolve_path(root: &Path, value: &Path) -> PathBuf {
 }
 
 #[cfg(test)]
+fn missing_dependency(tool: &str, operation: &str, error: std::io::Error) -> Error {
+    let command = match tool {
+        "npm" => {
+            "curl -fsSL https://fnm.vercel.app/install | bash && eval \"$(fnm env --shell bash)\" && fnm install --lts && fnm use --lts"
+        }
+        "python3" => {
+            "curl -LsSf https://astral.sh/uv/install.sh | sh && ~/.local/bin/uv python install 3.12"
+        }
+        "curl" => "sudo apt-get update && sudo apt-get install -y curl",
+        "tar" => "sudo apt-get update && sudo apt-get install -y tar",
+        _ => "install the missing prerequisite and rerun the command",
+    };
+    Error::Io(format!(
+        "{operation} needs `{tool}`, but it could not be started: {error}. Install it, then rerun the command. Suggested command:\n  {command}"
+    ))
+}
+
+#[cfg(test)]
 pub(crate) fn install_source(
     root: &Path,
     source: &str,

@@ -1198,3 +1198,11 @@ separately reviewed fairness cases are not claimed integrated/qualified here;
 later combined ancestry must retain them when delivered. No production change,
 new runtime evidence, full-suite clearance or final release allocation is
 claimed by this source-only migration candidate.
+
+Read-only cross-reference review found the three pre-existing pure formatter
+unit assertions still call missing_dependency. The narrow follow-up retains
+ONLY that unchanged cfg(test) formatter; it is historical unit-only evidence,
+not production missing-tool wiring proof. No raw process/source wrapper is
+restored. Actual missing-curl and missing-probe fixture expectations remain
+unchanged and must drive any necessary owning-adapter diagnostic repair after
+observed execution. No new runtime evidence is claimed.
