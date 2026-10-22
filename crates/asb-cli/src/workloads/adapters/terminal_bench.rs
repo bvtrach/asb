@@ -205,6 +205,19 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn terminal_bench_adapters_and_compatibility_alias_expose_trial_extensions() {
+        for adapter in [
+            &super::super::terminal_bench_1_0::ADAPTER as &dyn WorkloadAdapter,
+            &super::super::terminal_bench_2_1::ADAPTER,
+            &super::ADAPTER,
+        ] {
+            let extension = adapter.setup_extension().expect("trial extension");
+            assert_eq!(extension.id, "trial");
+            assert_eq!(extension.tab, "trials");
+        }
+    }
+
+    #[test]
     fn both_original_terminal_adapters_describe_public_selection_before_execution() {
         for adapter in [
             &super::super::terminal_bench_1_0::ADAPTER,
