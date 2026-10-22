@@ -1,7 +1,6 @@
 //! Nonblocking owned Unix pipes. No detached reader, blocking stdin write,
 //! thread join or unconditional child wait belongs to the caller's path.
 use super::MAX_MESSAGE;
-use crate::process_cleanup::OwnedReaper;
 use crate::workloads::session::{ResourceDisposition, ResourceSettlement};
 use crate::workloads::task_protocol::{
     CancellationAck, CompletedGrade, EventKind, NormalCloseAck, Request,
@@ -10,7 +9,7 @@ use serde_json::Value;
 use std::collections::VecDeque;
 use std::io::{self, Read, Write};
 use std::os::fd::AsRawFd;
-use std::process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
+use std::process::{ChildStdin, ChildStdout, ExitStatus};
 use std::time::{Duration, Instant};
 
 const EVENT_QUEUE: usize = 8;
@@ -19,14 +18,17 @@ const POLL_INTERVAL: Duration = Duration::from_millis(5);
 const DROP_EOF_GRACE: Duration = Duration::from_secs(3);
 const DROP_CLEANUP_BUDGET: Duration = Duration::from_secs(15);
 
+#[path = "process.rs"]
+mod process;
+use process::Process;
+
 pub(crate) struct Controller {
-    child: Option<Child>,
+    child: Option<Process>,
     input: Option<ChildStdin>,
     output: Option<ChildStdout>,
     pending: Vec<u8>,
     scanned: usize,
     events: VecDeque<Result<Value, String>>,
-    reaper: Option<OwnedReaper>,
     // Normal close, preserving cancellation and exit observation share the
     // earliest cleanup deadline. A failure must not restart a fresh budget.
     cleanup_deadline: Option<Instant>,
@@ -49,7 +51,7 @@ fn nonblocking(pipe: &impl AsRawFd) -> io::Result<()> {
     }
 }
 
-fn cleanup_poll(child: &mut Child) -> io::Result<Option<ExitStatus>> {
+fn cleanup_poll(child: &mut Process) -> io::Result<Option<ExitStatus>> {
     #[cfg(all(test, target_os = "linux"))]
     if let Some(result) = super::transport_tests::cleanup_poll_override() {
         return result;
@@ -57,27 +59,13 @@ fn cleanup_poll(child: &mut Child) -> io::Result<Option<ExitStatus>> {
     child.try_wait()
 }
 
-#[allow(unsafe_code)]
-fn terminate(child: &Child) {
-    // SAFETY: the direct Child is still owned and has not been reaped; its PID
-    // cannot be reused. Signal no process group or discovered descendant.
-    unsafe {
-        libc::kill(child.id() as libc::pid_t, libc::SIGTERM);
-    }
-}
-
 fn pause(deadline: Instant) {
     std::thread::sleep(POLL_INTERVAL.min(deadline.saturating_duration_since(Instant::now())));
 }
 
 impl Controller {
-    pub(crate) fn spawn(command: &mut Command) -> Result<Self, String> {
-        let reaper = OwnedReaper::new("workload-controller")?;
-        let child = command
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .spawn()
-            .map_err(|error| format!("cannot start workload controller: {error}"))?;
+    pub(crate) fn spawn(command: &mut super::ControllerCommand) -> Result<Self, String> {
+        let child = Process::spawn(command)?;
         // Establish the guard immediately; every fallible setup and unwind
         // after admission retains this same pre-established fallback custody.
         let mut owned = Self {
@@ -87,12 +75,11 @@ impl Controller {
             pending: Vec::new(),
             scanned: 0,
             events: VecDeque::new(),
-            reaper: Some(reaper),
             cleanup_deadline: None,
         };
         let child = owned.child.as_mut().expect("admitted controller");
-        owned.input = child.stdin.take();
-        owned.output = child.stdout.take();
+        owned.input = child.take_stdin();
+        owned.output = child.take_stdout();
         let setup = nonblocking(
             owned
                 .input
@@ -107,6 +94,9 @@ impl Controller {
                 Ok(()) => error,
                 Err(cleanup) => format!("{error}; {cleanup}"),
             });
+        }
+        if let Err(error) = owned.child.as_mut().expect("owned controller").admit() {
+            return Err(format!("cannot admit workload controller: {error}"));
         }
         Ok(owned)
     }
@@ -393,13 +383,8 @@ impl Controller {
 
     fn handoff(&mut self, reason: &str) -> String {
         self.close_io();
-        if let Some(mut child) = self.child.take() {
-            let _ = child.kill();
-            self.reaper
-                .as_ref()
-                .expect("pre-established controller reaper")
-                .adopt(child);
-            self.reaper.take(); // Wake the keeper now, even if Controller is retained.
+        if let Some(child) = self.child.take() {
+            child.retain(Instant::now());
         }
         format!("{reason}; controller exit is unconfirmed, an owned cleanup reaper retains custody")
     }
@@ -432,7 +417,7 @@ impl Controller {
                 return Err(self.handoff("workload controller cleanup exceeded its deadline"));
             }
             if !signalled && Instant::now() >= grace {
-                terminate(child);
+                let _ = child.request_cancel();
                 signalled = true;
             }
             pause(deadline.min(if signalled { deadline } else { grace }));
@@ -448,7 +433,7 @@ impl Controller {
     }
 
     #[cfg(test)]
-    pub(super) fn child(&mut self) -> &mut Child {
+    pub(super) fn child(&mut self) -> &mut Process {
         self.child.as_mut().expect("owned controller child")
     }
     #[cfg(test)]
@@ -462,6 +447,10 @@ impl Controller {
     #[cfg(test)]
     pub(super) fn buffered_for_test(&self) -> (usize, usize) {
         (self.events.len(), self.pending.len())
+    }
+    #[cfg(all(test, target_os = "linux"))]
+    pub(super) fn lose_receipt_for_test(&self) {
+        self.child.as_ref().expect("owned controller").lose_receipt();
     }
 }
 

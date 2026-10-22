@@ -246,6 +246,12 @@ impl ManagedGate {
         self.stop_before(Instant::now() + CLEANUP)
     }
 
+    /// A caller with an existing cleanup budget must not gain a fresh six
+    /// seconds during transfer/Drop. Admitted guardians remain wait-only.
+    pub(crate) fn stop_until(&mut self, deadline: Instant) -> io::Result<ExitStatus> {
+        self.stop_before(deadline)
+    }
+
     /// Request cancellation without surrendering proof-aware custody. Only an
     /// established current-ABI guardian may receive this fixed protocol signal.
     /// The caller must retain this gate until `try_wait` confirms quiescence.

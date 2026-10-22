@@ -2,6 +2,11 @@
 
 ## Status and scope
 
+Current continuation after approved `39efb7b7`: controller/Python integration
+and revised fixture guardian are WIP SOURCE ONLY, pending root's guardian review
+before ANY further build/runtime. The prerequisite proof below remains historical
+and valid, not qualification of this new integration. No full/promotion claim.
+
 This document began as design-only `bdbd290c`, based on actual main
 `66fb5fda` (PR309 merge). The historical design and observed RED sections below
 record that progression, not completion of host transport custody. Root then
@@ -419,3 +424,77 @@ The two host-material/controller REDs are deliberately STILL UNFIXED; their
 historical observations are not replaced by this gate-only qualification. Root
 must review signed prerequisite proof before any controller/Python integration.
 No full suite, live Docker/privilege, new broker, version bump, PR or push.
+
+## Unqualified guardian migration and caller inventory
+
+The first development integration ran30passing/1fixturefailure, not a qualified
+checkpoint (`target/material50-controller-dev-tests.log`). The old RED guardian
+was safe only for the raw-controller baseline; after ManagedGate insertion its
+blanket adopted-child KILL was WRONG. A3s test cancellation budget raced the new
+aggregate3s Python close, the Rust fixture panicked, and the old guardian killed
+adopted actual gate PID1731528. Its JSON proves that gate was reaped, NOT that
+its descendants were safely settled. Later ps absence is NOT reaping evidence.
+All raw per-PID/connection/journal files remain under the logged fixture root
+`target/material50-fixtures/18e0b28a134f722c-1a6b58-0`; no successful ownership
+qualification is claimed from that development run. Development actual binary
+`e49c363b3f81a13f755d4e09d33f89bee55d093717e74e5067efa346da14ec3e`
+is separately frozen at `target/qualification/material50-dev-e49c363b-before-guardian-fix-asb`.
+
+Root stopped further runtime. The revised guardian SOURCE ONLY:
+
+- records actual admitted gate PID plus executable device/inode while live,
+  opens pidfds and verifies direct kernel wait ownership on every adoption;
+- accepts an owned actor/fault release-request/ack while the Rust caller is
+  alive; always releases actors after caller death, then repeatedly adopts and
+  waits/reaps all actual descendants and the gate. NO adopted gate/child KILL;
+- verifies ECHILD after actual pidfd reap; never treats a single empty/initial
+  PID snapshot as proof that all later adoption is complete while a live known
+  gate remains. A35s cleanup watchdog covers the inert actors'30s natural exit
+  fallback, not a fake kernel hang. Only the direct test owner on its15s timeout
+  and the unrelated direct sentinel are eligible for fixture kill;
+- uses6s only for normal finite3s aggregate-close plus real gate quiescence,
+  well inside production's existing240s cancellation allowance. Separate40ms
+  cases require genuinely live retained gate/unknown return, then actual actor
+  release and keeper exit/ECHILD. An actual owner-exit case bypasses destructor
+  and thread completion, then requires outer adoption and reap of that exact
+  actual gate. Missing-receipt case must remain unconfirmed even if real exit
+  later occurs. Resource preservation is separately observed through real
+  protocol cancel and durable journal before starting the40ms host budget.
+
+Root also found duplicate concurrent close ownership in the development Python
+copy. Current WIP detaches under an exclusive single-closer claim; a concurrent
+closer cannot poll/reap/signal or claim settlement. Unknown completed close is
+sticky and cannot restart a budget or signal a cached reaped PID. Added source-
+only tests use a real owned child/sentinel, a finite close-owner barrier and
+actual reap before assertions; no test run is claimed yet.
+
+Direct source caller inventory (not an audit of external SDK side effects):
+
+| DockerSession/material transport entry | Rust/product owner in chosen integration |
+| --- | --- |
+| SWE session `asb_swebench.py:890`, original terminal session `asb_terminal_bench_1.py:473`, Harbor session `asb_harbor.py:630` | official adapters → `remote::launch` → ControllerCommand/ManagedGate before Python starts |
+| Retained grading DockerSession: SWE588, original terminal155, Harbor374 | `remote::retained_grade_request` → gated `asb_retained.py` → selected module.grade_retained; same outer gate owns nested helper children |
+| SWE official harness755 | task.evaluate (`asb_swebench_task.py:195`) or retained grader (`asb_swebench.py:623`) → evaluate_submission/run_harness; nested process remains descendant of same gated controller even with start_new_session |
+| Recovery `asb_resources.py:409` | `remote::recover` → gated controller one-shot; retained nested quiesce uses already-owned session client |
+| material_exec imports: material_root, material_environment, material_runtime | task.initial_material → task_server → same gated official session; service observations are sequential |
+| material_exec imports: staging.root_execute, terminal_session.target | task_server AGENT preparation/original Terminal session path → same gated official session |
+| `remote::verify_retained` | gated one-shot private verifier; no direct DockerSession in normal verify path, but same process custody before dynamic selected-module invocation |
+
+All FOUR production Controller::spawn producers in remote.rs construct the
+typed ProcessLaunch carrier BEFORE opaque std::Command configuration; env_clear,
+removals, cwd, stdio and pre_exec are kept on the same owned Command, not rebuilt
+from getters. Principal status is exposed only after actual gate exit+QUIESCENT;
+resource CLOSED acknowledgement and original principal status remain distinct.
+
+Raw helper routes NOT cleared by this class: distributed Python main
+`asb_swebench.py evaluate/harness` can be manually invoked outside ASB's Rust
+controller; direct external use of DockerSession/material_exec also lacks the
+outer gate and is not newly qualified. Current Rust catalog/install producers
+(`swe_bench/catalog.rs:152,162,201`, `terminal_bench/catalog.rs:209,266`) still
+use raw logged_status. Their direct operations are identity/verify/catalog or
+terminal_catalog runtime/install/verify, not the DockerSession/material_exec
+functions inventoried above. External SDK import/process side effects are NOT
+proven absent. General installer-helper subprocess custody remains class44's
+separate dependency/scope; do not infer universal cross-process custody merely
+because these helpers share a publication directory. No blanket command_output,
+Python subprocess.run, SDK, non-Linux or elevated-runtime qualification.

@@ -12,6 +12,57 @@ use std::time::{Duration, Instant};
 
 const MAX_MESSAGE: u64 = 1024 * 1024;
 
+/// Build the typed carrier before applying opaque std::Command configuration.
+/// The same command owns env_clear/removals, cwd, stdio and pre_exec through
+/// admission. Never reconstruct it from getters to insert a supervisor later.
+pub(crate) struct ControllerCommand {
+    command: std::process::Command,
+    #[cfg(target_os = "linux")]
+    route: Option<crate::launch::CommandRoute>,
+}
+
+impl ControllerCommand {
+    pub(crate) fn new(program: impl AsRef<std::ffi::OsStr>) -> Result<Self, String> {
+        Self::from_launch(crate::launch::ProcessLaunch::new(program))
+    }
+
+    pub(crate) fn from_launch(launch: crate::launch::ProcessLaunch) -> Result<Self, String> {
+        #[cfg(target_os = "linux")]
+        {
+            #[cfg(not(test))]
+            let gate = crate::process_gate::executable().map_err(|error| error.to_string())?;
+            #[cfg(test)]
+            let gate = std::env::current_exe()
+                .map_err(|error| error.to_string())?
+                .parent()
+                .and_then(|parent| parent.parent())
+                .ok_or("cannot locate actual ASB for controller custody tests")?
+                .join("asb");
+            let (command, route) = launch.native(Some(&gate));
+            Ok(Self {
+                command,
+                route: Some(route),
+            })
+        }
+        #[cfg(not(target_os = "linux"))]
+        Ok(Self {
+            command: launch.direct(),
+        })
+    }
+}
+
+impl std::ops::Deref for ControllerCommand {
+    type Target = std::process::Command;
+    fn deref(&self) -> &Self::Target {
+        &self.command
+    }
+}
+impl std::ops::DerefMut for ControllerCommand {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.command
+    }
+}
+
 pub(crate) fn publish_asset(path: &std::path::Path, source: &str) -> Result<(), crate::Error> {
     if std::fs::symlink_metadata(path).is_ok_and(|metadata| {
         if !metadata.is_file() || metadata.len() != source.len() as u64 {
@@ -302,7 +353,7 @@ mod tests {
 
     #[test]
     fn explicit_cleanup_waits_for_confirmation_and_exit_beyond_drop_grace() {
-        let mut command = Command::new("python3");
+        let mut command = ControllerCommand::new("python3").unwrap();
         command.args(["-u", "-c", "import json,sys,time\nprint(json.dumps(dict(event='ready')),flush=True)\nrequest=json.loads(sys.stdin.readline())\nassert request['op']=='close'\ntime.sleep(3.2)\nprint(json.dumps(dict(event='closed',cleanup='removed')),flush=True)\n"]);
         let mut controller = Controller::spawn(&mut command).unwrap();
         controller
@@ -325,7 +376,7 @@ mod tests {
             let script = format!(
                 "import json,sys\nprint(json.dumps(dict(event='ready')),flush=True)\nsys.stdin.readline()\nprint(json.dumps(dict(event='{event}',cleanup='{cleanup}')),flush=True)\nsys.exit({code})\n"
             );
-            let mut command = Command::new("python3");
+            let mut command = ControllerCommand::new("python3").unwrap();
             command.args(["-u", "-c", &script]);
             let mut controller = Controller::spawn(&mut command).unwrap();
             controller
@@ -343,7 +394,7 @@ mod tests {
 
     #[test]
     fn cancellation_drains_inflight_events_and_waits_for_owned_cleanup() {
-        let mut command = Command::new("python3");
+        let mut command = ControllerCommand::new("python3").unwrap();
         command.args(["-u", "-c", "import json,sys,time\nprint(json.dumps(dict(event='ready')),flush=True)\nassert sys.stdin.read()==''\nfor event in ['output','execution_ended','completed','error','future',None]:\n print(json.dumps(dict(event=event,private='never print this')),flush=True)\ntime.sleep(3.2)\nprint(json.dumps(dict(event='closed',cleanup='removed')),flush=True)\nsys.exit(1)\n"]);
         let mut controller = Controller::spawn(&mut command).unwrap();
         controller
@@ -355,7 +406,7 @@ mod tests {
 
     #[test]
     fn cancelled_startup_without_a_created_resource_can_be_confirmed() {
-        let mut command = Command::new("python3");
+        let mut command = ControllerCommand::new("python3").unwrap();
         command.args(["-u", "-c", "import json,sys\nprint(json.dumps(dict(event='error')),flush=True)\nassert sys.stdin.read()==''\nprint(json.dumps(dict(event='closed',cleanup='not_created')),flush=True)\nsys.exit(1)\n"]);
         let mut controller = Controller::spawn(&mut command).unwrap();
         assert!(
@@ -380,7 +431,7 @@ mod tests {
             let script = format!(
                 "import json,sys\nprint(json.dumps(dict(event='ready')),flush=True)\nassert sys.stdin.read()==''\n{ack}"
             );
-            let mut command = Command::new("python3");
+            let mut command = ControllerCommand::new("python3").unwrap();
             command.args(["-u", "-c", &script]);
             let mut controller = Controller::spawn(&mut command).unwrap();
             controller
@@ -393,7 +444,7 @@ mod tests {
     #[test]
     fn preserved_interruption_can_finish_cancellation_but_not_normal_completion() {
         for normal in [false, true] {
-            let mut command = Command::new("python3");
+            let mut command = ControllerCommand::new("python3").unwrap();
             command.args(["-u", "-c", "import json,sys\nprint(json.dumps(dict(event='ready')),flush=True)\nsys.stdin.readline()\nprint(json.dumps(dict(event='closed',cleanup='stopped-preserved')),flush=True)\n"]);
             let mut controller = Controller::spawn(&mut command).unwrap();
             controller
@@ -416,7 +467,7 @@ mod tests {
 
     #[test]
     fn cancellation_drains_until_deadline_not_an_unbounded_event_stream() {
-        let mut command = Command::new("python3");
+        let mut command = ControllerCommand::new("python3").unwrap();
         command.args(["-u", "-c", "import json,sys,time\nprint(json.dumps(dict(event='ready')),flush=True)\nassert sys.stdin.read()==''\nfor i in range(30):\n print(json.dumps(dict(event='output')),flush=True)\n time.sleep(.01)\n"]);
         let mut controller = Controller::spawn(&mut command).unwrap();
         controller
@@ -432,7 +483,7 @@ mod tests {
         for normal in [false, true] {
             #[cfg(target_os = "linux")]
             let scope = crate::process_cleanup::test_support::Scope::new();
-            let mut command = Command::new("python3");
+            let mut command = ControllerCommand::new("python3").unwrap();
             command.args(["-u","-c","import json,sys,time\nprint(json.dumps(dict(event='ready')),flush=True)\nsys.stdin.readline()\nprint(json.dumps(dict(event='closed',cleanup='stopped-preserved')),flush=True)\ntime.sleep(10)\n"]);
             let mut controller = Controller::spawn(&mut command).unwrap();
             controller
@@ -477,7 +528,7 @@ mod tests {
             let script = format!(
                 "import json,sys\nprint(json.dumps(dict(event='ready')),flush=True)\nassert sys.stdin.read()==''\nprint(json.dumps(dict(event='closed',cleanup='{status}')),flush=True)\nsys.exit(3)\n"
             );
-            let mut command = Command::new("python3");
+            let mut command = ControllerCommand::new("python3").unwrap();
             command.args(["-u", "-c", &script]);
             let mut controller = Controller::spawn(&mut command).unwrap();
             controller
@@ -511,7 +562,7 @@ mod tests {
 
     #[test]
     fn private_requests_round_trip_and_eof_reaps_the_owned_controller() {
-        let mut command = Command::new("python3");
+        let mut command = ControllerCommand::new("python3").unwrap();
         command.args(["-u", "-c", "import json,sys\nprint(json.dumps({'event':'ready'}),flush=True)\nfor line in sys.stdin:\n request=json.loads(line)\n print(json.dumps({'event':'completed','value':request['value']}),flush=True)\n"]);
         let mut controller = Controller::spawn(&mut command).unwrap();
         assert_eq!(
@@ -540,7 +591,7 @@ mod tests {
             "print('private fixture',flush=True)",
             "print('x'*1048577,flush=True)",
         ] {
-            let mut command = Command::new("python3");
+            let mut command = ControllerCommand::new("python3").unwrap();
             command.args(["-u", "-c", body]);
             let mut controller = Controller::spawn(&mut command).unwrap();
             let error = controller
@@ -564,7 +615,7 @@ mod tests {
             ("ExecutionError", "private\rSDK response".to_owned(), None),
             ("ExecutionError", "private".repeat(100), None),
         ] {
-            let mut command = Command::new("python3");
+            let mut command = ControllerCommand::new("python3").unwrap();
             command
                 .args([
                     "-I",
@@ -597,7 +648,7 @@ mod tests {
 
     #[test]
     fn generic_transport_still_accepts_untagged_one_shot_inspection_responses() {
-        let mut command = Command::new("python3");
+        let mut command = ControllerCommand::new("python3").unwrap();
         command.args(["-I", "-S", "-B", "-u", "-c",
             "import json,sys;json.loads(sys.stdin.readline());print(json.dumps(dict(ok=True,scope='inspection')),flush=True);sys.stdin.read()"]);
         let mut controller = Controller::spawn(&mut command).unwrap();

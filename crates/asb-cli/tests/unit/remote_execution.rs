@@ -4,7 +4,7 @@ use super::*;
 
 #[test]
 fn material_request_and_response_share_the_same_absolute_deadline() {
-    let mut command = Command::new("python3");
+    let mut command = ControllerCommand::new("python3").unwrap();
     command.args(["-I", "-S", "-B", "-u", "-c", "import json,sys\nrequest=json.loads(sys.stdin.readline())\nassert request['op']=='initial-material'\nassert isinstance(request['binary'],str)\nassert sys.stdin.read()==''\n"]);
     let mut controller = Controller::spawn(&mut command).unwrap();
     let started = Instant::now();
@@ -72,7 +72,7 @@ for raw in sys.stdin:
   print(json.dumps(dict(event='closed',cleanup=cleanup)),flush=True);sys.exit(0)
 closed()
 "#;
-        let mut command = Command::new("python3");
+        let mut command = ControllerCommand::new("python3").unwrap();
         command
             .args(["-I", "-S", "-B", "-u", "-c", script])
             .arg(serde_json::to_string(events).unwrap())
@@ -153,7 +153,7 @@ class Task:
   return result
 raise SystemExit(serve(Task(),sys.stdin,sys.stdout))
 "#;
-        let mut command = Command::new("python3");
+        let mut command = ControllerCommand::new("python3").unwrap();
         command
             .args(["-I", "-S", "-B", "-u", "-c", script])
             .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/benchmarks"))

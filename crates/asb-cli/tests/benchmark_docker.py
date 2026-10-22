@@ -3,8 +3,11 @@ import importlib.util
 from pathlib import Path
 import subprocess
 import sys
+import threading
+import time
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
 sys.dont_write_bytecode = True
 SOURCE = Path(__file__).parents[1] / "assets/benchmarks/asb_docker.py"
@@ -14,6 +17,83 @@ SPEC.loader.exec_module(RUNTIME)
 
 
 class ConnectionTests(unittest.TestCase):
+    def test_concurrent_close_has_one_cleanup_owner_and_never_claims_pending_settlement(self):
+        transport = RUNTIME.StdioConnections([sys.executable,"-c","import time;time.sleep(30)"])
+        unrelated = subprocess.Popen([sys.executable,"-c","import time;time.sleep(30)"])
+        connection = None
+        entered, release = threading.Event(), threading.Event()
+        calls, errors = [], []
+        original = RUNTIME.os.killpg
+        worker = None
+        try:
+            connection = transport.connect(1)
+            child = transport.children[0]
+            def held_signal(pid, sig):
+                if pid == child.pid:
+                    calls.append(threading.get_ident())
+                    entered.set()
+                    if not release.wait(1):
+                        raise RuntimeError("owned close barrier deadline")
+                return original(pid, sig)
+            def close_owner():
+                try:transport.close()
+                except BaseException as error:errors.append(type(error).__name__)
+            with patch.object(RUNTIME.os,"killpg",side_effect=held_signal):
+                worker = threading.Thread(target=close_owner)
+                worker.start()
+                try:
+                    self.assertTrue(entered.wait(2))
+                    before = len(calls)
+                    with self.assertRaisesRegex(RUNTIME.DockerAccessError,"in progress.*unconfirmed"):
+                        transport.close()
+                    self.assertEqual(len(calls),before)
+                finally:
+                    release.set()
+                    worker.join(timeout=4)
+            self.assertFalse(worker.is_alive())
+            self.assertEqual(errors,[])
+            self.assertTrue(calls)
+            self.assertEqual(set(calls),{worker.ident})
+            self.assertIsNotNone(child.poll())
+            self.assertEqual(transport.children,[])
+            self.assertIsNone(unrelated.poll())
+            transport.close()  # Completed normal close stays idempotent.
+        finally:
+            release.set()
+            if worker is not None:worker.join(timeout=4)
+            if connection is not None:connection.close()
+            # The sole cleanup worker has completed before any fallback signal.
+            if worker is None or not worker.is_alive():
+                for child in transport.children:
+                    if child.poll() is None:child.kill()
+                    child.wait(timeout=3)
+            unrelated.kill()
+            unrelated.wait(timeout=3)
+
+    def test_unknown_close_is_sticky_and_cannot_restart_cleanup_or_signal_after_reap(self):
+        transport = RUNTIME.StdioConnections([sys.executable,"-c","import time;time.sleep(30)"])
+        connection = transport.connect(1)
+        child = transport.children[0]
+        original_poll = child.poll
+        try:
+            with patch.object(child,"poll",return_value=None), patch.object(RUNTIME.os,"killpg",side_effect=PermissionError):
+                with self.assertRaisesRegex(RUNTIME.DockerAccessError,"unconfirmed"):
+                    transport.close()
+            # Restore the real wait owner and actually reap before repeated
+            # close: a cached PID/PGID must NEVER be signalled by that repeat.
+            if original_poll() is None:child.kill()
+            child.wait(timeout=3)
+            with patch.object(RUNTIME.os,"killpg",side_effect=AssertionError("cached group signal after reap")) as signal:
+                started = time.monotonic()
+                with self.assertRaisesRegex(RUNTIME.DockerAccessError,"unconfirmed"):
+                    transport.close()
+                self.assertLess(time.monotonic()-started,.2)
+                signal.assert_not_called()
+        finally:
+            connection.close()
+            if original_poll() is None:child.kill()
+            child.wait(timeout=3)
+
     def test_archive_policy_preserves_quiet_tty_stream_semantics(self):
         class SDK:
             def _stream_raw_result(self,response,chunk_size,decode):

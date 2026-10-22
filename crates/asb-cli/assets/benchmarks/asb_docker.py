@@ -12,6 +12,7 @@ import signal
 import socket
 import subprocess
 import threading
+import time
 from urllib.parse import urlsplit
 
 
@@ -64,6 +65,9 @@ class StdioConnections:
         self.children = []
         self.lock = threading.Lock()
         self.closed = False
+        self._closing = False
+        self._close_done = False
+        self._close_error = None
 
     def connect(self, timeout):
         local, remote = socket.socketpair()
@@ -72,6 +76,9 @@ class StdioConnections:
             with self.lock:
                 if self.closed:
                     raise DockerAccessError("Docker transport has already been closed")
+                # Reap completed reconnects eagerly instead of retaining an
+                # unbounded history of Popen owners until session exit.
+                self.children = [child for child in self.children if child.poll() is None]
                 process = subprocess.Popen(
                     self.command, stdin=remote, stdout=remote, stderr=subprocess.DEVNULL,
                     start_new_session=True,
@@ -86,23 +93,83 @@ class StdioConnections:
 
     def close(self):
         with self.lock:
+            if self._closing:
+                raise DockerAccessError("Docker transport cleanup is already in progress; settlement is unconfirmed")
+            if self._close_done:
+                if self._close_error is not None:
+                    raise DockerAccessError(self._close_error)
+                return
             self.closed = True
+            self._closing = True
+            # Exactly one closer owns poll/reap/signal rights. Other callers
+            # must not observe the detached empty list as settled, nor race a
+            # cached PGID signal against this owner's actual child reap.
             children, self.children = self.children, []
-        for process in children:
-            if process.poll() is None:
-                # No task/container is killed here: these are only our own
-                # short-lived CLI connections, never a global Docker process.
-                try:
-                    os.killpg(process.pid, signal.SIGTERM)
-                    process.wait(timeout=2)
-                except subprocess.TimeoutExpired:
+        # One allowance for the entire population, not two seconds per child.
+        # Python owns direct CLI children; the outer ManagedGate remains actual
+        # descendant owner if signaling/observation is uncertain at this bound.
+        started = time.monotonic()
+        deadline = started + 3
+        remaining = children
+        term, force = set(), set()
+        failed, interruption = False, None
+        try:
+            while remaining and time.monotonic() < deadline:
+                for process in list(remaining):
+                    if time.monotonic() >= deadline:
+                        break
                     try:
-                        os.killpg(process.pid, signal.SIGKILL)
+                        if process.poll() is not None:
+                            remaining.remove(process)
+                            continue
+                    except InterruptedError:
+                        continue
+                    except OSError:
+                        failed = True
+                        # An uncertain wait observation cannot authorize a
+                        # cached numeric process-group signal.
+                        continue
+                    except BaseException as caught:
+                        if interruption is None:
+                            interruption = caught
+                        continue
+                    pending = force if time.monotonic()-started >= 2 else term
+                    if process in pending:
+                        continue
+                    pending.add(process)
+                    try:
+                        # poll just confirmed the unreaped original leader;
+                        # never signal this group after reaping its leader.
+                        os.killpg(process.pid, signal.SIGKILL if pending is force else signal.SIGTERM)
                     except ProcessLookupError:
-                        pass
-                    process.wait()
-                except ProcessLookupError:
-                    process.wait()
+                        pass  # Only a subsequent actual reap proves exit.
+                    except OSError:
+                        failed = True  # Continue all independent siblings.
+                    except BaseException as caught:
+                        if interruption is None:
+                            interruption = caught
+                if remaining:
+                    time.sleep(min(.01, max(0, deadline-time.monotonic())))
+        except BaseException as caught:
+            interruption = caught
+        finally:
+            # Retain exact pending owners; no Drop retry, unconditional wait,
+            # per-child worker or new admission after unknown cleanup.
+            with self.lock:
+                self.children = remaining
+                self._closing = False
+                self._close_done = True
+                self._close_error = (
+                    "Docker transport exit is unconfirmed; owned controller supervision retains custody"
+                    if remaining else
+                    "Docker transport cleanup encountered an error; all owned transport children were reaped"
+                    if failed or interruption is not None else None)
+        if interruption is not None:
+            raise interruption
+        if remaining:
+            raise DockerAccessError("Docker transport exit is unconfirmed; owned controller supervision retains custody")
+        if failed:
+            raise DockerAccessError("Docker transport cleanup encountered an error; all owned transport children were reaped")
 
 
 class ClosingResponseStream:
