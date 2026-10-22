@@ -143,3 +143,30 @@ separate and immutable. No build/runtime has been performed on this integration;
 source review precedes actual-first build and new combined qualification. The
 seven-test old-base proof is not substituted for current-stack qualification.
 No PR/push/release or ancestry reconciliation with future actual main is claimed.
+
+## Integrated full-v1 failure and narrow fixture repair (unrun)
+
+Actual46 was built FIRST (14.14s) and frozen at
+`target/qualification/fair46-592b4ccd-asb`, SHA256
+`4916ec139fb4ebf4f62bd7c0d01fb3f3a2a08291daa7796bed8d24f025d2ff1c`.
+Fresh seven focused reaper tests passed7/0/0. The first complete workspace/
+all-target/all-feature run then exited101 at the library target:1222passed,
+1failed,13ignored. No other outer target/full-success claim follows. Preserved
+`target/fair46-full.log` reports project_capabilities.rs79 parent stdin pipe
+write unwrapping BrokenPipe BEFORE child status/stdout/stderr collection. The
+raw root contains logs through invalid, but consent-yes normally creates no
+sudo log; precise failing child/cause cannot be established from those files.
+Do not attribute the historical failure to a proven child assertion or kernel
+error. Before/after actual/frozen hashes match; failed libtest is separately
+frozen at `target/qualification/fair46-592b4ccd-failed-libtests`, recorded in
+`target/fair46-failed-frozen.sha256`. All failure evidence remains intact.
+
+The root-approved narrow test-only correction writes each case's EXACT existing
+input bytes to a case-specific owned ordinary file, closes the writer and opens
+it before spawn, then supplies that file as stdin. No parent pipe write can race
+an early child exit. All11 child/status/log/consent and stdout/stderr assertions
+remain unchanged; this does not ignore EPIPE, retry a failed child, fabricate a
+result or alter host/product policy. Existing wait_with_output collection/error
+and deadline limitations remain inherited; no broader harness-custody repair is
+claimed. No new build/runtime/full rerun has occurred on this correction; source
+review is required first. Final gates/publication remain held.

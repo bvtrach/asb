@@ -1,7 +1,6 @@
 //! Capability execution is intercepted by a fixture-only PATH. The fake sudo
 //! logs argv/stdin and never invokes a command or writes a host control file.
 use super::*;
-use std::io::Write;
 
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 #[path = "project_proc_boundaries.rs"]
@@ -59,23 +58,24 @@ exit 0
             ("helpers-denied", "denied", ""),
         ] {
             let log = root.join(format!("{case}.log"));
-            let mut child = Command::new(std::env::current_exe().unwrap())
+            // The child may legitimately finish without reading optional
+            // scripted input. Publish the exact bytes before spawn instead of
+            // racing its stdin closure with a parent pipe write. Keep status
+            // and stdout/stderr checks authoritative; never ignore EPIPE.
+            let input_path = root.join(format!("{case}.stdin"));
+            fs::write(&input_path, input.as_bytes()).unwrap();
+            let input_file = fs::File::open(input_path).unwrap();
+            let child = Command::new(std::env::current_exe().unwrap())
                 .args(["--exact", &name, "--nocapture"])
                 .env(CASE, case)
                 .env("ASB_PROJECT_CAPABILITY_MODE", mode)
                 .env("ASB_PROJECT_CAPABILITY_LOG", &log)
                 .env("ASB_PROJECT_CAPABILITY_ROOT", &root)
                 .env("PATH", &root)
-                .stdin(Stdio::piped())
+                .stdin(Stdio::from(input_file))
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .spawn()
-                .unwrap();
-            child
-                .stdin
-                .take()
-                .unwrap()
-                .write_all(input.as_bytes())
                 .unwrap();
             let output = child.wait_with_output().unwrap();
             assert!(
