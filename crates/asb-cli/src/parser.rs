@@ -142,6 +142,7 @@ pub(crate) fn run_with_interactive(
                 sweep::Options {
                     json: options.json,
                     show_output: options.show_output,
+                    interactive: interactive && !options.json,
                     mode,
                     respect_record_timings: options.respect_record_timings,
                     cassette_root: options.cassette_root.as_deref().map(std::path::Path::new),
