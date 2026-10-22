@@ -8,13 +8,13 @@ use std::sync::{Arc, Condvar, Mutex};
 
 fn poll_owned(child: &mut Child) -> std::io::Result<Option<std::process::ExitStatus>> {
     #[cfg(all(test, target_os = "linux"))]
-    test_support::observation_fault()?;
+    test_support::observation_fault(child)?;
     child.try_wait()
 }
 
 fn wait_owned(child: &mut Child) -> std::io::Result<std::process::ExitStatus> {
     #[cfg(all(test, target_os = "linux"))]
-    test_support::observation_fault()?;
+    test_support::observation_fault(child)?;
     child.wait()
 }
 
@@ -124,7 +124,7 @@ pub(crate) mod test_support {
     use std::cell::{Cell, RefCell};
     use std::sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU32, Ordering},
     };
     use std::time::{Duration, Instant};
 
@@ -137,6 +137,7 @@ pub(crate) mod test_support {
     pub(super) struct ObservationState {
         enabled: AtomicBool,
         observed: AtomicBool,
+        target: Option<AtomicU32>,
     }
 
     /// Parent control is local to the worker created while this thread is armed.
@@ -144,12 +145,29 @@ pub(crate) mod test_support {
     pub(crate) struct ObservationFault(Arc<ObservationState>);
     impl ObservationFault {
         pub(crate) fn arm() -> Self {
+            Self::arm_inner(false)
+        }
+        pub(crate) fn arm_targeted() -> Self {
+            Self::arm_inner(true)
+        }
+        fn arm_inner(targeted: bool) -> Self {
             let state = Arc::new(ObservationState {
                 enabled: AtomicBool::new(true),
                 observed: AtomicBool::new(false),
+                target: targeted.then(|| AtomicU32::new(0)),
             });
             OBSERVATION_FAULT.with_borrow_mut(|fault| *fault = Some(Arc::clone(&state)));
             Self(state)
+        }
+        /// Select only a Child already owned by this fixture, before handoff.
+        /// This keeper-local ID filters an injected observation error; it never
+        /// authorizes signaling, discovery or acquisition by numeric PID.
+        pub(crate) fn select_owned(&self, child: &std::process::Child) {
+            self.0
+                .target
+                .as_ref()
+                .expect("targeted observation fixture")
+                .store(child.id(), Ordering::Release);
         }
         pub(crate) fn observed(&self) -> bool {
             self.0.observed.load(Ordering::Acquire)
@@ -169,10 +187,14 @@ pub(crate) mod test_support {
     pub(super) fn bind_worker_fault(fault: Option<Arc<ObservationState>>) {
         OBSERVATION_FAULT.with_borrow_mut(|current| *current = fault);
     }
-    pub(super) fn observation_fault() -> std::io::Result<()> {
+    pub(super) fn observation_fault(child: &std::process::Child) -> std::io::Result<()> {
         OBSERVATION_FAULT.with_borrow(|fault| {
             if let Some(fault) = fault
                 && fault.enabled.load(Ordering::Acquire)
+                && fault
+                    .target
+                    .as_ref()
+                    .is_none_or(|target| target.load(Ordering::Acquire) == child.id())
             {
                 fault.observed.store(true, Ordering::Release);
                 return Err(std::io::Error::other(
@@ -244,6 +266,11 @@ pub(crate) mod test_support {
                     .unwrap()
                     .iter()
                     .all(|receipt| receipt.load(Ordering::Acquire))
+            })
+        }
+        pub(crate) fn worker_finished(&self, index: usize) -> bool {
+            WORKERS.with_borrow(|workers| {
+                workers.as_ref().expect("fixture scope")[index].load(Ordering::Acquire)
             })
         }
     }
