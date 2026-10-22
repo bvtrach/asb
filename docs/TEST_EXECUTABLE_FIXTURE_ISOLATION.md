@@ -111,6 +111,13 @@ confirmed successful exit precedes any dependent tool admission. An absolute
 short caller deadline includes admission/polling; failure stops only that exact
 owned child, with finite cleanup reserve and pre-established reaper retention
 on uncertainty. No fallback to parent fs::write, no retries or guessed PIDs.
+Attach a child-owning guard immediately after spawn, with nonblocking quiet
+Drop adoption on unwind. Clear inherited environment, retaining only explicit
+writer request and optional LLVM instrumentation. Helper creation and confirmed
+completion must precede the test's intended fault/ObserverScope, because existing
+OwnedReaper creation faults and observation counts are part of product tests.
+Do not silently disable those hooks or include writer activity in assertions
+which are meant to count the product's own admitted children.
 
 Bound the serialized payload before spawn; preserve raw paths and exact bytes,
 mode and create/truncate semantics at the selected INITIAL script setup sites.
