@@ -8,6 +8,9 @@ use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
+#[path = "generation_recording_death_tests.rs"]
+mod recording;
+
 const QUALIFIER: &str = "ASB_CONTINUATION_DEATH_QUALIFIER";
 const PREFIX: &str = "sweep::checkpoint::campaigns::settled::continuation::generation::tests::resolution::owner_death::";
 const WIRE_LIMIT: u64 = 1024 * 1024;

@@ -463,6 +463,8 @@ impl RecordingJournal {
                 "recording payload length/checksum mismatch; incomplete payload retained".into(),
             ));
         }
+        #[cfg(test)]
+        self.publication_fault.check("before-payload-commit")?;
         self.publish_commit(track)
     }
 
@@ -721,6 +723,11 @@ impl RecordingJournal {
     }
 
     #[cfg(test)]
+    pub(crate) fn observe_publication(&mut self, observer: fn(&str)) {
+        self.publication_fault.observer = Some(observer);
+    }
+
+    #[cfg(test)]
     pub(super) fn inject_publication_failure_after(&mut self, point: &'static str, skip: usize) {
         self.publication_fault.point = Some(point);
         self.publication_fault.skip.set(skip);
@@ -887,6 +894,8 @@ fn hash_open_file(file: &mut File, limit: u64) -> Result<(u64, String), Error> {
 #[derive(Default)]
 struct PublicationFault {
     #[cfg(test)]
+    observer: Option<fn(&str)>,
+    #[cfg(test)]
     point: Option<&'static str>,
     #[cfg(test)]
     skip: std::cell::Cell<usize>,
@@ -894,6 +903,10 @@ struct PublicationFault {
 
 impl PublicationFault {
     fn check(&self, _point: &str) -> Result<(), Error> {
+        #[cfg(test)]
+        if let Some(observer) = self.observer {
+            observer(_point);
+        }
         #[cfg(test)]
         if self.point == Some(_point) {
             if self.skip.get() > 0 {

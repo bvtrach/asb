@@ -269,3 +269,28 @@ Separate unit cases reject missing, extra or substituted slots and an unexpected
 writer, retain failed grades, and surface broken presentation without creating
 runtime state. These are local synthetic-client/provider qualifications, not
 original-SDK recording-owner-death or complete feature-five delivery claims.
+
+## Imported-union owner-death qualification
+
+The Linux managed-owner fixture now terminates a real writer while blocked
+inside import/publication callbacks: after verified payload synchronization but
+before its commit, while allocating commit metadata, after all imports commit,
+immediately after the final archive link, and after publication confirmation
+before raw cleanup. These callbacks exist only in test builds. The harness
+reuses the generation fixture's managed supervisor and retains evidence if
+whole-tree cleanup cannot be confirmed; it does not expose fault options in ASB.
+
+The source archive and failed-but-complete Track facts are real backend artifacts
+over synthetic history, not claims of earlier agent or SDK executions. Each case
+requires the specific competing-writer diagnostic, signalled owner death and
+confirmed guardian settlement before recovery. An exact uncommitted imported
+payload can receive its explicit missing commit without running a client. A
+pending metadata file instead remains an orphan that prevents automatic unused
+writer admission, even after that exact commit is repaired; two recoveries must
+retain its bytes and no local start/archive may appear. Other cases recover and
+finalize twice, preserving imported metadata/payloads, the original source ZIP,
+and any already-linked archive bytes. No agent, provider or evaluator runs.
+
+This is the imported-journal/archive layer. The public continuation fixture's
+recording-ledger fault/recovery separately checks the metadata-only CLI inlet;
+neither is an original-SDK interrupted-worker qualification or a power-loss test.
