@@ -5,6 +5,7 @@ use super::super::{
 use crate::measurements;
 mod bootstrap;
 mod service;
+mod state_summary;
 pub(crate) use bootstrap::entry as bootstrap_entry;
 use service::Service;
 use std::sync::Arc;
@@ -668,11 +669,12 @@ pub(crate) fn write_perfetto_metric_svgs(
 
 #[derive(Debug)]
 struct StateSpan {
+    utid: u32,
     tid: u32,
     ts: u64,
     dur: u64,
     state: String,
-    io_wait: bool,
+    io_wait: Option<bool>,
 }
 
 /// Render exact scheduler intervals.  Each lane is a traced thread, so
@@ -691,9 +693,20 @@ fn write_state_timeline_svg(
             "Timeline unavailable: native trace or trace processor is missing.",
         );
     }
+    let summary = match state_summary::write(dir, processor, trace, pid, trace_id) {
+        Ok(summary) => summary,
+        Err(error) => {
+            return write_timeline_notice(
+                dir,
+                &format!(
+                    "Timeline unavailable: {error}. No partial scheduler-state totals published."
+                ),
+            );
+        }
+    };
     let query = format!(
-        "{} SELECT th.tid, st.ts, st.dur, st.state, COALESCE(st.io_wait,0) FROM thread_state st JOIN thread th ON st.utid=th.utid CROSS JOIN bounds WHERE th.upid IN tree AND st.ts >= bounds.start_ts AND st.ts < bounds.end_ts AND st.dur > 0 ORDER BY th.tid, st.ts LIMIT 4096",
-        perfetto_scope_sql(pid, trace_id)
+        "{} SELECT utid,tid,ts,dur,state,COALESCE(io_wait,-1) FROM clipped WHERE utid IN (SELECT DISTINCT utid FROM clipped ORDER BY utid LIMIT 64) ORDER BY utid,ts LIMIT 4096",
+        state_summary::scope(pid, trace_id)
     );
     let output = processor_query(processor, trace, &query)
         .map_err(|e| format!("cannot extract Perfetto state timeline: {e}"))?;
@@ -709,19 +722,28 @@ fn write_state_timeline_svg(
             .split(',')
             .map(|s| s.trim().trim_matches('"'))
             .collect();
-        if fields.len() != 5 {
+        if fields.len() != 6 {
             continue;
         }
-        let (Ok(tid), Ok(ts), Ok(dur)) = (fields[0].parse(), fields[1].parse(), fields[2].parse())
-        else {
+        let (Ok(utid), Ok(tid), Ok(ts), Ok(dur)) = (
+            fields[0].parse(),
+            fields[1].parse(),
+            fields[2].parse(),
+            fields[3].parse(),
+        ) else {
             continue;
         };
         spans.push(StateSpan {
+            utid,
             tid,
             ts,
             dur,
-            state: fields[3].into(),
-            io_wait: fields[4] == "1" || fields[4].eq_ignore_ascii_case("true"),
+            state: fields[4].into(),
+            io_wait: match fields[5] {
+                "1" => Some(true),
+                "0" => Some(false),
+                _ => None,
+            },
         });
     }
     if spans.is_empty() {
@@ -730,40 +752,16 @@ fn write_state_timeline_svg(
             "Timeline unavailable: the trace contains no process-tree scheduler intervals.",
         );
     }
-    let mut summary = BTreeMap::<String, f64>::new();
-    for span in &spans {
-        let (name, _) = state_style(&span.state, span.io_wait);
-        let key = match name {
-            "running" => "running_ms",
-            "runnable" => "runnable_ms",
-            "I/O wait" => "io_wait_ms",
-            "uninterruptible sleep" => "uninterruptible_sleep_ms",
-            "interruptible sleep" => "interruptible_sleep_ms",
-            _ => "other_scheduler_state_ms",
-        };
-        *summary.entry(key.to_owned()).or_default() += span.dur as f64 / 1_000_000.0;
-    }
-    measurements::write_json(
-        &dir.join("perfetto-state-summary.json"),
-        &serde_json::json!({
-            "schema_version": 1, "collector": "perfetto-state-summary", "metrics": summary
-        }),
-    )?;
-    let start = spans.iter().map(|s| s.ts).min().unwrap_or(0);
-    let end = spans
-        .iter()
-        .map(|s| s.ts.saturating_add(s.dur))
-        .max()
-        .unwrap_or(start + 1)
-        .max(start + 1);
-    let mut tids = spans.iter().map(|s| s.tid).collect::<Vec<_>>();
+    let (start, end) = (summary.start, summary.end);
+    let mut tids = spans.iter().map(|s| (s.utid, s.tid)).collect::<Vec<_>>();
     tids.sort_unstable();
     tids.dedup();
     tids.truncate(64);
-    let height = 105 + tids.len() * 24;
+    let height = 150 + tids.len() * 24;
     let mut svg = format!(
-        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"980\" height=\"{height}\" viewBox=\"0 0 980 {height}\"><title>Exact process-tree scheduler-state timeline</title><rect width=\"100%\" height=\"100%\" fill=\"#fff\"/><text x=\"18\" y=\"25\" font-family=\"sans-serif\" font-size=\"17\" font-weight=\"bold\">Exact scheduler-state timeline</text><text x=\"18\" y=\"45\" font-family=\"sans-serif\" font-size=\"11\" fill=\"#52606d\">Perfetto trace timestamps; one lane per process-tree thread.</text>"
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"980\" height=\"{height}\" viewBox=\"0 0 980 {height}\"><title>Bounded process-tree scheduler-state timeline</title><rect width=\"100%\" height=\"100%\" fill=\"#fff\"/><text x=\"18\" y=\"25\" font-family=\"sans-serif\" font-size=\"17\" font-weight=\"bold\">Observed scheduler-state timeline</text><text x=\"18\" y=\"45\" font-family=\"sans-serif\" font-size=\"11\" fill=\"#52606d\">Execution-relative milliseconds; one lane per unique thread lifetime. I/O classification can be unknown.</text>"
     );
+    svg.push_str(&format!("<text x=\"18\" y=\"62\" font-family=\"sans-serif\" font-size=\"11\">Showing {} of {} intervals, {} of {} observed threads; {} unfinished states excluded. Full known-duration totals are independent of this view.</text>",spans.len(),summary.intervals,tids.len(),summary.threads,summary.unfinished));
     for (index, (label, color)) in [
         ("running", "#1976d2"),
         ("runnable", "#c62828"),
@@ -774,18 +772,24 @@ fn write_state_timeline_svg(
     .iter()
     .enumerate()
     {
-        let x = 310 + index * 125;
-        svg.push_str(&format!("<rect x=\"{x}\" y=\"35\" width=\"9\" height=\"9\" fill=\"{color}\"/><text x=\"{}\" y=\"44\" font-family=\"sans-serif\" font-size=\"10\">{label}</text>", x + 12));
+        let x = 100 + index * 160;
+        svg.push_str(&format!("<rect x=\"{x}\" y=\"76\" width=\"9\" height=\"9\" fill=\"{color}\"/><text x=\"{}\" y=\"85\" font-family=\"sans-serif\" font-size=\"10\">{label}</text>", x + 12));
     }
-    for (row, tid) in tids.iter().enumerate() {
-        let y = 65 + row * 24;
-        svg.push_str(&format!("<text x=\"18\" y=\"{}\" font-family=\"monospace\" font-size=\"11\">tid {tid}</text><rect x=\"100\" y=\"{}\" width=\"850\" height=\"16\" fill=\"#edf1f4\"/>", y + 12, y));
-        for s in spans.iter().filter(|s| s.tid == *tid) {
+    for (row, (utid, tid)) in tids.iter().enumerate() {
+        let y = 102 + row * 24;
+        svg.push_str(&format!("<text x=\"18\" y=\"{}\" font-family=\"monospace\" font-size=\"11\"><title>unique thread {utid}</title>tid {tid}</text><rect x=\"100\" y=\"{}\" width=\"850\" height=\"16\" fill=\"#edf1f4\"/>", y + 12, y));
+        for s in spans.iter().filter(|s| s.utid == *utid) {
             let x = 100.0 + 850.0 * (s.ts.saturating_sub(start) as f64 / (end - start) as f64);
-            let w = (850.0 * s.dur as f64 / (end - start) as f64).max(1.0);
+            let w = 850.0 * s.dur as f64 / (end - start) as f64;
             let (label, color) = state_style(&s.state, s.io_wait);
             svg.push_str(&format!("<rect x=\"{x:.2}\" y=\"{y}\" width=\"{w:.2}\" height=\"16\" fill=\"{color}\"><title>{label}: {} ns</title></rect>", s.dur));
         }
+    }
+    let axis_y = height - 16;
+    for tick in 0..=5 {
+        let x = 100 + 170 * tick;
+        let ms = (end - start) as f64 * tick as f64 / 5_000_000.0;
+        svg.push_str(&format!("<text x=\"{x}\" y=\"{axis_y}\" text-anchor=\"middle\" font-family=\"sans-serif\" font-size=\"11\">{ms:.1} ms</text>"));
     }
     svg.push_str("</svg>\n");
     fs::write(dir.join("perfetto-state-timeline.svg"), svg)
@@ -796,13 +800,13 @@ fn write_timeline_notice(dir: &Path, message: &str) -> Result<(), String> {
     fs::write(dir.join("perfetto-state-timeline.svg"), format!("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"980\" height=\"100\" viewBox=\"0 0 980 100\"><title>Perfetto state timeline unavailable</title><rect width=\"100%\" height=\"100%\" fill=\"#fff4e5\"/><text x=\"20\" y=\"40\" font-family=\"sans-serif\" font-size=\"18\">Perfetto state timeline unavailable</text><text x=\"20\" y=\"70\" font-family=\"sans-serif\" font-size=\"13\">{}</text></svg>\n", escape_svg(message))).map_err(|e| format!("cannot write Perfetto state timeline notice: {e}"))
 }
 
-fn state_style(state: &str, io_wait: bool) -> (&'static str, &'static str) {
-    if io_wait {
+fn state_style(state: &str, io_wait: Option<bool>) -> (&'static str, &'static str) {
+    if matches!(state, "D" | "Uninterruptible Sleep") && io_wait == Some(true) {
         return ("I/O wait", "#ef6c00");
     }
     match state {
-        "Running" | "R" => ("running", "#1976d2"),
-        "Runnable" | "R+" => ("runnable", "#c62828"),
+        "Running" => ("running", "#1976d2"),
+        "Runnable" | "R" | "R+" => ("runnable", "#c62828"),
         "D" | "Uninterruptible Sleep" => ("uninterruptible sleep", "#6a1b9a"),
         "S" | "I" | "Sleeping" => ("interruptible sleep", "#78909c"),
         _ => ("other scheduler state", "#b0bec5"),
@@ -1033,7 +1037,7 @@ pub(crate) fn perfetto_series_queries(pid: Option<u32>, trace_id: &str) -> Vec<(
         (
             "perfetto.scheduler_duration_ms_per_s".into(),
             format!(
-                "{scope}, relevant AS (SELECT s.ts, s.dur FROM sched s JOIN thread th ON s.utid=th.utid CROSS JOIN bounds WHERE th.upid IN tree AND s.ts < bounds.end_ts AND s.ts+s.dur > bounds.start_ts), bucket_ranges(bucket) AS (SELECT 0 WHERE {VALID_SCOPE} UNION ALL SELECT bucket+1 FROM bucket_ranges CROSS JOIN bounds WHERE bounds.start_ts+(bucket+1)*1000000000 < bounds.end_ts) SELECT bucket_ranges.bucket AS timestamp_s, COALESCE(SUM(MAX(0, MIN(r.ts+r.dur,bounds.start_ts+(bucket_ranges.bucket+1)*1000000000)-MAX(r.ts,bounds.start_ts+bucket_ranges.bucket*1000000000)))/1000000.0,0) AS value FROM bucket_ranges CROSS JOIN bounds LEFT JOIN relevant r ON r.ts < bounds.start_ts+(bucket_ranges.bucket+1)*1000000000 AND r.ts+r.dur > bounds.start_ts+bucket_ranges.bucket*1000000000 GROUP BY bucket_ranges.bucket ORDER BY bucket_ranges.bucket"
+                "{scope}, relevant AS (SELECT s.ts, s.dur FROM sched s JOIN thread th ON s.utid=th.utid CROSS JOIN bounds WHERE th.upid IN tree AND s.ts < bounds.end_ts AND s.ts+s.dur > bounds.start_ts), bucket_ranges(bucket) AS (SELECT 0 WHERE {VALID_SCOPE} UNION ALL SELECT bucket+1 FROM bucket_ranges CROSS JOIN bounds WHERE bounds.start_ts+(bucket+1)*1000000000 < bounds.end_ts) SELECT bucket_ranges.bucket AS timestamp_s, COALESCE(SUM(MAX(0, MIN(r.ts+r.dur,bounds.end_ts,bounds.start_ts+(bucket_ranges.bucket+1)*1000000000)-MAX(r.ts,bounds.start_ts+bucket_ranges.bucket*1000000000)))/1000000.0,0) AS value FROM bucket_ranges CROSS JOIN bounds LEFT JOIN relevant r ON r.ts < bounds.start_ts+(bucket_ranges.bucket+1)*1000000000 AND r.ts+r.dur > bounds.start_ts+bucket_ranges.bucket*1000000000 GROUP BY bucket_ranges.bucket ORDER BY bucket_ranges.bucket"
             ),
         ),
     ]
