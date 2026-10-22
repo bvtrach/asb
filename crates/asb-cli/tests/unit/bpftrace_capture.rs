@@ -94,7 +94,7 @@ fn isolated_bpftrace_preflight_and_attachment_failures() {
                     // an immediate exit races the startup readiness protocol.
                     body.push_str("case \"$1\" in -p|-B)\n  remaining=1000\n  while [ ! -f \"$ASB_BPFTRACE_CAPTURE_ROOT/release\" ]; do\n    remaining=$((remaining - 1))\n    if [ \"$remaining\" -eq 0 ]; then exit 90; fi\n    /bin/sleep 0.01\n  done\n;; esac\n");
                 }
-                fs::write(&path, body).unwrap();
+                crate::write_test_file(&directory, &path, body).unwrap();
                 fs::set_permissions(
                     path,
                     fs::Permissions::from_mode(if case == "unexecutable" { 0o600 } else { 0o700 }),
@@ -102,7 +102,8 @@ fn isolated_bpftrace_preflight_and_attachment_failures() {
                 .unwrap();
             }
             let sudo = directory.join("commands/sudo");
-            fs::write(
+            crate::write_test_file(
+                &directory,
                 &sudo,
                 if case == "builtin-sudo" {
                     "#!/bin/sh\nexit 0\n"

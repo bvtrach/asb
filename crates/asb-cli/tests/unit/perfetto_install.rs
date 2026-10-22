@@ -32,7 +32,8 @@ fn isolated_perfetto_install_rejects_unverified_source_and_missing_dependencies(
             }
             if case != "absent-curl" {
                 let curl = directory.join("commands/curl");
-                fs::write(
+                crate::write_test_file(
+                    &directory,
                     &curl,
                     r#"#!/bin/sh
 [ "$ASB_PERFETTO_INSTALL_CASE" != download-fails ] || exit 2

@@ -62,7 +62,7 @@ fn registered_project(concurrency: usize) -> Project {
             serde_json::to_string(project.0.to_str().unwrap()).unwrap()
         ),
     ).replace("if (root/'reverse-arrivals').exists()", "if batch == 1 and (root/'hold-first-batch').exists():\n    hold_deadline = time.monotonic()+45\n    while not (root/'release-first-batch').exists():\n        assert time.monotonic()<hold_deadline, 'fixture owner did not release first batch'\n        time.sleep(.005)\nif (root/'reverse-arrivals').exists()");
-    fs::write(&executable, script).unwrap();
+    fixture_writer::write_file(&project.0, &executable, script).unwrap();
     fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
     let config_path = project.0.join("benchmark.toml");
     let configuration = fs::read_to_string(&config_path)

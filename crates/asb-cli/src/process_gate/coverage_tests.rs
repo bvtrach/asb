@@ -1,39 +1,17 @@
 use super::*;
-use crate::test_support::IsolatedEnvironment;
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
 #[test]
 fn gate_command_preserves_explicit_argument_environment_and_removal_contracts() {
-    if let Some(path) = std::env::var_os("ASB_GATE_FIXTURE_WRITER") {
-        create_mock_gate(Path::new(&path));
-        return;
-    }
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../target/gate-fixtures")
         .join(crate::workloads::TaskIdentity::local("fixture", None).attempt_id);
     fs::create_dir_all(&root).unwrap();
-    let gate = root.join("mock-gate");
-    // Creating executable bytes in the shared libtest process can expose its
-    // writable descriptor to another test's fork/pre-exec window. CLOEXEC does
-    // not close that inherited descriptor until exec, so immediate execution
-    // can fail with ETXTBSY even after this thread closes its own writer.
-    // A dedicated creator cannot share its writer with sibling tests; waiting
-    // for its exit closes every creator descriptor before the real gate call.
-    let creator = Command::new(std::env::current_exe().unwrap())
-        .args(["--exact", "process_gate::coverage_tests::gate_command_preserves_explicit_argument_environment_and_removal_contracts", "--nocapture"])
-        .isolated_env()
-        .env("ASB_GATE_FIXTURE_WRITER", &gate)
-        .output().unwrap();
-    assert!(
-        creator.status.success(),
-        "{}",
-        String::from_utf8_lossy(&creator.stderr)
-    );
-    assert!(String::from_utf8_lossy(&creator.stdout).contains("1 passed"));
-    assert!(gate.is_file());
+    // Never open an executable fixture for writing alongside parallel forks:
+    // even CLOEXEC writers can briefly survive until another child's exec.
+    let gate = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/mock-process-gate.sh");
     let mut launch = crate::launch::ProcessLaunch::new("fixture-client");
     launch.arg("argument with spaces").arg("literal;$value");
     let (mut command, _) = launch.native(Some(&gate));
@@ -54,25 +32,6 @@ fn gate_command_preserves_explicit_argument_environment_and_removal_contracts() 
         crate::launch::ProcessLaunch::new("fixture-client").native(Some(&root.join("missing")));
     assert_eq!(missing.spawn().unwrap_err().kind(), io::ErrorKind::NotFound);
     fs::remove_dir_all(root).unwrap();
-}
-
-fn create_mock_gate(gate: &Path) {
-    fs::write(
-        gate,
-        r#"#!/bin/sh
-[ "$1" = __asb-gate ] || exit 11
-[ "$2" = --asb-launch-v1 ] || exit 12
-[ "$3" = 0 ] || exit 13
-[ "$4" = fixture-client ] || exit 14
-[ "$5" = 'argument with spaces' ] || exit 15
-[ "$6" = 'literal;$value' ] || exit 16
-[ "$ASB_GATE_FIXTURE" = 'explicit-value' ] || exit 17
-[ -z "${HOME+x}" ] || exit 18
-printf 'fixture gate accepted\n'
-"#,
-    )
-    .unwrap();
-    fs::set_permissions(gate, fs::Permissions::from_mode(0o700)).unwrap();
 }
 
 #[test]

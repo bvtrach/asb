@@ -32,7 +32,8 @@ fn controlled_proc_inputs_cover_consent_and_cgroup_rejections_without_host_mutat
         String::from_utf8_lossy(&output.stderr)
     );
     let sudo = root.join("bin/sudo");
-    fs::write(
+    crate::write_test_file(
+        &root,
         &sudo,
         r#"#!/bin/sh
 set -eu
