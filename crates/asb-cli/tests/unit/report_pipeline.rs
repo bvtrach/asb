@@ -134,8 +134,10 @@ fn structured_native_rewards_keep_missing_coverage_and_plan_partitions_after_pub
     use crate::workloads::outcome::*;
     let fixture = Fixture::new();
     let manifest = fixture.seed("", 3);
-    let mut module =
-        crate::workloads::contracts::ModuleDescriptor::local("bug-fix", "bundled-fixture");
+    let mut module = crate::workloads::contracts::ModuleDescriptor::local(
+        "bug-fix",
+        crate::workloads::KnownEvaluationKind::BundledFixture,
+    );
     module.protocol.score_policy = "metric:native-points@2".into();
     let policy = MetricPolicy {
         id: "native-points".into(),

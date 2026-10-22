@@ -10,15 +10,18 @@ fn known_producers_preserve_literal_kinds_and_prompt_trait_contract() {
         ("agentbench", "adapter-smoke"),
         ("not-a-registered-workload", "ungraded"),
     ] {
-        assert_eq!(evaluation_kind(name, directory), expected);
+        assert_eq!(evaluation_kind(name, directory).as_str(), expected);
     }
     // `find` returns the actual registry trait object: stronger owning proof
     // than an unused dead-code assertion in the prompt adapter module.
     let prompt: &dyn adapters::WorkloadAdapter = adapters::find("bug-fix").unwrap();
     assert_eq!(prompt.id(), "prompt");
-    assert_eq!(prompt.evaluation_kind("bug-fix"), "bundled-fixture");
     assert_eq!(
-        prompt.evaluation_kind("repository-navigation"),
+        prompt.evaluation_kind("bug-fix").as_str(),
+        "bundled-fixture"
+    );
+    assert_eq!(
+        prompt.evaluation_kind("repository-navigation").as_str(),
         "response-review"
     );
 }
@@ -127,4 +130,54 @@ fn selection_descriptor_and_fingerprint_inputs_are_literal_and_stable() {
         descriptor("agentbench").unwrap().protocol.id,
         "adapter-smoke"
     );
+}
+
+#[test]
+fn typed_producers_and_borrowed_saved_classifier_preserve_every_category() {
+    use KnownEvaluationKind as Kind;
+    let measured = BaselineEvidence::Measured {
+        passed: Some(false),
+    };
+    let unavailable = BaselineEvidence::Unavailable;
+    for (kind, wire, eligible) in [
+        (Kind::BundledFixture, "bundled-fixture", true),
+        (Kind::ResponseReview, "response-review", true),
+        (Kind::AdapterSmoke, "adapter-smoke", false),
+        (Kind::UpstreamHarness, "upstream-harness", true),
+        (Kind::Ungraded, "ungraded", false),
+        (Kind::InvalidBaseline, "invalid-baseline", false),
+    ] {
+        assert_eq!(kind.as_str(), wire);
+        assert_eq!(
+            SavedEvaluationKind::classify(wire),
+            SavedEvaluationKind::Known(kind)
+        );
+        assert_eq!(kind.resolution_eligible(), eligible);
+        assert_eq!(kind.scored(&measured), kind);
+        assert_eq!(
+            kind.scored(&unavailable),
+            if eligible {
+                Kind::InvalidBaseline
+            } else {
+                kind
+            }
+        );
+    }
+    for wire in [
+        "custom-future-evaluator",
+        "extension-v7",
+        "Upstream-Harness",
+        "",
+        "原样类别",
+    ] {
+        let owned = wire.to_owned();
+        let saved = SavedEvaluationKind::classify(&owned);
+        assert!(
+            matches!(saved, SavedEvaluationKind::Extension(value) if std::ptr::eq(value.as_ptr(), owned.as_ptr()))
+        );
+        assert_eq!(saved.as_str(), wire);
+        assert!(!saved.resolution_eligible());
+        assert!(measured.supports_evaluation(saved));
+        assert_eq!(saved.scored(&unavailable), saved);
+    }
 }

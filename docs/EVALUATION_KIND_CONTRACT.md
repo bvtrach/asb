@@ -1,5 +1,13 @@
 # Known producer evaluation kinds: class47 design and baseline
 
+Current implementation checkpoint: normal signed integration a881645a retained
+the reviewed runner/transport stack before the urgent fixture-repair diversion.
+Inherited Cargo0.2.45 is provisional metadata, not a delivery-slot allocation.
+The source extraction is now resumed under root approval; no full qualification,
+new current-main integration, PR, push or release is authorized at this stage.
+
+## Historical design/baseline checkpoint
+
 Base: qualified runner43 `6e21f19a3362b7253bd43c40ad9c6524a3646694`;
 version remains0.2.43. This is DESIGN + BASELINE-TEST ONLY. No production
 repair, false-grade reproducer, full qualification or release is claimed.
@@ -141,3 +149,37 @@ while the same worker implements the higher-priority compatibility-listener
 repair; this approval is not permission to run both edits concurrently. After
 implementation, independent source review and fresh qualification are still
 required before PR delivery. The removed 90% coverage gate remains removed.
+
+## Resumed producer extraction (source checkpoint before runtime)
+
+The actual/frozen integrated pre-extraction baseline d57bb98e and original
+d1da6f73 remain unchanged. The integrated31 focused tests, including the
+unchanged two official descriptor/fingerprint tests, passed before production
+extraction. Its logs use `target/evaluation47-integrated-baseline-*` names.
+The interrupted implementation had only a successful13.16s actual build
+(`evaluation47-implementation-build.log`), SHA256
+`dd4655759b4082ad0fc3feef3323496890d23ae207a08ffa1b8ef1440c083c9b`;
+that binary has no implementation runtime qualification.
+
+`workloads/evaluation.rs` owns six typed known categories and exact string
+projections, plus tolerant borrowed saved classification. Adapter/session/
+FileSession/planning-catalog producers and runner RunFacts consume the typed
+domain; existing public result/selection/descriptor strings remain unchanged.
+Historical readers still accept extension bytes, including case differences,
+empty strings and Unicode. No closed Deserialize, new evaluator policy,
+provider branch, grade authorization or continuation requirement is introduced.
+Measured-false baseline support remains true for extensions, independently of
+their existing ineligibility. The native metric fixture preserves its arbitrary
+protocol ID through descriptor construction before retained plan publication.
+The redundant prompt dead-code assertion is replaced only by the actual
+registry trait-object proof. The generic layout allowlist adds evaluation.rs
+explicitly, preserving every registered-adapter exclusion.
+
+Next gates are actual-FIRST/frozen implementation, the six-category/extension
+test and all existing31 baseline cases (unaltered official five goldens), plus
+owning report/disposition/selection/planning/checkpoint regression families and
+strict lint/fmt. No source edits/relink occur during runtime. Current-main and
+reviewed fixture-repair ancestry will integrate only after this signed source
+checkpoint and focused review; no old-base full run is planned. Class44
+installation callbacks, parked45 publication and other source branches remain
+out of scope.

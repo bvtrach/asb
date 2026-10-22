@@ -233,6 +233,7 @@ mod adapter_layout_tests {
                     "census.rs",     // Descriptor-owned guest material observations.
                     "attributes.rs", // Bounded visible Linux attribute observations.
                     "contracts.rs",  // Generic module metadata and protocol schema.
+                    "evaluation.rs", // Known producer categories and extensible saved classification.
                     "selection.rs",  // Generic pre-execution catalog/identity contract.
                     "recovery.rs",   // Generic attempt references and adapter dispatch.
                     "outcome.rs",    // Generic evaluation, metric and lineage contract.

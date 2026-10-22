@@ -242,7 +242,7 @@ mod tests {
                 split: "test".into(),
             },
             task_ids: ["one".into(), "two".into()].into_iter().collect(),
-            evaluation_kind: "upstream-harness",
+            evaluation_kind: crate::workloads::KnownEvaluationKind::UpstreamHarness,
         };
         let all = vec![ALL.into()];
         assert_eq!(

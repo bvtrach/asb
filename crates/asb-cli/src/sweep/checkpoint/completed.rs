@@ -910,8 +910,10 @@ mod tests {
             let mut fixture = Self::new(false);
             let mut module = crate::workloads::contracts::ModuleDescriptor::local(
                 "fixture-suite",
-                "fixture-grader",
+                crate::workloads::KnownEvaluationKind::Ungraded,
             );
+            // Historical/native protocol extensions remain unrestricted wire values.
+            module.protocol.id = "fixture-grader".into();
             module.protocol.score_policy = "metric:accuracy@1".into();
             fixture.entry.selection.module = Some(module.clone());
             fixture.entry.selection.dataset = None;

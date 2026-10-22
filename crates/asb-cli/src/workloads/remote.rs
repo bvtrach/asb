@@ -263,8 +263,10 @@ fn validate_inspected_grade(
         || !task.attempt_id[4..]
             .bytes()
             .all(|byte| byte.is_ascii_hexdigit())
-        || !baseline.supports("upstream-harness")
-        || report["workload_evaluation"] != "upstream-harness"
+        || !baseline.supports_evaluation(super::SavedEvaluationKind::Known(
+            super::KnownEvaluationKind::UpstreamHarness,
+        ))
+        || report["workload_evaluation"] != super::KnownEvaluationKind::UpstreamHarness.as_str()
         || report["workload_success"].as_bool().is_none()
         || !matches!(
             report["recorded_cleanup"].as_str(),
@@ -1056,8 +1058,8 @@ impl WorkloadSession for Session {
     fn invocation(&self) -> &TaskInvocation {
         &self.invocation
     }
-    fn evaluation_kind(&self) -> &'static str {
-        "upstream-harness"
+    fn evaluation_kind(&self) -> super::KnownEvaluationKind {
+        super::KnownEvaluationKind::UpstreamHarness
     }
     fn baseline_passed(&self) -> Option<bool> {
         None
