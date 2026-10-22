@@ -32,6 +32,12 @@ ASB is deliberately split into a small CLI and a file-backed workload directory:
   reopen by trial ID. Six named pane kinds define navigation order and install
   eligibility. Concurrency choices use the benchmark's shared maximum and
   publish exactly one numeric value;
+  workload adapters may additionally contribute a bounded setup extension.
+  The wizard adds the extension tab only while its owning workload is selected,
+  reconstructs values from the adapter's installed catalog, and drops values
+  immediately when that workload is deselected. Extension controls such as
+  `[all]` and `[none]` are frontend-only selection operations, never workload
+  identifiers persisted into benchmark TOML;
 - `install`: local copying of agent executables and workload prompt files;
 - `providers`: a registry of `ProviderAdapter` implementations, each owning
   its provider's model and endpoint metadata, catalog policy, process preparation,

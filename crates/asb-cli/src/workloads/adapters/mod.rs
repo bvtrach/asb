@@ -9,6 +9,28 @@ use super::{
 };
 use std::path::Path;
 
+/// Adapter-owned setup extension metadata.
+///
+/// The generic setup frontend owns navigation and publication; an adapter owns
+/// the selectable domain and resolves its reserved choices.  `all` and `none`
+/// are presentation keys, never persisted task identifiers.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct SetupExtension {
+    pub id: &'static str,
+    pub tab: &'static str,
+    pub description: &'static str,
+}
+
+impl SetupExtension {
+    pub(crate) const fn trials() -> Self {
+        Self {
+            id: "trial",
+            tab: "trials",
+            description: "Choose workload-specific trials. [all] enables every available trial; [none] clears the selection.",
+        }
+    }
+}
+
 mod agentbench;
 mod agentdojo;
 mod aider_polyglot;
@@ -40,6 +62,28 @@ pub(crate) struct SourceBundle {
 }
 
 pub(super) trait WorkloadAdapter: Sync {
+    /// Optional setup frontend contribution. The frontend exposes this pane
+    /// only while this adapter's workload remains selected, and discards its
+    /// selection immediately when it is removed.
+    fn setup_extension(&self) -> Option<SetupExtension> {
+        None
+    }
+    /// Enumerate stable values for an adapter-owned setup extension. This is
+    /// intentionally separate from presentation: adapters may use a catalog,
+    /// a pinned predicate, or another bounded selector without teaching the
+    /// CLI or TUI about their data format.
+    fn setup_extension_values(
+        &self,
+        extension: &SetupExtension,
+        directory: &Path,
+    ) -> Result<Vec<String>, String> {
+        if extension.id == "trial" {
+            return self
+                .installed_trials(directory)
+                .map(|trials| trials.into_iter().map(|trial| trial.id).collect());
+        }
+        Err(format!("unsupported setup extension `{}`", extension.id))
+    }
     fn descriptor(&self, name: &str) -> super::contracts::ModuleDescriptor {
         super::contracts::ModuleDescriptor::local(name, self.evaluation_kind(name))
     }
@@ -184,6 +228,12 @@ impl StaticExternalAdapter {
 }
 
 impl WorkloadAdapter for StaticExternalAdapter {
+    fn setup_extension(&self) -> Option<SetupExtension> {
+        // The compatibility Terminal-Bench alias has a small bundled trial
+        // catalog. Keep its selection adapter-owned just like the official
+        // catalog-backed Terminal-Bench variants.
+        (self.id == "terminal-bench").then(SetupExtension::trials)
+    }
     fn source(&self) -> Option<&'static str> {
         Some(self.source)
     }

@@ -3,25 +3,75 @@ use super::*;
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub(super) enum ChoiceKey {
+    AllAgents,
+    AllWorkloads,
+    AllExtension {
+        workload: String,
+        extension: String,
+    },
+    NoExtension {
+        workload: String,
+        extension: String,
+    },
     Agent(String),
     Provider(String),
-    Model { provider: String, model: String },
+    Model {
+        provider: String,
+        model: String,
+    },
     Prompt(String),
-    TrialSet { workload: String, file: PathBuf },
+    TrialSet {
+        workload: String,
+        file: PathBuf,
+    },
     Collector(String),
     Concurrency(usize),
     Trial(String),
+    ExtensionValue {
+        workload: String,
+        extension: String,
+        value: String,
+    },
 }
 
 impl ChoiceKey {
+    pub fn is_all(&self) -> bool {
+        matches!(
+            self,
+            Self::AllAgents | Self::AllWorkloads | Self::AllExtension { .. }
+        )
+    }
+    pub fn is_control(&self) -> bool {
+        matches!(
+            self,
+            Self::AllAgents
+                | Self::AllWorkloads
+                | Self::AllExtension { .. }
+                | Self::NoExtension { .. }
+        )
+    }
     pub fn valid(&self) -> bool {
         let valid = |name: &str| crate::selection_names::validate(name, "selection").is_ok();
         match self {
+            Self::AllAgents | Self::AllWorkloads => true,
+            Self::AllExtension {
+                workload,
+                extension,
+            }
+            | Self::NoExtension {
+                workload,
+                extension,
+            } => valid(workload) && valid(extension),
             Self::Agent(name)
             | Self::Provider(name)
             | Self::Prompt(name)
             | Self::Collector(name)
             | Self::Trial(name) => valid(name),
+            Self::ExtensionValue {
+                workload,
+                extension,
+                value,
+            } => valid(workload) && valid(extension) && valid(value),
             Self::TrialSet { workload, .. } => valid(workload),
             Self::Model { provider, model } => valid(provider) && valid(model),
             Self::Concurrency(value) => (1..=crate::benchmark::MAX_CONCURRENCY).contains(value),
@@ -85,6 +135,7 @@ pub(super) enum PaneKind {
     Workloads,
     Measurements,
     Concurrency,
+    Extensions,
 }
 
 impl PaneKind {
@@ -99,9 +150,11 @@ impl PaneKind {
     pub fn index(self) -> usize {
         self as usize
     }
+    #[allow(dead_code)]
     pub fn next(self) -> Option<Self> {
         Self::ORDER.get(self.index() + 1).copied()
     }
+    #[allow(dead_code)]
     pub fn previous(self) -> Option<Self> {
         self.index().checked_sub(1).map(|index| Self::ORDER[index])
     }
@@ -116,9 +169,28 @@ impl PaneKind {
             Self::Workloads => "workload",
             Self::Measurements => "measurement",
             Self::Concurrency => "concurrency",
+            Self::Extensions => "workload options",
         }
     }
     pub fn description(self) -> &'static str {
-        DESCRIPTIONS[self.index()]
+        match self {
+            Self::Extensions => "Choose adapter-owned options for the selected workloads.",
+            _ => DESCRIPTIONS[self.index()],
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ChoiceKey;
+
+    #[test]
+    fn all_choice_keys_are_valid_but_never_domain_values() {
+        for key in [ChoiceKey::AllAgents, ChoiceKey::AllWorkloads] {
+            assert!(key.valid());
+            assert!(key.is_all());
+            assert!(key.agent().is_none());
+            assert!(key.workload().is_none());
+        }
     }
 }

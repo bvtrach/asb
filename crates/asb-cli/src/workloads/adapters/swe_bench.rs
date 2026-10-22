@@ -80,6 +80,10 @@ impl WorkloadAdapter for SweBenchAdapter {
     fn id(&self) -> &'static str {
         self.id
     }
+
+    fn setup_extension(&self) -> Option<super::SetupExtension> {
+        Some(super::SetupExtension::trials())
+    }
     fn preflight(
         &self,
         context: &crate::workloads::PreflightContext<'_>,
