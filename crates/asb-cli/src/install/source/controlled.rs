@@ -23,7 +23,7 @@ pub(crate) fn check_version_in(
         // owner observer have already completed through the normal boundary.
         if fs::symlink_metadata(path).is_err_and(|error| error.kind() == io::ErrorKind::NotFound) {
             return Err(Error::Io(format!(
-                "cannot start staged {label} from {}: a post-failure check found the executable missing; the completed step reported {}; reinstall the missing artifact and retry; previous installation was preserved; inspect {diagnostics}",
+                "cannot start staged {label} again from {}: a post-failure check found the executable missing; the completed step reported {}; reinstall the missing artifact and retry; previous installation was preserved; inspect {diagnostics}",
                 path.display(), result.status
             )).into());
         }
