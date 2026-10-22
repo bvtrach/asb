@@ -152,19 +152,17 @@ def bounded_probe(arguments, *, environment=None, deadline=None):
         if close_failed:raise ExecutionError(primary+"runtime probe pipe cleanup failed")
 
 
-def elf(path):
-    path = Path(path)
-    if not path.is_file():
-        raise ExecutionError("ASB runtime executable is missing or exceeds 256 MiB")
-    descriptor = os.open(path,os.O_RDONLY|getattr(os,"O_NONBLOCK",0))
-    with os.fdopen(descriptor,"rb") as source:
-        before = os.fstat(source.fileno())
-        if not stat.S_ISREG(before.st_mode) or before.st_size > MAX_FILE:
-            raise ExecutionError("ASB runtime executable is missing or exceeds 256 MiB")
-        data = source.read(MAX_FILE+1)
-        after = os.fstat(source.fileno())
-        if len(data)>MAX_FILE or len(data)!=before.st_size or (before.st_size,before.st_mtime_ns,before.st_ctime_ns)!=(after.st_size,after.st_mtime_ns,after.st_ctime_ns):
+def _elf_metadata(source, length):
+    """Read bounded ELF64 headers, never the payload or debug/section tables."""
+    def read_at(offset, size):
+        if offset < 0 or size < 0 or offset + size > length:
+            raise ExecutionError("ASB runtime has invalid ELF program headers")
+        source.seek(offset)
+        data = source.read(size)
+        if len(data) != size:
             raise ExecutionError("ASB runtime executable changed during bounded inspection")
+        return data
+    data = read_at(0, min(64, length))
     if data[:7] != b"\x7fELF\x02\x01\x01" or len(data) < 64:
         raise ExecutionError("ASB runtime must be a Linux little-endian ELF64 executable")
     if struct.unpack_from("<H",data,16)[0] not in [2,3] or struct.unpack_from("<I",data,20)[0] != 1:
@@ -175,26 +173,67 @@ def elf(path):
     offset = struct.unpack_from("<Q",data,32)[0]
     size,count = struct.unpack_from("<HH",data,54)
     if (struct.unpack_from("<H",data,52)[0] != 64 or size < 56 or not 1 <= count <= 2048
-            or offset < 64 or offset + size * count > len(data)):
+            or offset < 64 or offset + size * count > length):
         raise ExecutionError("ASB runtime has invalid ELF program headers")
-    interpreters = []
+    interpreter = None
     for index in range(count):
-        header = offset + size * index
-        if struct.unpack_from("<I",data,header)[0] == 3:
-            start = struct.unpack_from("<Q",data,header+8)[0]
-            length = struct.unpack_from("<Q",data,header+32)[0]
-            if not 2 <= length <= 4096 or start + length > len(data):
+        # A large declared stride is a seek, never an allocation/read length.
+        header = read_at(offset + size * index, 56)
+        if struct.unpack_from("<I",header,0)[0] == 3:
+            start = struct.unpack_from("<Q",header,8)[0]
+            width = struct.unpack_from("<Q",header,32)[0]
+            if interpreter is not None or not 2 <= width <= 4096 or start + width > length:
                 raise ExecutionError("ASB runtime has an invalid ELF interpreter")
-            raw = data[start:start+length]
+            raw = read_at(start, width)
             if raw[-1:] != b"\0" or b"\0" in raw[:-1]:
                 raise ExecutionError("ASB runtime has an invalid ELF interpreter")
             try:
-                interpreters.append(raw[:-1].decode("ascii"))
+                interpreter = raw[:-1].decode("ascii")
             except UnicodeError as error:
                 raise ExecutionError("ASB runtime has an invalid ELF interpreter") from error
-    if len(interpreters) > 1 or (interpreters and not interpreters[0].startswith("/")):
-        raise ExecutionError("ASB runtime has an invalid ELF interpreter")
-    return data,machine,interpreters[0] if interpreters else None
+            if not interpreter.startswith("/"):
+                raise ExecutionError("ASB runtime has an invalid ELF interpreter")
+    return machine, interpreter
+
+
+def _inspect_elf(path, payload):
+    path = Path(path)
+    missing = ("ASB runtime executable is missing or exceeds 256 MiB" if payload else
+               "ASB runtime metadata executable is missing or not regular")
+    if not path.is_file():
+        raise ExecutionError(missing)
+    descriptor = os.open(path,os.O_RDONLY|getattr(os,"O_NONBLOCK",0))
+    with os.fdopen(descriptor,"rb") as source:
+        before = os.fstat(source.fileno())
+        if not stat.S_ISREG(before.st_mode) or (payload and before.st_size > MAX_FILE):
+            raise ExecutionError(missing)
+        def unchanged():
+            after = os.fstat(source.fileno())
+            return (before.st_dev,before.st_ino,before.st_size,before.st_mtime_ns,before.st_ctime_ns)==(after.st_dev,after.st_ino,after.st_size,after.st_mtime_ns,after.st_ctime_ns)
+        data = source.read(MAX_FILE+1) if payload else None
+        if payload and (len(data)>MAX_FILE or len(data)!=before.st_size or not unchanged()):
+            raise ExecutionError("ASB runtime executable changed during bounded inspection")
+        machine, interpreter = _elf_metadata(source, before.st_size)
+        if not unchanged():
+            raise ExecutionError("ASB runtime executable changed during bounded inspection")
+    return data,machine,interpreter
+
+
+def elf(path):
+    """Read a bounded complete ELF payload for guest staging."""
+    return _inspect_elf(path, True)
+
+
+def elf_identity(path):
+    """Inspect a regular executable's headers without admitting a guest payload.
+
+    Debug information can exceed the staging cap. Metadata inspection reads at
+    most 64 + 2048*56 + 4096 bytes through one pinned descriptor; target code is
+    never executed and section/debug content is not loaded. Full content input
+    fingerprints and guest payload limits remain separate obligations.
+    """
+    _, machine, interpreter = _inspect_elf(path, False)
+    return machine, interpreter
 
 
 def library_paths(text):

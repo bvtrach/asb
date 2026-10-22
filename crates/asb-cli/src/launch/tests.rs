@@ -176,6 +176,9 @@ fn non_utf8_executable_arguments_and_explicit_client_arg0_are_preserved() {
     let client = fixture.0.join(OsStr::from_bytes(b"client-\xff"));
     std::fs::copy("/bin/echo", &client).unwrap();
     let mut launch = ProcessLaunch::new(&client);
+    // Multicall implementations dispatch on argv[0], independently of the
+    // non-UTF8 executable pathname and argument bytes under test here.
+    launch.arg0("echo");
     launch.arg(OsStr::from_bytes(b"argument-\xfe"));
     let output = execute(&launch, |command| {
         command.env_clear();

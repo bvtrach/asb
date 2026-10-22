@@ -458,6 +458,59 @@ mod tests {
     }
 
     #[test]
+    fn runtime_metadata_discovery_accepts_large_native_executable_without_staging_it() {
+        use crate::test_support::IsolatedEnvironment;
+        const CREATE: &str = "ASB_RUNTIME_LARGE_FIXTURE_CREATE";
+        if let Some(destination) = std::env::var_os(CREATE) {
+            let original = std::env::current_exe().unwrap();
+            std::fs::copy(&original, &destination).unwrap();
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(&destination)
+                .unwrap()
+                .set_len(
+                    std::fs::metadata(original)
+                        .unwrap()
+                        .len()
+                        .max(256 * 1024 * 1024 + 1),
+                )
+                .unwrap();
+            return;
+        }
+        let root = Directory::new();
+        let original = std::env::current_exe().unwrap();
+        let runtime = original.parent().unwrap().parent().unwrap().join("asb");
+        let executable = root.0.join("large-runtime-fixture");
+        // A sparse nonloaded tail models debug information beyond the guest
+        // bundle's 256 MiB payload bound, without allocating that much storage.
+        // Only a dedicated execed creator opens the copy writable. Reaping it
+        // before launch excludes shared-parent fork inheritance / ETXTBSY.
+        let created = std::process::Command::new(&original)
+            .args(["--exact", "runtime_inputs::tests::runtime_metadata_discovery_accepts_large_native_executable_without_staging_it", "--nocapture"])
+            .isolated_env().env(CREATE, &executable).output().unwrap();
+        assert!(
+            created.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&created.stdout),
+            String::from_utf8_lossy(&created.stderr)
+        );
+        assert!(String::from_utf8_lossy(&created.stdout).contains("1 passed"));
+        let child = std::process::Command::new(&executable)
+            .args(["--exact", "runtime_inputs::tests::discovery_binds_real_interpreters_libraries_and_missing_files_without_running_apps", "--nocapture"])
+            .isolated_env()
+            .env("PATH", std::env::var_os("PATH").unwrap())
+            .env("ASB_RUNTIME_EXECUTABLE", runtime)
+            .output().unwrap();
+        assert!(
+            child.status.success(),
+            "large metadata-only executable fixture failed: {}\n{}",
+            String::from_utf8_lossy(&child.stdout),
+            String::from_utf8_lossy(&child.stderr)
+        );
+        assert!(String::from_utf8_lossy(&child.stdout).contains("1 passed"));
+    }
+
+    #[test]
     fn discovery_binds_real_interpreters_libraries_and_missing_files_without_running_apps() {
         use std::os::unix::fs::PermissionsExt;
         let root = Directory::new();
