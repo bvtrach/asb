@@ -938,8 +938,10 @@ mod tests {
             admitted_slots: vec![2, 4],
             dispatch: Some(dispatch),
         };
-        let mut module =
-            workloads::contracts::ModuleDescriptor::local("retired-fixture", "bundled-fixture");
+        let mut module = workloads::contracts::ModuleDescriptor::local(
+            "retired-fixture",
+            workloads::KnownEvaluationKind::BundledFixture,
+        );
         module.suite_version = "historical-v1".into();
         assert!(workloads::descriptor(&module.id).is_none());
         let fingerprint =
