@@ -138,3 +138,29 @@ CI instead uses timeout-bounded existing3.12/3.13 version+venv verification, no
 provisioning/sudo/service changes. Developer prerequisites and test-only scope
 are documented. This source candidate requires independent review before any
 runtime or full-suite qualification. The90% gate remains removed.
+
+## Repair source review and focused qualification
+
+Root and the independent same-user agent reviewed COMPLETE immutable1a7efdae
+and approved the source without blocking findings. Fresh actual-FIRST build
+passed (unchanged production); frozen target/qualification/offline-python-1a7efdae-asb
+and target/debug/asb SHA256 remained
+`b7f383b30c6dda784cce498768c369e229dbd8c3fe5379f06a77175ec422b909`.
+
+The WHOLE offline_cli target passed101/0/5ignored in5.25s, including all four
+original hosted proxy/reset failures, all three intentional bootstrap policies
+and the new guard controls. No connection was skipped or protocol assertion
+widened, and reset still removes only its known-empty fixture directory.
+Owning python_runtime focus passed4/0/0 in0.13s, including the actual controlled
+pair, boundary and PATH controls. This is105 distinct top-level active tests,
+not a count of inner fixture cases. Existing real-download/live opt-ins remain
+ignored. Strict workspace/all-target/all-feature Clippy passed1.44s; fmt/diff
+checks passed. Source and actual binary stayed frozen throughout these runs.
+Raw transcripts are target/offline-python-repair-{build,offline-cli,python-focus,
+clippy,fmt,hash-before,hash-after-focus}.log. Earlier controlled evidence and
+all initial hosted failures remain preserved separately.
+
+Root authorized a normal fast-forward update of existing PR312's branch after
+this proof, then fresh local full/gates/package and hosted CI. Neither that
+pending full nor hosted success, PR readiness/merge or a release is claimed by
+this focused checkpoint. Product bootstrap and coverage policy remain unchanged.
