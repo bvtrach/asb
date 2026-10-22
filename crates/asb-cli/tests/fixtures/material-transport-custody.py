@@ -22,6 +22,14 @@ def save(root, name, value):
     (root / name).write_text(json.dumps(value))
 
 
+def save_atomic(root, name, value):
+    # Exclusive fixture namespace: publish complete handshake bytes in one
+    # rename, so the parent never parses an existing but incomplete marker.
+    pending = root / (name + ".pending")
+    pending.write_text(json.dumps(value))
+    pending.replace(root / name)
+
+
 def wait_file(path):
     end = time.monotonic() + 5
     while not path.exists():
@@ -259,7 +267,7 @@ def guardian(root, binary, test, scenario, actual_asb, control="normal"):
                         if event is None:
                             # Positive direct kernel ownership while the exact
                             # admitted gate is still live, before parent release.
-                            save(root,"adopted-live-gate.json",{"pid":pid})
+                            save_atomic(root,"adopted-live-gate.json",{"pid":pid})
                 descriptor = identities[pid]
                 event = os.waitid(os.P_PIDFD, descriptor, os.WEXITED | os.WNOHANG)
                 if event is not None:
