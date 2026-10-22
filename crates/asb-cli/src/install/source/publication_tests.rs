@@ -143,6 +143,15 @@ esac
             String::from_utf8_lossy(output.stderr()),
             self.0.display()
         );
+        assert!(
+            String::from_utf8_lossy(output.stdout())
+                .lines()
+                .any(|line| {
+                    line.starts_with("test result: ok. 1 passed; 0 failed; 0 ignored;")
+                }),
+            "{case}: exact child did not execute its one fixture test; retained {}",
+            self.0.display()
+        );
         self.1.set(true);
         observed
     }
@@ -153,7 +162,7 @@ esac
 }
 impl Drop for Fixture {
     fn drop(&mut self) {
-        if self.1.get() {
+        if self.1.get() && !std::thread::panicking() {
             crate::fixture_writer::cleanup(&self.0).unwrap();
         }
     }
