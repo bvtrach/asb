@@ -1027,3 +1027,31 @@ frozen actual SHA256 all equal
 `f9886a273216f4f28c5d2faac2282b8b7c4ff9f48aa9d6b5659968f6967a616f`.
 All handles terminal. This proves the stated combined focused seam, not final
 adapter/CLI fault coverage, legacy-wrapper removal or full class completion.
+
+### Actual public CLI / owning Perf and BPF adapter abort paths
+
+TEST-only fd974714 runs the frozen combined f988 actual public command, not a
+direct helper clone. `installer44-public-cli-faults.log` records2PASS/0FAIL,
+0ignored in3.81s after24.60s libtest compilation. One test executes four Perf
+CLI scenarios: catalog inspection overflow, package download deadline and
+runnable version overflow/deadline. Real registry dispatch propagates Abort,
+preserves the prior executable and actual private package evidence, and neither
+tries another package nor enters source fallback/publication. A second test
+executes two BPF version overflow/deadline scenarios: old binary and metadata
+remain unchanged, uname is not reached, and the typed class is not replaced by
+generic build/host-install help. These are six synthetic offline CLI executions,
+not six independently named tests or real host collector qualification.
+
+The fixture gives each actual CLI a matching owned guardian, an independent
+sentinel, bounded file-backed ordinary output and a final matching cleanup
+receipt before assertions. Every package/tool command is an inert local script;
+curl/tar/make/cmake fallback stubs only record a forbidden call and exit, never
+accessing a network/provider/SDK or privileged host collector. All six outer
+CLI trees settle and each sentinel remains alive until its separate stop.
+
+`installer44-public-cli-clippy.log`: strict workspace/alltargets/allfeatures
+-Dwarnings PASS20.98s; fmt/diffcheck PASS. No production changes or binary
+relink occurred: actual/frozen final SHA remains
+`f9886a273216f4f28c5d2faac2282b8b7c4ff9f48aa9d6b5659968f6967a616f`.
+All handles terminal. Original four RED fixtures and other historical raw test
+helpers still require migration/removal before any full-suite claim.
