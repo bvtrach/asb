@@ -348,11 +348,16 @@ mod tests {
                 vec![Dependency::file("/fixture/absent-file")]
             };
             let began = Instant::now();
-            let result = discover_with_timeout(
-                &root.join("fake-python"),
-                &dependencies,
-                Duration::from_millis(150),
-            );
+            // Success includes native-gate admission, Python startup and (for
+            // nested-probe) a separate 50 ms intentional probe deadline. A
+            // 150 ms total was a host-speed assertion, not a cleanup invariant.
+            // Keep that short deadline only for the deliberately blocked input.
+            let timeout = if case == "held-stdin" {
+                Duration::from_millis(150)
+            } else {
+                Duration::from_secs(5)
+            };
+            let result = discover_with_timeout(&root.join("fake-python"), &dependencies, timeout);
             // Retain bounded fixture-only observations before the success
             // assertion. Never log dependency paths, interpreter output or
             // arbitrary exception strings to diagnose loaded-host timing.
@@ -462,7 +467,9 @@ mod tests {
             &["--exact", test, "--nocapture"],
             true,
         );
-        let deadline = Instant::now() + Duration::from_secs(2);
+        // Still well below the fixture's 30-second held descendant. Allow the
+        // inner success budget and bounded supervisor settlement, not a retry.
+        let deadline = Instant::now() + Duration::from_secs(10);
         let status = loop {
             if let Some(status) = fixture.try_wait().unwrap() {
                 break Some(status);

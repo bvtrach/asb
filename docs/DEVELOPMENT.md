@@ -460,6 +460,13 @@ the existing schema-1 JSON, including escaping/separators/newline, rather than
 introducing a smaller arbitrary pathname cap. These are offline Linux/Unix
 contracts, not qualification of the retained non-Unix legacy fallback or
 whole-SDK descendant ownership outside a discovery gate.
+The successful inherited-pipe fixtures allow five seconds for native-gate and
+Python startup (including the nested probe's deliberate 50 ms deadline). Their
+outer watchdog is ten seconds, below the descendant's 30-second hold. The
+deliberately blocked-input case retains its 150 ms exchange deadline. This
+separates host startup scheduling from the cleanup invariant after an observed
+181 ms packaged-CI success-case timeout; production's 60-second policy, mandatory
+success, descendant-reaping and unrelated-sentinel assertions are unchanged.
 If an outcome, replica/group receipt or initial/final input seal cannot be
 published, human output identifies the missing evidence without changing the
 grade or retrying a client. JSONL instead emits a separate schema-1 object with
