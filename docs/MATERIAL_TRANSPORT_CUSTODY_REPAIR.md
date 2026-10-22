@@ -612,3 +612,31 @@ proof. A test-only correction sets mode0700 before spawn, matching the existing
 fixture contract. No tests have been rerun on that correction; source review
 precedes another actual-first/frozen attempt. The four Python owning families
 passed53/0/0 separately; their success does not qualify the three new branches.
+
+## Fresh error-path and regression proof at source 901d4ff1
+
+After the narrow source review/correction, actual ASB was built FIRST and frozen
+read-only at `target/qualification/material50-errorpaths-901d4ff1-asb`. Its
+before/after/live/frozen SHA256 remains
+`838bea92eea9a199fae32fa258e70c323e98e18b1574b773383ab4248db3b3ea`;
+these test-only changes do not change the production executable. The selected
+actual image was explicit; no source edit/relink occurred during runtime.
+
+The new three error-branch tests passed3/0/0 in0.40s. Each observed live exact
+outer guardian and adopted gate with an incomplete keeper receipt before real
+release, then actual outer exit/reap/ECHILD, positive Python gate reap, sentinel
+survival and zero admitted gate KILLs. The reporting fixture actually reached
+CleanupDeadlineUnknown with gate2234048, retained custody after its finite report
+and settled only after release. Separate timeout and controlled unwind/Drop
+cases retained no false Python cleanup error. These are controlled short fixture
+deadlines, not privileged Docker or kernel-hang qualifications.
+
+Fresh existing families also passed: controller34, gate30, Python Docker9,
+material8, task-server13 and resources23. Total **120 passed / 0 failed / 0
+skipped**, counting only outer rows, not nested reexec output. Strict locked/
+offline workspace/all-target/all-feature Clippy -Dwarnings, fmt and diff-check
+are terminal0. All handles are terminal; logs are
+`target/material50-errorpaths-v2-{build,new3,controller,gate,docker,material,task,resources,clippy,fmt}.log`
+and matching `before/after.sha256` files. Original failed setup/RED/development
+logs and raw namespaces remain intact. Source is frozen for independent final
+review; no full-suite/current-stack/release claim, version bump, push or PR.
