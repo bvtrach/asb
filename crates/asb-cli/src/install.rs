@@ -980,8 +980,42 @@ fn install_package(
                 })?;
             }
             progress(15, ProgressStage::InstallingPackage);
+            #[cfg(target_os = "linux")]
+            let (npm, search, cwd) = {
+                let inherited = std::env::var_os("PATH");
+                let search = tools::runtime_path_override_at(
+                    root.parent().expect("tool parent"),
+                    inherited.as_deref(),
+                )?
+                .or(inherited);
+                let cwd = std::env::current_dir().map_err(crate::io_error)?;
+                let npm = match &search {
+                    Some(search) => tools::host_executable_in_at(
+                        Path::new("npm"),
+                        Some(search),
+                        &cwd,
+                    )
+                    .ok_or_else(|| Error::Io(
+                        "agent package installation needs `npm`, but no executable is currently available on its effective project runtime PATH. Install a compatible Node.js/npm runtime (for fnm: `fnm install --lts && fnm use --lts`), then retry.".into(),
+                    ))?,
+                    // Unknown/unset PATH retains the existing platform lookup;
+                    // never guess a default or classify a later127 as missing.
+                    None => PathBuf::from("npm"),
+                };
+                (npm, search, cwd)
+            };
+            #[cfg(not(target_os = "linux"))]
+            let npm = "npm";
             let mut step =
-                scope.prepare("npm", Purpose::Package, "agent npm package installation")?;
+                scope.prepare(npm, Purpose::Package, "agent npm package installation")?;
+            #[cfg(target_os = "linux")]
+            {
+                step.command_mut().current_dir(cwd);
+                if let Some(search) = search {
+                    step.command_mut().env("PATH", search);
+                }
+            }
+            #[cfg(not(target_os = "linux"))]
             tools::apply_runtime_path_at(step.command_mut(), root.parent().expect("tool parent"))?;
             step.command_mut()
                 .args(["install", "--prefix"])

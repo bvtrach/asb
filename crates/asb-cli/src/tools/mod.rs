@@ -207,20 +207,47 @@ fn host_executable_in(
     program: &Path,
     search: Option<&std::ffi::OsStr>,
 ) -> Option<std::path::PathBuf> {
-    if program.as_os_str().is_empty() {
-        return None;
-    }
-    let candidates = if program.components().count() > 1 || program.is_absolute() {
-        vec![program.to_path_buf()]
-    } else {
-        std::env::split_paths(search?)
-            .map(|directory| directory.join(program))
-            .collect()
-    };
-    candidates
+    executable_candidates(program, search)?
         .into_iter()
         .find(|path| crate::executables::is_executable(path))
         .and_then(|path| std::path::absolute(path).ok())
+}
+
+/// Availability lookup at the command's captured cwd, without UTF-8 conversion
+/// or canonicalizing symlink identity. This is not proof of later exec success.
+pub(crate) fn host_executable_in_at(
+    program: &Path,
+    search: Option<&std::ffi::OsStr>,
+    cwd: &Path,
+) -> Option<std::path::PathBuf> {
+    executable_candidates(program, search)?
+        .into_iter()
+        .map(|path| {
+            if path.is_absolute() {
+                path
+            } else {
+                cwd.join(path)
+            }
+        })
+        .find(|path| crate::executables::is_executable(path))
+}
+
+fn executable_candidates(
+    program: &Path,
+    search: Option<&std::ffi::OsStr>,
+) -> Option<Vec<std::path::PathBuf>> {
+    if program.as_os_str().is_empty() {
+        return None;
+    }
+    Some(
+        if program.components().count() > 1 || program.is_absolute() {
+            vec![program.to_path_buf()]
+        } else {
+            std::env::split_paths(search?)
+                .map(|directory| directory.join(program))
+                .collect()
+        },
+    )
 }
 
 static REGISTRY: &[&dyn ToolAdapter] = &[
@@ -260,27 +287,36 @@ pub(crate) fn apply_runtime_path_at(
     command: &mut std::process::Command,
     tools: &Path,
 ) -> Result<(), crate::Error> {
-    let mut paths = REGISTRY
-        .iter()
-        .filter_map(|tool| tool.runtime_path(&tools.join(tool.id())))
-        .collect::<Vec<_>>();
-    if paths.is_empty() {
-        return Ok(());
-    }
     let original = command
         .get_envs()
         .find(|(name, _)| *name == "PATH")
         .map(|(_, value)| value.map(std::ffi::OsStr::to_os_string))
         .unwrap_or_else(|| std::env::var_os("PATH"));
+    if let Some(search) = runtime_path_override_at(tools, original.as_deref())? {
+        command.env("PATH", search);
+    }
+    Ok(())
+}
+
+/// None means no local runtime bins: preserve the caller's exact inherited,
+/// assigned or removed PATH rather than introducing an override.
+pub(crate) fn runtime_path_override_at(
+    tools: &Path,
+    original: Option<&std::ffi::OsStr>,
+) -> Result<Option<std::ffi::OsString>, crate::Error> {
+    let mut paths = REGISTRY
+        .iter()
+        .filter_map(|tool| tool.runtime_path(&tools.join(tool.id())))
+        .collect::<Vec<_>>();
+    if paths.is_empty() {
+        return Ok(None);
+    }
     if let Some(original) = original {
         paths.extend(std::env::split_paths(&original));
     }
-    command.env(
-        "PATH",
-        std::env::join_paths(paths)
-            .map_err(|error| crate::Error::Input(format!("invalid runtime PATH: {error}")))?,
-    );
-    Ok(())
+    std::env::join_paths(paths)
+        .map(Some)
+        .map_err(|error| crate::Error::Input(format!("invalid runtime PATH: {error}")))
 }
 
 /// Resolve a tool executable through its registered project-local layout.
@@ -307,6 +343,67 @@ mod coverage_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn explicit_cwd_lookup_preserves_raw_relative_and_empty_path_entries() {
+        use std::os::unix::ffi::OsStringExt;
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(runtime::unique_id());
+        let raw = std::ffi::OsString::from_vec(b"raw-\xff".to_vec());
+        std::fs::create_dir_all(root.join(&raw)).unwrap();
+        let program = root.join(&raw).join("npm");
+        // Never executed: this fixture tests availability/path identity only.
+        std::fs::write(&program, b"inert").unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(
+            host_executable_in_at(Path::new("npm"), Some(&raw), &root),
+            Some(program.clone())
+        );
+        assert_eq!(
+            host_executable_in_at(&std::path::PathBuf::from(&raw).join("npm"), None, &root),
+            Some(program)
+        );
+        let here = root.join("npm");
+        std::fs::write(&here, b"inert").unwrap();
+        std::fs::set_permissions(&here, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(
+            host_executable_in_at(Path::new("npm"), Some(std::ffi::OsStr::new("")), &root),
+            Some(here)
+        );
+        assert!(host_executable_in_at(Path::new("npm"), None, &root).is_none());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn absent_local_runtime_bins_preserve_inherited_assigned_and_removed_path() {
+        let root = std::env::temp_dir().join(runtime::unique_id());
+        std::fs::create_dir_all(&root).unwrap();
+        for assigned in [None, Some(Some("relative::/bin")), Some(None)] {
+            let mut command = std::process::Command::new("unused");
+            match assigned {
+                None => {}
+                Some(Some(path)) => {
+                    command.env("PATH", path);
+                }
+                Some(None) => {
+                    command.env_remove("PATH");
+                }
+            }
+            let before: Vec<_> = command
+                .get_envs()
+                .map(|(k, v)| (k.to_owned(), v.map(std::ffi::OsStr::to_owned)))
+                .collect();
+            apply_runtime_path_at(&mut command, &root).unwrap();
+            let after: Vec<_> = command
+                .get_envs()
+                .map(|(k, v)| (k.to_owned(), v.map(std::ffi::OsStr::to_owned)))
+                .collect();
+            assert_eq!(before, after);
+        }
+        assert!(runtime_path_override_at(&root, None).unwrap().is_none());
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[cfg(unix)]
     #[test]

@@ -1296,3 +1296,39 @@ The local tar preparation now uses that same bounded owned step. Existing
 functional/error/actionability assertions are unchanged. This port has not yet
 been compiled or executed; root source review precedes renewed runtime. It
 does not restore the removed90% coverage gate or introduce coverage policy.
+
+The approved4c8210d4 harness was built FIRST (same262e) and its whole functional
+family compiled24.26s, then9PASS/2FAIL/0ignored in0.62s. Failed libtest SHA
+`25476d75ee8991d10cc0c54947b2d620a9b93d74b9f11336a57e20518abb6b16`
+and both fixture namespaces remain preserved. Root-approved TEST-only1eeeb95d
+moved old destination bytes/npm invocation proofs ahead of unchanged message
+assertions and printed actual errors. Its fresh observed RED again9/2/0 in0.43s
+confirmed download's actual status22/kind/preservation/log advice, versus the
+historical raw-URL literal, and missing npm's generic127 without owning help.
+Both prior resource checks passed. Its failed libtest SHA is
+`d33d420cfd181df3fdeec288c8f8c77ce7997593bd410f598101be85a2e527cb`;
+actual262e remained frozen before/after. No production fix or blind retry was
+performed before root's design review.
+
+Root decided the download message is already safe and truthful: the replacement
+test requires kind, actual22, preservation, existing owned log and old bytes,
+and a further inert credential/query URL case must not leak those details.
+No production URL rendering is added merely to satisfy the historical literal.
+
+The owning Linux Recipe::Npm now proposes a factual prerequisite check before
+its first package admission: derive the exact registered-runtime PATH using
+the same extracted composition as apply_runtime_path_at, capture inherited
+cwd, resolve raw OsStr relative/empty entries there, and apply that SAME PATH
+and cwd to the original prepared Command executing the resolved absolute npm.
+No opaque Command is reconstructed. Existing host lookup behavior is preserved;
+only the candidate list is shared with explicit-cwd availability lookup.
+No-local-runtime apply_runtime_path_at stays a true no-op for inherited,
+assigned and explicitly removed PATH. Unknown/unset effective PATH preserves
+legacy lookup without guessed defaults or a missing-executable diagnosis.
+Unavailable known search gets owning npm/fnm repair advice; a real executable
+that starts and exits127 remains an actual nonzero execution, never missing.
+Non-Linux retains its existing direct/PATHEXT behavior, not qualified here.
+New inert controls cover marker127, project-local-only npm, raw nonUTF8 and
+relative/empty PATH plus explicit cwd/direct relative program, and no-local-bin
+environment preservation. This source candidate has not yet been compiled or
+executed; root review is required before runtime. No broad full claim is made.

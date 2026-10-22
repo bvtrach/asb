@@ -156,10 +156,27 @@ printf '%s\n' "$5" >> "$ASB_FIXTURE_ROOT/npm-invocations"
 case "$5" in
  fixture-success@1) /bin/mkdir -p "$3/node_modules/.bin"; printf '#!/bin/sh\nexit 0\n' > "$3/node_modules/.bin/fixture-client" ;;
  fixture-fail@1) exit 41 ;;
+ fixture-exit127@1) printf started > "$ASB_FIXTURE_ROOT/npm127-started"; exit 127 ;;
  *) exit 99 ;;
 esac"#,
     );
     fixture.run("npm");
+}
+
+#[test]
+fn npm_recipe_uses_project_local_only_runtime_path() {
+    let fixture = Fixture::new();
+    fixture.script("node", "printf 'v22.20.0\\n'");
+    let npm = fixture.0.join("tools/node/bin/npm");
+    fs::create_dir_all(npm.parent().unwrap()).unwrap();
+    crate::write_test_file(
+        &fixture.0,
+        &npm,
+        b"#!/bin/sh\nset -eu\nprintf local > \"$ASB_FIXTURE_ROOT/local-npm-started\"\n/bin/mkdir -p \"$3/node_modules/.bin\"\nprintf fixture > \"$3/node_modules/.bin/fixture-client\"\n",
+    )
+    .unwrap();
+    fs::set_permissions(npm, fs::Permissions::from_mode(0o755)).unwrap();
+    fixture.run("npm-local");
 }
 
 #[test]
@@ -232,7 +249,7 @@ printf '%s %s\n' "$bounded" "$source" >> "$ASB_FIXTURE_ROOT/download-invocations
 case "$source" in
  https://fixture.invalid/success) printf 'fixture data' > "$destination" ;;
  https://fixture.invalid/oversize) test "$bounded" = 1; printf 'too large' > "$destination" ;;
- https://fixture.invalid/failure) exit 22 ;;
+ https://fixture.invalid/failure|'https://fixture-user:fixture-password@fixture.invalid/failure?token=fixture-query-secret') exit 22 ;;
  *) exit 99 ;;
 esac"#,
     );
@@ -291,6 +308,25 @@ fn installation_fixture_child() {
         }
         "host" => host_contract(&root),
         "npm" => npm_contract(&root),
+        "npm-local" => {
+            assert!(!root.join("bin/npm").exists());
+            install_recipe(
+                Recipe::Npm {
+                    package: "fixture-success@1",
+                    executable: "fixture-client",
+                },
+                &root.join("tools/npm-local"),
+                &root,
+                &mut Vec::new(),
+                &mut |_, _| {},
+            )
+            .unwrap();
+            assert_eq!(fs::read(root.join("local-npm-started")).unwrap(), b"local");
+            assert_eq!(
+                fs::read(root.join("tools/npm-local/node_modules/.bin/fixture-client")).unwrap(),
+                b"fixture"
+            );
+        }
         "python" => python_contract(&root),
         "bundle" => bundle_contract(&root),
         "diagnostics" => diagnostics_contract(&root),
@@ -477,12 +513,38 @@ fn download_contract(root: &Path) {
     )
     .unwrap_err();
     assert_eq!(fs::read(&destination).unwrap(), b"fixture data");
+    let error = error.to_string();
+    assert!(error.contains("could not download fixture"), "{error}");
     assert!(
-        error
-            .to_string()
-            .contains("could not download fixture from https://fixture.invalid/failure"),
-        "actual download failure: {error}"
+        error.contains("curl exited with exit status: 22"),
+        "{error}"
     );
+    assert!(
+        error.contains("previous installation was preserved"),
+        "{error}"
+    );
+    let (_, log) = error
+        .split_once("; inspect ")
+        .expect("owned diagnostic path");
+    assert!(Path::new(log).is_file(), "missing diagnostic log: {log}");
+    let private_source =
+        "https://fixture-user:fixture-password@fixture.invalid/failure?token=fixture-query-secret";
+    let private_error = install_source(root, private_source, &destination, "fixture")
+        .unwrap_err()
+        .to_string();
+    assert_eq!(fs::read(&destination).unwrap(), b"fixture data");
+    assert!(private_error.contains("curl exited with exit status: 22"));
+    for private in [
+        "fixture-user",
+        "fixture-password",
+        "fixture-query-secret",
+        "token=",
+    ] {
+        assert!(
+            !private_error.contains(private),
+            "source detail leaked: {private_error}"
+        );
+    }
     let error = install_source_with_limit(
         root,
         "https://fixture.invalid/oversize",
@@ -494,7 +556,9 @@ fn download_contract(root: &Path) {
     assert!(error.to_string().contains("installation size limit"));
     assert_eq!(
         fs::read_to_string(root.join("download-invocations")).unwrap(),
-        "1 https://fixture.invalid/success\n1 https://fixture.invalid/failure\n1 https://fixture.invalid/oversize\n"
+        format!(
+            "1 https://fixture.invalid/success\n1 https://fixture.invalid/failure\n1 {private_source}\n1 https://fixture.invalid/oversize\n"
+        )
     );
     fs::remove_file(root.join("bin/curl")).unwrap();
     let error = install_source(
@@ -614,6 +678,19 @@ fn npm_contract(root: &Path) {
             .to_string()
             .contains("agent package installation failed")
     );
+    let exit127 = install_recipe(
+        package("fixture-exit127@1"),
+        &root.join("tools/npm-exit127"),
+        root,
+        &mut Vec::new(),
+        &mut |_, _| {},
+    )
+    .unwrap_err();
+    assert_eq!(fs::read(root.join("npm127-started")).unwrap(), b"started");
+    let exit127 = exit127.to_string();
+    assert!(exit127.contains("exit status: 127"), "{exit127}");
+    assert!(!exit127.contains("needs `npm`"), "{exit127}");
+    assert!(!exit127.contains("fnm install --lts"), "{exit127}");
     fs::remove_file(root.join("bin/npm")).unwrap();
     let missing = install_recipe(
         package("fixture-success@1"),
@@ -628,7 +705,7 @@ fn npm_contract(root: &Path) {
             .unwrap()
             .lines()
             .count(),
-        3
+        4
     );
     assert!(
         missing.to_string().contains("npm"),
