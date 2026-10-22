@@ -76,6 +76,10 @@ impl Guard {
 }
 
 impl AdmittedCampaign {
+    pub(in crate::sweep) fn has_pending(&self) -> bool {
+        !self.manifest.pending.is_empty()
+    }
+
     pub(in crate::sweep) fn settlement_root(&self) -> PathBuf {
         self.root
             .join(".asb-generations")

@@ -1035,6 +1035,119 @@ mod tests {
     }
 
     #[test]
+    fn completed_only_continuation_validates_population_and_never_creates_runtime_state() {
+        use crate::runner::campaign::generation::{Blob, StartReference};
+        use serde_json::Value;
+        use std::collections::BTreeMap;
+        struct BrokenOutput;
+        impl Write for BrokenOutput {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::from(std::io::ErrorKind::BrokenPipe))
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        for case in [
+            "complete",
+            "failed",
+            "missing",
+            "extra",
+            "wrong-slot",
+            "writer",
+            "presentation",
+        ] {
+            let (root, config, path) = planning_fixture();
+            let prepared = Prepared::prepare(
+                &path,
+                config,
+                1,
+                RunOptions {
+                    mode: Some(crate::tape::Mode::Record),
+                    ..Default::default()
+                },
+                Some(&root.join("campaigns")),
+            )
+            .unwrap();
+            let campaign = prepared.root.clone();
+            let mut completed = BTreeMap::from([
+                (
+                    1,
+                    json!({"process_success":true,"workload_success":case != "failed","task":{"task_id":"first"}}),
+                ),
+                (
+                    2,
+                    json!({"process_success":true,"workload_success":true,"task":{"task_id":"second"}}),
+                ),
+            ]);
+            if matches!(case, "missing" | "wrong-slot") {
+                completed.remove(&2);
+            }
+            if matches!(case, "extra" | "wrong-slot") {
+                completed.insert(3, completed[&1].clone());
+            }
+            let recording = (case == "writer").then(|| {
+                Arc::new(super::super::recording::Recorder::new(
+                    campaign.join("unexpected.zip"),
+                    campaign.clone(),
+                    prepared.plan.campaign.clone(),
+                    1,
+                    2,
+                    Some(&prepared.plan),
+                ))
+            });
+            let mut bytes = Vec::new();
+            let mut broken = BrokenOutput;
+            let result = continue_campaign(
+                Continuation {
+                    invocation: path,
+                    root: campaign.clone(),
+                    plan: prepared.plan,
+                    completed,
+                    pending: Vec::new(),
+                    compatibility: None,
+                    reference: StartReference {
+                        generation: "unused-generation".into(),
+                        configuration: 0,
+                        manifest: Blob::of(b"test"),
+                        admission: Blob::of(b"test"),
+                    },
+                    recording,
+                },
+                true,
+                false,
+                None,
+                if case == "presentation" {
+                    &mut broken
+                } else {
+                    &mut bytes
+                },
+                &Mutex::new(BTreeSet::new()),
+            );
+            match case {
+                "complete" => assert!(result.is_ok()),
+                "failed" => assert!(matches!(result, Err(Error::Run(_)))),
+                "presentation" => assert!(matches!(result, Err(Error::Io(_)))),
+                _ => {
+                    assert!(matches!(result, Err(Error::Input(_))));
+                    assert!(bytes.is_empty());
+                }
+            }
+            if matches!(case, "complete" | "failed") {
+                let rows: Vec<Value> = String::from_utf8(bytes)
+                    .unwrap()
+                    .lines()
+                    .map(|line| serde_json::from_str(line).unwrap())
+                    .collect();
+                assert_eq!(rows.len(), 2);
+                assert!(rows.iter().all(|row| row["reused"] == true));
+            }
+            assert!(!campaign.exists(), "{case} must not allocate runtime state");
+            crate::fixture_writer::cleanup(&root).unwrap();
+        }
+    }
+
+    #[test]
     fn published_internal_recording_owns_root_without_starting_a_journal_or_client() {
         let (root, config, path) = planning_fixture();
         let parent = root.join("isolated/campaigns");

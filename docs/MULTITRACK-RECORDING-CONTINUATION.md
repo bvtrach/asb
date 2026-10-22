@@ -240,3 +240,32 @@ The independent read-only reviewer found no defect in the private-cache and
 missing-ledger changes. The append-only successive-generation design is recorded
 separately in [continuation lineage](MULTITRACK-CONTINUATION-LINEAGE.md); it is
 not implemented by this checkpoint and feature 5 is not merge/release ready.
+
+## Multiple configurations at different continuation depths
+
+The actual CLI two-configuration C2/N2/jobs1 regression independently controls
+both configurations before the original executable/input seal. Closing the
+presentation pipe after each owned first batch produces exactly 2, then 6,
+then 8 inference calls; completed-only resume remains at 8. The first
+configuration finishes in the first continuation while the second needs its
+successor. This reproduced two separate defects: an unconditional requirement
+for a new recording writer on completed-only reuse, and the scheduler treating
+an absent new `finished.json` as unsettled execution.
+
+Completed-only continuation now requires exact retained slot coverage and no
+writer, then uses shared reuse rendering without allocating runtime directories.
+The sweep pool distinguishes retained evidence from a newly executed attempt;
+only the latter requires a new settlement file. Input/presentation failures
+still stop admission, and failed retained grades still produce a failure exit
+without preventing subsequent configurations from running.
+
+The regression preserves all ancestor ledgers, both union archives, original
+input seals and receipts, then freezes newly published successor evidence before
+the final zero-client resume. It checks exact imported metadata/payloads, eight
+distinct report execution keys and the original false grade. A subsequent
+provider-free replay exercises the production latest-applicable resolver:
+configuration zero selects its ancestor union, configuration one its successor.
+Separate unit cases reject missing, extra or substituted slots and an unexpected
+writer, retain failed grades, and surface broken presentation without creating
+runtime state. These are local synthetic-client/provider qualifications, not
+original-SDK recording-owner-death or complete feature-five delivery claims.

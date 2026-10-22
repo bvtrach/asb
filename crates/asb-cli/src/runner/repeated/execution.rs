@@ -184,6 +184,27 @@ pub(crate) fn continue_campaign(
         recording,
     } = continued;
     plan.validate_layout()?;
+    // A generation covers the whole sweep, including configurations already
+    // complete in an ancestor. Those configurations have no new publication
+    // owner and must not create generation directories or replace their ledger.
+    if pending.is_empty() {
+        if recording.is_some()
+            || completed.len() != plan.slots.len()
+            || plan
+                .slots
+                .iter()
+                .any(|slot| !completed.contains_key(&slot.id))
+        {
+            return Err(Error::Input(
+                "completed-only continuation has inconsistent slot or writer ownership".into(),
+            ));
+        }
+        return super::super::reuse::render_reused(
+            &completed.into_values().collect::<Vec<_>>(),
+            json,
+            output,
+        );
+    }
     // Recording unions need a distinct publication owner. Never accidentally
     // reopen or replace a finalized original recording with Recorder::new.
     if (plan.mode == crate::planning::ExecutionMode::Record) != recording.is_some() {

@@ -1,6 +1,9 @@
 //! Real CLI repeated sweeps, sharing the owned synthetic run fixtures.
 use super::*;
 
+#[path = "repeated_sweep_multi.rs"]
+mod multi;
+
 /// Test-owned nonblocking output, with one absolute deadline across all prelude
 /// events. A partial line cannot strand a reader thread or bypass the watchdog.
 struct Prelude {

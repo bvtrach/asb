@@ -18,8 +18,13 @@ pub(super) struct Pool {
 }
 struct Entry {
     published: Mutex<Option<Worker>>,
-    root: PathBuf,
+    settlement: Settlement,
     stop: AtomicBool,
+}
+
+enum Settlement {
+    Retained,
+    Attempt(PathBuf),
 }
 
 enum Worker {
@@ -278,7 +283,7 @@ impl Prepared {
             .map(|(prepared, root)| {
                 runner::repeated::publish_campaign(prepared).map(|published| Entry {
                     published: Mutex::new(Some(Worker::Fresh(Box::new(published)))),
-                    root,
+                    settlement: Settlement::Attempt(root),
                     stop: AtomicBool::new(false),
                 })
             })
@@ -303,7 +308,11 @@ impl Pool {
                 .into_iter()
                 .zip(&plan.entries)
                 .map(|(admitted, entry)| {
-                    let root = admitted.settlement_root();
+                    let settlement = if admitted.has_pending() {
+                        Settlement::Attempt(admitted.settlement_root())
+                    } else {
+                        Settlement::Retained
+                    };
                     Entry {
                         published: Mutex::new(Some(Worker::Continued(Box::new(ContinuedWorker {
                             admitted,
@@ -311,7 +320,7 @@ impl Pool {
                             show_output: options.show_output,
                             policy: entry.policy.clone(),
                         })))),
-                        root,
+                        settlement,
                         stop: AtomicBool::new(false),
                     }
                 })
@@ -345,15 +354,20 @@ impl Pool {
                 warnings,
             ),
         };
-        let finished =
-            runner::campaign::reading::bounded(&entry.root.join("finished.json"), 16 * 1024)
-                .and_then(|bytes| {
-                    serde_json::from_slice::<serde_json::Value>(&bytes)
-                        .map_err(|_| error("malformed campaign settlement"))
-                });
-        let stop = matches!(result, Err(Error::Input(_) | Error::Io(_)))
-            || !finished
-                .is_ok_and(|value| value["schema_version"] == 1 && value["stopped"] == false);
+        let settled = match &entry.settlement {
+            // Reuse validates the complete retained population without a new
+            // attempt; absence of a new finished.json is therefore expected.
+            Settlement::Retained => true,
+            Settlement::Attempt(root) => {
+                runner::campaign::reading::bounded(&root.join("finished.json"), 16 * 1024)
+                    .and_then(|bytes| {
+                        serde_json::from_slice::<serde_json::Value>(&bytes)
+                            .map_err(|_| error("malformed campaign settlement"))
+                    })
+                    .is_ok_and(|value| value["schema_version"] == 1 && value["stopped"] == false)
+            }
+        };
+        let stop = matches!(result, Err(Error::Input(_) | Error::Io(_))) || !settled;
         entry.stop.store(stop, Ordering::Release);
         result
     }
