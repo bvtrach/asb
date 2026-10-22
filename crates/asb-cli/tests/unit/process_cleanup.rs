@@ -3,8 +3,34 @@
 use super::*;
 use std::fs::File;
 use std::io::{Read, Write};
-use std::os::fd::{AsRawFd, FromRawFd};
-use std::process::Command;
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::os::unix::net::UnixStream;
+use std::process::{Child, Command, Stdio};
+
+struct Sentinel(Child);
+impl Sentinel {
+    fn new() -> Self {
+        Self(Command::new("/bin/sleep").arg("30").spawn().unwrap())
+    }
+    fn settle(&mut self) -> bool {
+        let alive = self.0.try_wait().unwrap().is_none();
+        if alive {
+            self.0.kill().unwrap();
+        }
+        self.0.wait().unwrap();
+        alive
+    }
+}
+impl Drop for Sentinel {
+    fn drop(&mut self) {
+        // Exact owned inert child only. This also covers fixture observation
+        // errors/unwind before the explicit cleanup and final assertions.
+        if self.0.try_wait().ok().flatten().is_none() {
+            let _ = self.0.kill();
+        }
+        let _ = self.0.wait();
+    }
+}
 
 #[test]
 fn creation_failure_and_empty_scope_leave_no_waiting_worker() {
@@ -93,16 +119,20 @@ fn controlled_wait_error_retains_live_wait_only_child_until_real_release_exit_an
     let scope = test_support::Scope::new();
     let fault = test_support::ObservationFault::arm();
     let reaper = OwnedReaper::new("controlled-wait-error").unwrap();
-    let mut sentinel = Command::new("/bin/sleep").arg("30").spawn().unwrap();
+    let mut sentinel = Sentinel::new();
+    let (mut output, writer) = UnixStream::pair().unwrap();
+    output
+        .set_read_timeout(Some(std::time::Duration::from_secs(3)))
+        .unwrap();
+    let writer: OwnedFd = writer.into();
     let mut child = Command::new("/bin/sh")
         .args(["-c", "printf ready; read release; printf quiescent; exit 7"])
         .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
+        .stdout(Stdio::from(writer))
         .spawn()
         .unwrap();
     let pid = child.id();
     let mut input = child.stdin.take().unwrap();
-    let mut output = child.stdout.take().unwrap();
     // Install exact child custody before any fixture observation can fail.
     reaper.adopt_wait_only(child);
     let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) } as i32;
@@ -141,11 +171,7 @@ fn controlled_wait_error_retains_live_wait_only_child_until_real_release_exit_an
     };
     let actual_reap =
         wait == -1 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ECHILD);
-    let sentinel_survived = sentinel.try_wait().unwrap().is_none();
-    if sentinel_survived {
-        sentinel.kill().unwrap();
-    }
-    sentinel.wait().unwrap();
+    let sentinel_survived = sentinel.settle();
     // Every intended assertion follows actual owned child/sentinel cleanup.
     assert!(ready_read.is_ok());
     assert_eq!(&ready, b"ready");
@@ -161,7 +187,7 @@ fn controlled_poll_error_retains_terminate_child_before_real_kill_exit_and_reap(
     let scope = test_support::Scope::new();
     let fault = test_support::ObservationFault::arm();
     let reaper = OwnedReaper::new("controlled-poll-error").unwrap();
-    let mut sentinel = Command::new("/bin/sleep").arg("30").spawn().unwrap();
+    let mut sentinel = Sentinel::new();
     let child = Command::new("/bin/sleep").arg("30").spawn().unwrap();
     let pid = child.id();
     reaper.adopt(child);
@@ -194,11 +220,7 @@ fn controlled_poll_error_retains_terminate_child_before_real_kill_exit_and_reap(
     };
     let actual_reap =
         wait == -1 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ECHILD);
-    let sentinel_survived = sentinel.try_wait().unwrap().is_none();
-    if sentinel_survived {
-        sentinel.kill().unwrap();
-    }
-    sentinel.wait().unwrap();
+    let sentinel_survived = sentinel.settle();
     assert!(retained_live && exited && actual_reap && sentinel_survived);
     assert!(scope.finished());
 }
