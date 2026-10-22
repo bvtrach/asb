@@ -16,11 +16,26 @@ pub(super) static ADAPTER: StaticAdapter = StaticAdapter::new(
     prepare_adapter,
 )
 .with_output_usage(output_usage)
+.with_step_count(step_count)
 .with_state_environment_vars(&[
     "OPENCODE_CONFIG_CONTENT",
     "OPENCODE_CONFIG",
     "OPENCODE_CONFIG_DIR",
 ]);
+
+/// OpenCode emits one JSONL `step_finish` event for every completed agent step.
+/// A terminal answer may be a plain text event, so it must not be used as a
+/// substitute for this lifecycle counter.
+fn step_count(stdout: &str, _stderr: &str) -> Option<u64> {
+    let steps = stdout
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter(|event| event.get("type").and_then(|value| value.as_str()) == Some("step_finish"))
+        .count()
+        .try_into()
+        .ok()?;
+    (steps > 0).then_some(steps)
+}
 
 fn output_usage(stdout: &str, stderr: &str, _: bool) -> crate::measurements::TokenUsage {
     let mut sum = crate::measurements::TokenUsage::default();
@@ -129,5 +144,18 @@ mod tests {
         .expect("configuration succeeds");
         assert!(config.contains("test-model"));
         assert!(config.contains("ASB_AGENT_API_KEY"));
+    }
+
+    #[test]
+    fn counts_completed_jsonl_steps_without_guessing_from_final_text() {
+        let output = concat!(
+            "{\"type\":\"step_start\"}\n",
+            "{\"type\":\"step_finish\",\"part\":{\"tokens\":{\"input\":2,\"output\":1}}}\n",
+            "{\"type\":\"text\",\"part\":{\"text\":\"done\"}}\n",
+            "{\"type\":\"step_finish\",\"part\":{\"tokens\":{\"input\":3,\"output\":1}}}\n"
+        );
+        assert_eq!(step_count(output, ""), Some(2));
+        assert_eq!(step_count("{\"type\":\"text\"}\n", ""), None);
+        assert_eq!(step_count("not json\n", ""), None);
     }
 }
