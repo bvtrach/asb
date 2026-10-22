@@ -212,6 +212,9 @@ mod implementation;
 #[path = "controller/legacy.rs"]
 mod implementation;
 pub(crate) use implementation::Controller;
+#[cfg(all(test, target_os = "linux"))]
+#[path = "../../tests/unit/material_transport_custody.rs"]
+mod material_custody_tests;
 #[cfg(test)]
 #[path = "../../tests/unit/controller_transport.rs"]
 mod transport_tests;

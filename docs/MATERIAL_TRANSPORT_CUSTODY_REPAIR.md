@@ -143,6 +143,20 @@ progress merely because a subreaper exists. If that prerequisite requires a
 generic gate semantic change, submit it separately for root review before
 changing a previously qualified ownership contract.
 
+The prerequisite is now source-confirmed at `descendants.rs:93`: `?` on the
+first signal error stops the whole sibling sweep; reap_exited has the same
+early-return structure. Proposed narrow change, still NOT implemented: keep
+the existing finite population and five-second cleanup allowance; accumulate
+only the first safe io::Error for return, continue every independently owned
+child in the finite snapshot, and spend the remaining original deadline on
+fair TERM/grace/KILL/poll sweeps. Do not allocate an error per child or extend
+the budget per failure. reap_exited likewise visits all children without
+signalling any live child. At the finite unresolved boundary return the first
+error, retain unknown custody, and issue no QUIESCENT receipt. An actual later
+empty owned-child set is a new positive settlement observation, not evidence
+that denied signaling succeeded. Root reviews this generic gate prerequisite
+separately before controller integration; the RED below does not modify it.
+
 The alternative below is retained for explicit comparison, not adopted.
 A broker cannot be its own unexplained persistent owner: it would need to be
 launched as an owned gate child, remain supervised through caller exit and
@@ -262,10 +276,87 @@ survival. No real Docker daemon/SDK/provider/credentials/sudo/host configuration
    Assert all actual child/worker owners settled on healthy paths, exact bytes,
    no material success on failure and sentinel/foreign resource untouched.
 
-After RED approval, implementation proof must additionally observe broker ready
-before spawn, no child on keeper-start failure, finite aggregate cleanup over
+After RED approval, implementation proof must additionally observe actual gate
+admission receipt before controller launch/resume, no child on keeper-start failure, finite aggregate cleanup over
 multiple children, no new admission after uncertainty, root-denial simulation
-with siblings still settled, broker survival after controller exit, actual
-eventual child release/reap and broker exit, no unsafe PGID after leader reap,
+with siblings still settled, actual gate custody after controller exit, actual
+eventual child release/reap and QUIESCENT receipt/gate exit, wait-only handoff
+to the pre-established Rust owner while ASB lives and exclusive guardian
+adoption on actual ASB owner loss, no unsafe PGID after leader reap,
 and bounded live memory/descriptors/worker population across repeated failures.
 No full suite/promotion until independently reviewed source and focused proof.
+
+## Observed baseline RED checkpoint
+
+Actual main49 baseline binary was built FIRST on the new exclusive HOME50 cache
+`/home/martin/projects/asb-build-cache-material50/target`, copied only from the
+verified-idle HOME43 cache as a dependency seed. Copied products are not claimed
+as qualification. Fresh build terminal0; actual/frozen SHA256:
+`80c37cf6edb8809f846462dd8030ad023004a10b0b711089a25c0ce6a1bd7a17`.
+Frozen binary is `target/qualification/material50-baseline-asb`. No version bump
+or production repair; the only production-file edits are cfg(test) test-module
+registration and the exact-owned-pid/thread-local error hook AFTER the real
+pidfd/kernel wait ownership check. No production environment fault setting.
+
+Three outer RED tests now fail at their intended contract assertions:
+
+- Real Controller/task_server/ResourceJournal/DockerSession path, inherited
+  private output pipe: material call returned with TWO live daemon readers;
+  subsequent cancellation confirmed fake exact-container stopped preservation,
+  Rust observed controller exit, and the outer guardian adopted ONE still-live
+  inert host holder. It actually killed/reaped that holder and its own sentinel
+  before returning observations; sentinel survived to teardown. The intended
+  failure is live-session worker retention. Later no-host-child assertion is
+  not reached, but actual guardian JSON independently records the host holder.
+- Same complete cancellation/preservation/exit path, THREE actual separate-
+  session inert connection children, child-local first-PID PermissionError:
+  DockerSession reached its real close, all THREE children remained alive after
+  controller exit and were adopted, killed and reaped by the guardian before
+  the intended final assertion. This models signal denial, not actual sudo/root.
+  Rust cancellation still returned the existing stopped-preserved resource
+  disposition after that controller's nonzero exit; no protocol was changed.
+- Isolated gate DescendantScope path: injected EPERM after real ownership check
+  of the first exact child prevented a later actual owned sibling receiving any
+  cleanup signal. The sibling remained alive through a bounded200ms exit poll.
+  BOTH children were actually killed/reaped and the unrelated guardian sentinel
+  survived before the intended assertion. No fake uninterruptible kernel claim.
+
+All child reexec cases exit0 after recording observations and doing their
+required cleanup; only the three outer contract assertions fail. Nested libtest
+rows are not additional passes. Current final logs:
+
+- `target/material50-baseline-build.log` — actual build0.
+- `target/material50-wholepath-red-final.log` — EXIT101,0pass/2intendedfail.
+- `target/material50-gate-sibling-red-final.log` — EXIT101,0pass/1intendedfail.
+- `target/material50-red-before.sha256` and `...-after.sha256` — actual ASB AND
+  reexec libtest binary byte-identical around final runtime; immutable raw JSON,
+  journal files and child stdout/stderr under `target/material50-fixtures/`.
+
+The earlier sibling v1 failed BEFORE the intended assertion: libtest spawns its
+test worker on a nonleader thread, unlike the real exclusive gate. `/proc`
+leader children was empty. Guardian still adopted and reaped both real children.
+Preserved `target/material50-gate-sibling-red-v1.log` and its raw files document
+that fixture error. The test-only correction exits the spawning thread so real
+children reparent to the process leader before production's actual observation.
+v2 and final then reach the intended EPERM/sibling assertion. Original wholepath
+v1 and gate-v2 logs also remain retained; no blind retry or production change.
+
+Existing offline positive controls also ran on this baseline: material8,
+Docker6, task-server13, resource-journal23 = **50passing/0failing/0skips** in four
+Python outer invocations. Logs `target/material50-baseline-{material,docker,
+task,resource}-controls.log`. These are existing controls, not successful REDs
+or full qualification, and prove no real Docker/provider/privilege behavior.
+No live Docker, SDK, credentials, sudo, host mutation, full suite, PR or push.
+Strict offline locked workspace/all-target/all-feature Clippy `-D warnings`,
+fmt-check and diff-check all terminal0 (`target/material50-red-{clippy,fmt,
+diffcheck}.log`). Lint success does not qualify the intentionally failing REDs.
+The final reexec libtest binary SHA256 is
+`8ee0fb031d145a702dc370f64b8bab39c94f633b901e765868a45ec37b33d32d`,
+retained readonly at `target/qualification/material50-red-libtests`.
+
+Coordinator reports checkpoint49 delivered at actual signed66fb5fda: exact
+PR309 run39695483387 and both postmerge jobs39696944017 succeeded; signed tag
+4810664778dda385d666aa1e943f9fe1410870dc points to66fb, release v0.2.43 published
+00:10:42UTC. This supplied delivery evidence is distinct from this class50
+RED proof. Parked class46 source/cache remain unchanged. This checkpoint is
+submitted for independent RED review; no production implementation authorized.
