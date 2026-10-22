@@ -10,6 +10,9 @@ mod completion;
 mod config;
 mod endpoint;
 mod evidence;
+#[cfg(all(test, target_os = "linux"))]
+#[path = "../tests/unit/executable_fixture_writer.rs"]
+mod executable_fixture_writer_tests;
 mod executables;
 #[cfg(unix)]
 mod helper_exchange;
