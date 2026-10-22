@@ -151,7 +151,6 @@ fn output_limits_and_post_readiness_drain_are_bounded() {
         ),
         ("import time;time.sleep(30)", "within 5 seconds"),
     ] {
-        let scope = crate::process_cleanup::test_support::Scope::new();
         let mut local = Local::new().unwrap();
         let start = Instant::now();
         let error = local.spawn(&mut command(script), true).unwrap_err();
@@ -231,6 +230,7 @@ fn ready_marker_cannot_admit_an_already_exited_child() {
             false,
         ),
     ] {
+        let scope = crate::process_cleanup::test_support::Scope::new();
         let mut local = Local::new().unwrap();
         AFTER_SPAWN.set(3);
         let error = local.spawn(&mut command(script), key).unwrap_err();
