@@ -919,6 +919,8 @@ impl PreparedStep {
 }
 
 #[cfg(all(test, target_os = "linux"))]
+mod cli_tests;
+#[cfg(all(test, target_os = "linux"))]
 mod tests;
 
 #[cfg(target_os = "linux")]
