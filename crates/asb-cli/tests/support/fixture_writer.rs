@@ -52,10 +52,17 @@ fn retained() -> &'static Mutex<BTreeSet<PathBuf>> {
 #[test]
 fn local_fault_scope_restores_the_unmodified_writer_default() {
     assert!(FAULT.get() == Fault::None);
-    with_fault(Fault::ChildFailure, || {
-        assert!(FAULT.get() == Fault::ChildFailure)
-    });
-    assert!(FAULT.get() == Fault::None);
+    for fault in [
+        Fault::ChildFailure,
+        Fault::Timeout,
+        Fault::Unwind,
+        Fault::UnknownCleanup,
+        Fault::MarkerReplacement,
+        Fault::MarkerMissing,
+    ] {
+        with_fault(fault, || assert!(FAULT.get() == fault));
+        assert!(FAULT.get() == Fault::None);
+    }
 }
 fn retain(root: &Path) {
     retained()
