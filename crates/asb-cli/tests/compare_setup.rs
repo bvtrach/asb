@@ -623,7 +623,13 @@ fn all_agents_providers_and_measures_generate_a_matrix_without_literal_all() {
         .collect::<std::collections::BTreeSet<_>>();
     assert!(agents.contains("codex") && agents.contains("opencode") && agents.contains("pi"));
     assert!(providers.contains("openrouter") && providers.contains("ollama"));
-    assert_eq!(configs.len(), agents.len() * providers.len());
+    assert!(configs.len() < agents.len() * providers.len());
+    assert!(configs.iter().all(|config| {
+        !matches!(
+            (config["agent"].as_str(), config["provider"].as_str()),
+            (Some("openjiuwen"), Some("openai"))
+        )
+    }));
     for config in configs {
         for field in ["agent", "provider", "model", "workload"] {
             assert_ne!(config[field].as_str(), Some("all"));

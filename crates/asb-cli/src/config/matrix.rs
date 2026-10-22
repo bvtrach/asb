@@ -33,6 +33,12 @@ pub(super) fn setup(mut options: SetupOptions, output: &mut dyn Write) -> Result
         required(Some(value.clone()))?;
     }
     let requested_repeats = repeated(&options);
+    // An explicit incompatible pair is a user input error. An `all` expansion,
+    // however, denotes every runnable combination and therefore omits static
+    // endpoint mismatches rather than making the whole generated sweep invalid.
+    let filter_incompatible = [&options.agent, &options.provider, &options.model]
+        .into_iter()
+        .any(|values| values.iter().any(|value| value == "all"));
     selections::expand(&mut options)?;
     let repeated = requested_repeats || repeated(&options);
     for measure in &options.measure {
@@ -132,6 +138,20 @@ pub(super) fn setup(mut options: SetupOptions, output: &mut dyn Write) -> Result
             }
             for agent in unique(&options.agent) {
                 for model in &models {
+                    if filter_incompatible {
+                        let adapter = agents::find(agent).expect("expanded agent is registered");
+                        let compatible = crate::endpoint::choose_from(
+                            adapter.id(),
+                            adapter.supported_endpoints(),
+                            provider,
+                            model,
+                            &providers::offered_endpoints(provider, model),
+                        )
+                        .is_ok();
+                        if !compatible {
+                            continue;
+                        }
+                    }
                     for trial in &trials {
                         if configs.len() >= crate::sweep::MAX_CONFIGS {
                             return Err(Error::Input(format!(
