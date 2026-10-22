@@ -301,7 +301,10 @@ fn inspection_must_bound_inherited_pipe_lifetime_after_principal_exit() {
     assert_eq!(result["success"], true);
     assert_eq!(result["status_code"], 0);
     assert_eq!(result["cleanup_confirmed"], true);
-    assert_eq!(result["stdout"], serde_json::json!(b"valid-prefix".to_vec()));
+    assert_eq!(
+        result["stdout"],
+        serde_json::json!(b"valid-prefix".to_vec())
+    );
     assert!(!result["status"].is_null());
 }
 

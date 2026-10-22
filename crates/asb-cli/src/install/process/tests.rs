@@ -1294,6 +1294,59 @@ fn local_validation_abort_and_cancel_must_retain_raw_after_actual_stage_drop() {
 }
 
 #[test]
+fn ordinary_validation_reason_survives_later_operation_abort() {
+    let root = root();
+    let context = context(&root);
+    let source = root.join("input");
+    let destination = root.join("installed");
+    fs::write(&source, "new local bytes").unwrap();
+    fs::write(&destination, "old local bytes").unwrap();
+    let mut owned = None;
+    let result = crate::install::source::install_input_in(
+        &context,
+        &crate::install::source::Input::pin_local(source).unwrap(),
+        &destination,
+        crate::install::source::Options {
+            kind: "primary failure preservation fixture",
+            limit: 4096,
+            checksum: None,
+            executable: false,
+        },
+        |path, scope| {
+            let completion = scope
+                .lease
+                ._owner
+                .as_ref()
+                .unwrap()
+                .drop_completion()
+                .unwrap();
+            owned = Some((path.to_owned(), completion));
+            context.cancel();
+            Err(crate::Error::Input("specific original validation reason".into()).into())
+        },
+        crate::install::source::Publication::Replace,
+    );
+    let (raw, completion) = owned.unwrap();
+    assert!(
+        completion.load(Ordering::Acquire),
+        "actual Stage Drop is pending"
+    );
+    assert!(raw.is_file(), "operation Abort erased retained raw staging");
+    assert_eq!(fs::read(destination).unwrap(), b"old local bytes");
+    let error = result.expect_err("cancelled validation published its source");
+    assert!(
+        matches!(error, InstallFailure::Abort(_)),
+        "Abort became an ordinary fallback"
+    );
+    assert!(
+        error
+            .to_string()
+            .contains("specific original validation reason"),
+        "later operation Abort erased the original validation error: {error}"
+    );
+}
+
+#[test]
 fn operation_reports_one_bounded_diagnostic_summary_and_drains_it_once() {
     let root = root();
     let context = context(&root);
