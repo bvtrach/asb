@@ -3,6 +3,7 @@
 //! production pin is independently checked below with a corrupt input.
 use super::*;
 use std::path::PathBuf;
+use std::process::Command;
 const ADAPTER: SweBenchAdapter = SweBenchAdapter {
     id: "fixture-suite",
     dataset: "fixture/source",
@@ -124,6 +125,11 @@ if args.catalog and os.environ['ASB_SWE_SOURCE_CASE']=='catalog-fails': sys.exit
         fs::create_dir(&destination).unwrap();
     }
     let context = InstallationContext {
+        process: &crate::install::OperationContext::new(
+            &root,
+            &crate::project::ProjectConfig::default(),
+        )
+        .unwrap(),
         project_root: &root,
         tools_root: &tools,
         workloads_root: &workloads,

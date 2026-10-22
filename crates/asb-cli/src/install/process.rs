@@ -9,6 +9,11 @@ use std::time::{Duration, Instant};
 
 #[cfg(target_os = "linux")]
 mod native;
+#[cfg(not(target_os = "linux"))]
+#[path = "process/legacy.rs"]
+mod native;
+#[cfg(target_os = "linux")]
+mod observer;
 
 pub(crate) type InstallResult<T> = Result<T, InstallFailure>;
 
@@ -73,10 +78,45 @@ pub(crate) struct OperationContext {
     config_path: PathBuf,
     budgets: InstallationConfig,
     proxy: crate::project::NetworkProxy,
+    project: ProjectConfig,
+    diagnostics: Arc<std::sync::Mutex<Diagnostics>>,
     deadline: Instant,
     cancel: Arc<AtomicBool>,
 }
 impl OperationContext {
+    /// Explicit outer entry only; nested install steps reuse this snapshot.
+    pub(crate) fn load(root: &Path) -> InstallResult<Self> {
+        let (root, config) = crate::project::load(root)?;
+        Self::new(&root, &config)
+    }
+    pub(crate) fn root(&self) -> &Path {
+        &self.root
+    }
+    pub(crate) fn custody_failure(&self, label: &str, evidence: &Path) -> InstallFailure {
+        authority_failure(self, label, Some(evidence.to_owned()))
+    }
+    pub(crate) fn check_before_admission(&self, label: &str, evidence: &Path) -> InstallResult<()> {
+        let cause = if Instant::now() >= self.deadline {
+            Some(AbortCause::Deadline)
+        } else if self.cancel.load(Ordering::Acquire) {
+            Some(AbortCause::Cancelled)
+        } else {
+            None
+        };
+        if let Some(cause) = cause {
+            return Err(InstallFailure::Abort(AbortInstallation {
+                cause,
+                cleanup_confirmed: true,
+                capture_complete: true,
+                label: label.into(),
+                config_path: self.config_path.clone(),
+                limit_key: "operation_timeout_seconds",
+                evidence: Some(evidence.to_owned()),
+                detail: None,
+            }));
+        }
+        Ok(())
+    }
     pub(crate) fn new(root: &Path, config: &ProjectConfig) -> InstallResult<Self> {
         let config_path = root.join(".asb/project.toml");
         config.installation.validate().map_err(|error| {
@@ -97,12 +137,55 @@ impl OperationContext {
             config_path,
             budgets: config.installation.clone(),
             proxy: config.proxy.clone(),
+            project: config.clone(),
+            diagnostics: Arc::new(std::sync::Mutex::new(Diagnostics::default())),
             deadline,
             cancel: Arc::new(AtomicBool::new(false)),
         })
     }
+    #[cfg(test)]
     pub(crate) fn cancel(&self) {
         self.cancel.store(true, Ordering::Release);
+    }
+    pub(crate) fn project(&self) -> &ProjectConfig {
+        &self.project
+    }
+    fn record_log(&self, report: &native::LogReport) {
+        if report.fault.is_none() && !report.truncated && report.settled {
+            return;
+        }
+        let mut diagnostics = self
+            .diagnostics
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        if diagnostics.logs.len() < 128 {
+            diagnostics.logs.push(report.clone());
+        } else {
+            diagnostics.omitted = diagnostics.omitted.saturating_add(1);
+        }
+    }
+    pub(crate) fn report_diagnostics(
+        &self,
+        output: &mut dyn std::io::Write,
+    ) -> Result<(), crate::Error> {
+        let mut diagnostics = self
+            .diagnostics
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let logs = std::mem::take(&mut diagnostics.logs);
+        let omitted = std::mem::take(&mut diagnostics.omitted);
+        drop(diagnostics);
+        for log in logs {
+            render_log(&log, output).map_err(InstallFailure::into_public)?;
+        }
+        if omitted != 0 {
+            writeln!(
+                output,
+                "Installation diagnostics: {omitted} additional bounded log warnings omitted."
+            )
+            .map_err(crate::io_error)?;
+        }
+        Ok(())
     }
     fn step_deadline(&self, purpose: Purpose) -> InstallResult<(Instant, &'static str)> {
         let (key, seconds) = purpose.budget(&self.budgets);
@@ -122,6 +205,12 @@ impl OperationContext {
     }
 }
 
+#[derive(Default)]
+struct Diagnostics {
+    logs: Vec<native::LogReport>,
+    omitted: usize,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum AbortCause {
     Cancelled,
@@ -130,6 +219,7 @@ pub(crate) enum AbortCause {
     CaptureOverflow,
     Custody,
     Worker,
+    OwnerObservation,
 }
 
 #[derive(Clone, Debug)]
@@ -141,6 +231,13 @@ pub(crate) struct AbortInstallation {
     config_path: PathBuf,
     limit_key: &'static str,
     pub(crate) evidence: Option<PathBuf>,
+    detail: Option<String>,
+}
+impl AbortInstallation {
+    fn detail(mut self, detail: Option<String>) -> Self {
+        self.detail = detail;
+        self
+    }
 }
 impl std::fmt::Display for AbortInstallation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -165,6 +262,9 @@ impl std::fmt::Display for AbortInstallation {
         if let Some(path) = &self.evidence {
             write!(f, "; retained evidence {}", path.display())?;
         }
+        if let Some(detail) = &self.detail {
+            write!(f, "; {detail}")?;
+        }
         Ok(())
     }
 }
@@ -177,12 +277,55 @@ pub(crate) trait ProducerOwner: Send + Sync {
     fn producer_state(&self) -> &ProducerState;
     /// Disable destructive settlement before any potentially admitted producer.
     fn producer_started(&self);
+    /// Owning resource policy, never executed by the cancellation supervisor.
+    fn observation(self: Arc<Self>) -> Option<ObservationCheck> {
+        None
+    }
+}
+pub(crate) type ObservationCheck = Box<dyn FnMut() -> Result<(), String> + Send>;
+
+/// Real opened directory ownership for package/build helpers. There is no
+/// destructive Drop: an uncertain producer always leaves its evidence intact.
+pub(crate) struct ProducerDirectory {
+    path: PathBuf,
+    _directory: std::fs::File,
+    state: ProducerState,
+}
+impl ProducerOwner for ProducerDirectory {
+    fn producer_state(&self) -> &ProducerState {
+        &self.state
+    }
+    fn producer_started(&self) {}
+}
+impl ProducerDirectory {
+    pub(crate) fn open(path: &Path) -> InstallResult<Arc<Self>> {
+        let directory = crate::install::source::open_named(path).map_err(crate::io_error)?;
+        if !directory.metadata().map_err(crate::io_error)?.is_dir() {
+            return Err(crate::Error::Input(
+                "installation producer root is not a directory".into(),
+            )
+            .into());
+        }
+        Ok(Arc::new(Self {
+            path: path.to_owned(),
+            _directory: directory,
+            state: ProducerState::default(),
+        }))
+    }
+    pub(crate) fn scope(self: &Arc<Self>, context: &OperationContext) -> ProcessScope {
+        ProcessScope::new(context, ProducerLease::new(Arc::clone(self), &self.path))
+    }
+    pub(crate) fn consume(&self, permission: ProducerPermission) -> InstallResult<()> {
+        permission.consume_for(&self.state)
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ProducerProof {
     NoNewAdmission,
     Quiescent,
+    #[cfg(not(target_os = "linux"))]
+    DirectChildOnly,
 }
 
 struct OwnerState {
@@ -304,6 +447,7 @@ fn authority_failure(
         config_path: context.config_path.clone(),
         limit_key: "operation_timeout_seconds",
         evidence,
+        detail: None,
     })
 }
 
@@ -395,10 +539,10 @@ pub(crate) struct SettledStep {
     status: std::process::ExitStatus,
     stdout: Vec<u8>,
     stderr: Vec<u8>,
-    #[cfg(target_os = "linux")]
     pub(crate) log: native::LogReport,
     lease: ProducerLease,
 }
+#[cfg(test)]
 impl SettledStep {
     pub(crate) fn status(&self) -> std::process::ExitStatus {
         self.status
@@ -417,6 +561,18 @@ pub(crate) struct CompletedStep {
     pub(crate) stdout: Vec<u8>,
     pub(crate) stderr: Vec<u8>,
     pub(crate) log: native::LogReport,
+}
+/// Ancillary diagnostics never change required capture/status into success.
+fn render_log(log: &native::LogReport, output: &mut dyn std::io::Write) -> InstallResult<()> {
+    if log.fault.is_some() || log.truncated || !log.settled {
+        writeln!(output, "Installation diagnostics: log {}; {} bytes retained, {} bytes accepted, {} bytes discarded; writer {}{}.",
+                log.path.as_ref().map_or_else(|| "unavailable".into(), |path| path.display().to_string()),
+                log.retained, log.accepted, log.discarded,
+                if log.settled { "settled" } else { "pending" },
+                if log.fault.is_some() { "; a log write failed" } else { "" })
+                .map_err(crate::io_error)?;
+    }
+    Ok(())
 }
 
 /// A single sequential producer lane for one actual private stage. Neither this
@@ -447,6 +603,18 @@ impl ProcessScope {
     ) -> InstallResult<PreparedStep> {
         PreparedStep::new(&self.context, program, purpose, label)
     }
+    pub(crate) fn status(
+        &mut self,
+        program: impl AsRef<std::ffi::OsStr>,
+        purpose: Purpose,
+        label: &str,
+        configure: impl FnOnce(&mut std::process::Command),
+    ) -> InstallResult<std::process::ExitStatus> {
+        let mut step = self.prepare(program, purpose, label)?;
+        step.command_mut().stdin(std::process::Stdio::null());
+        configure(step.command_mut());
+        Ok(self.run(step)?.status)
+    }
     pub(crate) fn run(&mut self, step: PreparedStep) -> InstallResult<CompletedStep> {
         if let Some(abort) = &self.terminal {
             return Err(InstallFailure::Abort(abort.clone()));
@@ -461,6 +629,7 @@ impl ProcessScope {
                 config_path: self.context.config_path.clone(),
                 limit_key: "operation_timeout_seconds",
                 evidence: self.lease.evidence.clone(),
+                detail: None,
             };
             self.terminal = Some(abort.clone());
             return Err(InstallFailure::Abort(abort));
@@ -476,6 +645,7 @@ impl ProcessScope {
                         config_path: self.context.config_path.clone(),
                         limit_key: "operation_timeout_seconds",
                         evidence: self.lease.evidence.clone(),
+                        detail: None,
                     };
                     self.terminal = Some(abort.clone());
                     return Err(InstallFailure::Abort(abort));
@@ -540,12 +710,14 @@ pub(crate) struct PreparedStep {
     purpose: Purpose,
     label: String,
     capture: Capture,
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "linux"))]
     log_writer: Option<native::WriterFactory>,
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "linux"))]
     hold_observation: Option<Arc<AtomicBool>>,
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "linux"))]
     before_continue: Option<native::AdmissionPause>,
+    #[cfg(all(test, target_os = "linux"))]
+    observation: Option<ObservationCheck>,
 }
 impl PreparedStep {
     pub(crate) fn new(
@@ -570,6 +742,7 @@ impl PreparedStep {
         context
             .proxy
             .apply(&mut command, &|name| std::env::var(name).ok());
+        command.stdin(std::process::Stdio::null());
         Ok(Self {
             command,
             route: Some(route),
@@ -577,12 +750,14 @@ impl PreparedStep {
             purpose,
             label: label.to_owned(),
             capture: Capture::Status,
-            #[cfg(test)]
+            #[cfg(all(test, target_os = "linux"))]
             log_writer: None,
-            #[cfg(test)]
+            #[cfg(all(test, target_os = "linux"))]
             hold_observation: None,
-            #[cfg(test)]
+            #[cfg(all(test, target_os = "linux"))]
             before_continue: None,
+            #[cfg(all(test, target_os = "linux"))]
+            observation: None,
         })
     }
     pub(crate) fn command_mut(&mut self) -> &mut std::process::Command {
@@ -591,7 +766,6 @@ impl PreparedStep {
     pub(crate) fn capture(&mut self, capture: Capture) {
         self.capture = capture;
     }
-    #[cfg(target_os = "linux")]
     pub(crate) fn run(self, lease: ProducerLease) -> InstallResult<SettledStep> {
         let ticket = lease.begin(&self.context)?;
         native::run(self, lease, ticket)

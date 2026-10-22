@@ -5,6 +5,7 @@ use super::*;
 use crate::workloads::adapters::WorkloadAdapter;
 use serde_json::json;
 use std::path::PathBuf;
+use std::process::Command;
 const ADAPTER: TerminalBenchAdapter = TerminalBenchAdapter {
     id: "fixture-suite",
     source: "fixture/source",
@@ -146,6 +147,11 @@ raise AssertionError('unrecognized fixture operation')
         fs::write(&cache, "not a directory").unwrap();
     }
     let context = InstallationContext {
+        process: &crate::install::OperationContext::new(
+            &root,
+            &crate::project::ProjectConfig::default(),
+        )
+        .unwrap(),
         project_root: &root,
         tools_root: &tools,
         workloads_root: &workloads,

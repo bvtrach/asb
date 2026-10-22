@@ -9,10 +9,11 @@ use crate::workloads;
 use std::fs::{self, OpenOptions};
 use std::io;
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitStatus, Stdio};
+use std::process::Stdio;
+#[cfg(test)]
+use std::process::{Command, ExitStatus};
 
 pub(crate) mod operation;
-#[cfg(all(test, target_os = "linux"))] // Worker proof first, not production wiring.
 pub(crate) mod process;
 mod progress;
 pub(crate) use progress::ProgressStage;
@@ -21,7 +22,10 @@ mod goose;
 #[path = "../tests/unit/installer_process_boundary.rs"]
 mod process_boundary_red;
 mod source;
-pub(crate) use source::check_executable_version;
+pub(crate) use process::{
+    InstallFailure, InstallResult, OperationContext, ProcessScope, ProducerDirectory, Purpose,
+};
+pub(crate) use source::check_version_in;
 
 const GOOSE_X86_64_URL: &str = "https://github.com/aaif-goose/goose/releases/download/v1.54.0/goose-x86_64-unknown-linux-gnu.tar.gz";
 const GOOSE_X86_64_SHA256: &str =
@@ -43,11 +47,13 @@ const NPM_INSTALL_MANIFEST: &str = r#"{
 }
 "#;
 
+#[cfg(test)]
 pub(crate) trait LoggedStatus {
     fn logged_status(&mut self) -> io::Result<ExitStatus>;
     fn logged_spawn(&mut self) -> io::Result<std::process::Child>;
 }
 
+#[cfg(test)]
 impl LoggedStatus for Command {
     fn logged_status(&mut self) -> io::Result<ExitStatus> {
         self.logged_spawn()?.wait()
@@ -71,8 +77,11 @@ impl LoggedStatus for Command {
     }
 }
 
-type CustomInstall =
-    fn(&Path, &mut dyn FnMut(u8, crate::install::ProgressStage)) -> Result<PathBuf, Error>;
+type CustomInstall = fn(
+    &OperationContext,
+    &Path,
+    &mut dyn FnMut(u8, crate::install::ProgressStage),
+) -> InstallResult<PathBuf>;
 
 #[derive(Clone, Copy)]
 pub(crate) enum Recipe {
@@ -142,6 +151,14 @@ pub(crate) fn guest_bootstrap(
     project_root: &Path,
     tools_root: &Path,
 ) -> Result<GuestBootstrap, Error> {
+    let context = OperationContext::load(project_root).map_err(InstallFailure::into_public)?;
+    guest_bootstrap_in(&context, id, tools_root).map_err(InstallFailure::into_public)
+}
+fn guest_bootstrap_in(
+    context: &OperationContext,
+    id: &str,
+    tools_root: &Path,
+) -> InstallResult<GuestBootstrap> {
     let adapter = agents::find(id)
         .ok_or_else(|| Error::Input("selected agent has no installation adapter".into()))?;
     let recipe = adapter.recipe();
@@ -155,7 +172,6 @@ pub(crate) fn guest_bootstrap(
         .map_err(|error| Error::Io(format!("cannot reserve guest bootstrap: {error}")))?;
     lock.lock()
         .map_err(|error| Error::Io(format!("cannot lock project bootstrap cache: {error}")))?;
-    let _network = project::network_project(project_root);
     let mut progress = |_percent: u8, _stage: crate::install::ProgressStage| {};
     let mut plan = GuestBootstrap {
         runtime_tools: recipe.guest_runtimes().to_vec(),
@@ -169,14 +185,20 @@ pub(crate) fn guest_bootstrap(
         // Prefetch archives without replacing any host runtime executables.
         for mut asset in tool.guest_assets(&root)? {
             if let Some((url, checksum)) = asset.distribution {
-                tools::runtime::cached_archive(&asset.source, url, checksum, &mut progress)?;
+                tools::runtime::cached_archive_in(
+                    context,
+                    &asset.source,
+                    url,
+                    checksum,
+                    &mut progress,
+                )?;
             }
             asset.target = Path::new(id).join(asset.target);
             plan.assets.push(asset);
         }
     }
     if matches!(recipe, Recipe::Goose) {
-        let archive = goose_archive(&tools_root.join(id), &mut progress)?;
+        let archive = goose_archive(context, &tools_root.join(id), &mut progress)?;
         plan.assets.push(tools::GuestAsset {
             source: archive,
             target: Path::new(id).join("cache/goose.tar.gz"),
@@ -255,6 +277,19 @@ pub fn tool_with_progress(
     output: &mut dyn std::io::Write,
     progress: &mut dyn FnMut(u8, crate::install::ProgressStage),
 ) -> Result<(), Error> {
+    let context = OperationContext::load(Path::new(".")).map_err(InstallFailure::into_public)?;
+    let result = tool_in(&context, options, output, progress);
+    let diagnostic = context.report_diagnostics(output);
+    result.map_err(InstallFailure::into_public)?;
+    diagnostic
+}
+
+pub(crate) fn tool_in(
+    context: &OperationContext,
+    options: ToolInstallOptions,
+    output: &mut dyn std::io::Write,
+    progress: &mut dyn FnMut(u8, ProgressStage),
+) -> InstallResult<()> {
     let ToolInstallOptions {
         name: id,
         source,
@@ -263,18 +298,20 @@ pub fn tool_with_progress(
     } = options;
     crate::selection_names::validate(&id, "tool").map_err(Error::Input)?;
     if !valid_name(&id) {
-        return Err(Error::Input(format!("invalid tool name `{id}`")));
+        return Err(Error::Input(format!("invalid tool name `{id}`")).into());
     }
-    let (project_root, project_config) = project::load(Path::new("."))?;
+    let project_root = context.root();
+    let project_config = context.project();
     let tools_root = dir
-        .map(|value| resolve_path(&project_root, &value))
-        .unwrap_or_else(|| project::resolve(&project_root, &project_config.tools_dir));
+        .map(|value| resolve_path(project_root, &value))
+        .unwrap_or_else(|| project::resolve(project_root, &project_config.tools_dir));
     progress(2, crate::install::ProgressStage::Preparing);
     let root = tools_root.join(&id);
     let built_in = built_in_tool(&id);
-    ensure_collector_dependencies(
+    ensure_collector_dependencies_in(
+        context,
         std::slice::from_ref(&id),
-        &project_root,
+        project_root,
         &tools_root,
         output,
         progress,
@@ -292,7 +329,7 @@ pub fn tool_with_progress(
         progress(20, crate::install::ProgressStage::Copying);
         fs::create_dir_all(destination.parent().expect("bin parent"))
             .map_err(|error| Error::Io(format!("cannot create {}: {error}", root.display())))?;
-        install_executable_source(&source, &destination, "tool")?;
+        install_executable_source_in(context, &source, &destination, "tool")?;
         progress(100, crate::install::ProgressStage::Ready);
         writeln!(output, "Installed tool {id} at {}", destination.display())
             .map_err(super::io_error)?;
@@ -304,16 +341,17 @@ pub fn tool_with_progress(
             return Err(Error::Input(format!(
                 "{}; pass --source URL or PATH",
                 suggestions::unknown("tool", &id, &tool_names().collect::<Vec<_>>())
-            )));
+            ))
+            .into());
         }
     };
     if dry_run {
         writeln!(output, "{}", describe(plan, &root)).map_err(super::io_error)?;
         return Ok(());
     }
-    let executable = install_recipe(plan, &root, &project_root, output, progress)?;
+    let executable = install_recipe_in(context, plan, &root, output, progress)?;
     if let Some(tool) = tools::find(&id) {
-        tool.post_install(&executable, progress, output)?;
+        tool.post_install(context, &executable, progress, output)?;
     }
     progress(100, crate::install::ProgressStage::Ready);
     let kind = built_in.expect("known tool has metadata").2;
@@ -344,6 +382,30 @@ pub(crate) fn ensure_collector_dependencies(
     progress: &mut dyn FnMut(u8, crate::install::ProgressStage),
     dry_run: bool,
 ) -> Result<(), Error> {
+    let context = OperationContext::load(project_root).map_err(InstallFailure::into_public)?;
+    let result = ensure_collector_dependencies_in(
+        &context,
+        selected,
+        project_root,
+        tools_root,
+        output,
+        progress,
+        dry_run,
+    );
+    let diagnostic = context.report_diagnostics(output);
+    result.map_err(InstallFailure::into_public)?;
+    diagnostic
+}
+
+fn ensure_collector_dependencies_in(
+    context: &OperationContext,
+    selected: &[String],
+    _project_root: &Path,
+    tools_root: &Path,
+    output: &mut dyn std::io::Write,
+    progress: &mut dyn FnMut(u8, ProgressStage),
+    dry_run: bool,
+) -> InstallResult<()> {
     for id in crate::collectors::dependency_tools(selected) {
         let tool = tools::find(id).ok_or_else(|| {
             Error::Input(format!("collector dependency `{id}` has no tool installer"))
@@ -357,7 +419,7 @@ pub(crate) fn ensure_collector_dependencies(
                 return Err(Error::Io(format!(
                     "required tool `{id}` at {} is not executable; make it executable or reinstall it, then retry",
                     path.display()
-                )));
+                )).into());
             }
             crate::executables::Lookup::Missing => {}
         }
@@ -372,10 +434,12 @@ pub(crate) fn ensure_collector_dependencies(
         }
         progress(5, crate::install::ProgressStage::Dependencies);
         let installed = match recipe {
-            Recipe::Host { executable } => install_host_dependency(executable, &destination)?,
-            _ => install_recipe(recipe, &root, project_root, output, progress)?,
+            Recipe::Host { executable } => {
+                install_host_dependency_in(context, executable, &destination)?
+            }
+            _ => install_recipe_in(context, recipe, &root, output, progress)?,
         };
-        tool.post_install(&installed, progress, output)?;
+        tool.post_install(context, &installed, progress, output)?;
         writeln!(
             output,
             "Installed required tool {id} at {}",
@@ -386,12 +450,27 @@ pub(crate) fn ensure_collector_dependencies(
     Ok(())
 }
 
+#[cfg(test)]
 fn install_host_dependency(name: &str, destination: &Path) -> Result<PathBuf, Error> {
+    let context = OperationContext::new(
+        destination.parent().unwrap_or(Path::new(".")),
+        &project::ProjectConfig::default(),
+    )
+    .map_err(InstallFailure::into_public)?;
+    install_host_dependency_in(&context, name, destination).map_err(InstallFailure::into_public)
+}
+
+fn install_host_dependency_in(
+    context: &OperationContext,
+    name: &str,
+    destination: &Path,
+) -> InstallResult<PathBuf> {
     let source = host_executable(name)?;
     let parent = destination.parent().expect("dependency has a parent");
     fs::create_dir_all(parent)
         .map_err(|error| Error::Io(format!("cannot create {}: {error}", parent.display())))?;
-    source::install_input(
+    source::install_input_in(
+        context,
         &source::Input::pin_local(source)?,
         destination,
         source::Options {
@@ -400,7 +479,7 @@ fn install_host_dependency(name: &str, destination: &Path) -> Result<PathBuf, Er
             checksum: None,
             executable: true,
         },
-        |_| Ok(()),
+        |_, _| Ok(()),
         source::Publication::NoClobber,
     )?;
     Ok(destination.to_path_buf())
@@ -479,6 +558,21 @@ pub fn workload_with_progress(
     output: &mut dyn std::io::Write,
     progress: &mut dyn FnMut(u8, crate::install::ProgressStage),
 ) -> Result<(), Error> {
+    let resolved = workload_source(&options.source)?;
+    let context = OperationContext::new(&resolved.project_root, &resolved.project_config)
+        .map_err(InstallFailure::into_public)?;
+    let result = workload_in(&context, options, resolved, output, progress);
+    let diagnostic = context.report_diagnostics(output);
+    result.map_err(InstallFailure::into_public)?;
+    diagnostic
+}
+fn workload_in(
+    context: &OperationContext,
+    options: WorkloadInstallOptions,
+    resolved: ResolvedWorkloadSource,
+    output: &mut dyn std::io::Write,
+    progress: &mut dyn FnMut(u8, ProgressStage),
+) -> InstallResult<()> {
     let WorkloadInstallOptions {
         source: requested,
         name: requested_name,
@@ -489,13 +583,14 @@ pub fn workload_with_progress(
         default_name,
         project_root,
         project_config,
-    } = workload_source(&requested)?;
+    } = resolved;
     let name = requested_name.unwrap_or(default_name);
     crate::selection_names::validate(&name, "workload").map_err(Error::Input)?;
     if !valid_name(&name) {
         return Err(Error::Input(
             "workload name must contain only letters, numbers, '.', '_' or '-'".into(),
-        ));
+        )
+        .into());
     }
     let directory = requested_dir
         .map(|value| resolve_path(&project_root, &value))
@@ -514,6 +609,7 @@ pub fn workload_with_progress(
         if workloads::install_registered(
             &name,
             &workloads::InstallationContext {
+                process: context,
                 project_root: &project_root,
                 tools_root: &tools_root,
                 workloads_root: &directory,
@@ -525,12 +621,13 @@ pub fn workload_with_progress(
         }
     }
     if let Some(bundle) = workloads::source_bundle(&name) {
-        install_bundle(&name, bundle, &directory, output, progress)?;
+        install_bundle_in(context, &name, bundle, &directory, output, progress)?;
         return Ok(());
     }
     progress(30, crate::install::ProgressStage::Downloading);
     let reference = directory.join(format!("{name}.reference.md"));
-    source::install_input(
+    source::install_input_in(
+        context,
         &source,
         &reference,
         source::Options {
@@ -539,7 +636,7 @@ pub fn workload_with_progress(
             checksum: None,
             executable: false,
         },
-        |_| Ok(()),
+        |_, _| Ok(()),
         source::Publication::Replace,
     )?;
     workloads::materialize_external_adapter(&name, &directory)
@@ -563,13 +660,30 @@ pub fn workload_with_progress(
     Ok(())
 }
 
+#[cfg(test)]
 fn install_bundle(
     name: &str,
     bundle: workloads::SourceBundle,
     directory: &Path,
     output: &mut dyn std::io::Write,
-    progress: &mut dyn FnMut(u8, crate::install::ProgressStage),
+    progress: &mut dyn FnMut(u8, ProgressStage),
 ) -> Result<(), Error> {
+    let context = OperationContext::new(directory, &project::ProjectConfig::default())
+        .map_err(InstallFailure::into_public)?;
+    let result = install_bundle_in(&context, name, bundle, directory, output, progress);
+    let diagnostic = context.report_diagnostics(output);
+    result.map_err(InstallFailure::into_public)?;
+    diagnostic
+}
+
+fn install_bundle_in(
+    context: &OperationContext,
+    name: &str,
+    bundle: workloads::SourceBundle,
+    directory: &Path,
+    output: &mut dyn std::io::Write,
+    progress: &mut dyn FnMut(u8, crate::install::ProgressStage),
+) -> InstallResult<()> {
     let bundle_dir = directory.join(name);
     let source_dir = bundle_dir.join("source");
     let marker = bundle_dir.join("ASB-BUNDLE");
@@ -585,7 +699,7 @@ fn install_bundle(
             return Err(Error::Io(format!(
                 "external workload {name} is installed at a different pinned revision; remove {} and retry",
                 bundle_dir.display()
-            )));
+            )).into());
         }
         let prompt = directory.join(format!("{name}.txt"));
         if !prompt.exists() {
@@ -614,7 +728,7 @@ fn install_bundle(
         return Err(Error::Io(format!(
             "external workload {name} has an incomplete local bundle at {}; remove that directory and retry",
             bundle_dir.display()
-        )));
+        )).into());
     }
     let archive = directory.join(format!(".{name}.tar.gz"));
     let extract = directory.join(format!(".{name}.extract"));
@@ -633,19 +747,26 @@ fn install_bundle(
         ))
     })?;
     progress(20, crate::install::ProgressStage::Downloading);
-    install_source(bundle.archive, &archive, "external workload bundle")?;
+    install_source_in(
+        context,
+        bundle.archive,
+        &archive,
+        "external workload bundle",
+    )?;
     progress(45, crate::install::ProgressStage::Extracting);
-    let status = Command::new("tar")
+    let owner = ProducerDirectory::open(&extract)?;
+    let mut scope = owner.scope(context);
+    let mut step = scope.prepare("tar", Purpose::Extract, "external workload extraction")?;
+    step.command_mut()
         .args(["--extract", "--gzip", "--file"])
         .arg(&archive)
         .args(["--directory"])
         .arg(&extract)
-        .logged_status()
-        .map_err(|error| missing_dependency("tar", "external workload installation", error))?;
+        .stdin(Stdio::null());
+    let status = scope.run(step)?.status;
+    owner.consume(scope.finish()?)?;
     if !status.success() {
-        return Err(Error::Io(format!(
-            "could not extract external workload {name}"
-        )));
+        return Err(Error::Io(format!("could not extract external workload {name}")).into());
     }
     let top = fs::read_dir(&extract)
         .map_err(|error| Error::Io(format!("cannot inspect extracted {name}: {error}")))?
@@ -773,22 +894,22 @@ enum PreparedDistribution {
 struct PreparedRecipe<'a> {
     distribution: PreparedDistribution,
     root: &'a Path,
-    project_root: &'a Path,
+    context: &'a OperationContext,
     destination: PathBuf,
 }
 impl<'a> PreparedRecipe<'a> {
     fn resolve(
+        context: &'a OperationContext,
         recipe: Recipe,
         root: &'a Path,
-        project_root: &'a Path,
         progress: &mut dyn FnMut(u8, ProgressStage),
-    ) -> Result<Self, Error> {
+    ) -> InstallResult<Self> {
         let distribution = match recipe {
             Recipe::Host { executable } => {
                 PreparedDistribution::Host(source::Input::pin_local(host_executable(executable)?)?)
             }
             Recipe::Goose => PreparedDistribution::Goose {
-                archive: goose_archive(root, progress)?,
+                archive: goose_archive(context, root, progress)?,
                 checksum: goose_distribution()?.1,
             },
             Recipe::Custom { install, .. } => PreparedDistribution::Custom(install),
@@ -797,7 +918,7 @@ impl<'a> PreparedRecipe<'a> {
         Ok(Self {
             distribution,
             root,
-            project_root,
+            context,
             destination: executable(recipe, root),
         })
     }
@@ -805,14 +926,15 @@ impl<'a> PreparedRecipe<'a> {
         self,
         output: &mut dyn io::Write,
         progress: &mut dyn FnMut(u8, ProgressStage),
-    ) -> Result<PathBuf, Error> {
+    ) -> InstallResult<PathBuf> {
         match self.distribution {
             PreparedDistribution::Host(source) => {
                 progress(55, ProgressStage::Copying);
                 fs::create_dir_all(self.destination.parent().expect("host tool parent")).map_err(
                     |error| Error::Io(format!("cannot create {}: {error}", self.root.display())),
                 )?;
-                source::install_input(
+                source::install_input_in(
+                    self.context,
                     &source,
                     &self.destination,
                     source::Options {
@@ -821,22 +943,23 @@ impl<'a> PreparedRecipe<'a> {
                         checksum: None,
                         executable: true,
                     },
-                    |_| Ok(()),
+                    |_, _| Ok(()),
                     source::Publication::Replace,
                 )?;
                 Ok(self.destination)
             }
             PreparedDistribution::Goose { archive, checksum } => {
-                goose::install_archive(self.root, &archive, checksum, progress)
+                goose::install_archive_in(self.context, self.root, &archive, checksum, progress)
             }
-            PreparedDistribution::Custom(install) => install(self.root, progress),
+            PreparedDistribution::Custom(install) => install(self.context, self.root, progress),
             PreparedDistribution::Package(recipe) => {
-                install_package(recipe, self.root, self.project_root, output, progress)
+                install_package(self.context, recipe, self.root, output, progress)
             }
         }
     }
 }
 
+#[cfg(test)]
 fn install_recipe(
     recipe: Recipe,
     root: &Path,
@@ -844,113 +967,144 @@ fn install_recipe(
     output: &mut dyn std::io::Write,
     progress: &mut dyn FnMut(u8, ProgressStage),
 ) -> Result<PathBuf, Error> {
+    let context = OperationContext::load(project_root).map_err(InstallFailure::into_public)?;
+    install_recipe_in(&context, recipe, root, output, progress).map_err(InstallFailure::into_public)
+}
+
+fn install_recipe_in(
+    context: &OperationContext,
+    recipe: Recipe,
+    root: &Path,
+    output: &mut dyn std::io::Write,
+    progress: &mut dyn FnMut(u8, ProgressStage),
+) -> InstallResult<PathBuf> {
     fs::create_dir_all(root)
         .map_err(|error| Error::Io(format!("cannot create {}: {error}", root.display())))?;
-    PreparedRecipe::resolve(recipe, root, project_root, progress)?.install(output, progress)
+    PreparedRecipe::resolve(context, recipe, root, progress)?.install(output, progress)
 }
 
 fn install_package(
+    context: &OperationContext,
     recipe: Recipe,
     root: &Path,
-    project_root: &Path,
     output: &mut dyn std::io::Write,
-    progress: &mut dyn FnMut(u8, crate::install::ProgressStage),
-) -> Result<PathBuf, Error> {
+    progress: &mut dyn FnMut(u8, ProgressStage),
+) -> InstallResult<PathBuf> {
     fs::create_dir_all(root)
         .map_err(|error| Error::Io(format!("cannot create {}: {error}", root.display())))?;
+    let owner = ProducerDirectory::open(root)?;
+    let mut scope = owner.scope(context);
     let status = match recipe {
         Recipe::Npm { package, .. } => {
-            ensure_runtime_dependency("node", project_root, root.parent().expect("tool parent"), output, progress)?;
+            ensure_runtime_dependency_in(
+                context,
+                "node",
+                root.parent().expect("tool parent"),
+                output,
+                progress,
+            )?;
             let manifest = root.join("package.json");
             if !manifest.exists() {
                 fs::write(&manifest, NPM_INSTALL_MANIFEST).map_err(|error| {
                     Error::Io(format!("cannot prepare npm install manifest: {error}"))
                 })?;
             }
-            progress(15, crate::install::ProgressStage::InstallingPackage);
-            let mut command = Command::new("npm");
-            tools::apply_runtime_path_at(&mut command, root.parent().expect("tool parent"))?;
-            command.args(["install", "--prefix"])
+            progress(15, ProgressStage::InstallingPackage);
+            let mut step =
+                scope.prepare("npm", Purpose::Package, "agent npm package installation")?;
+            tools::apply_runtime_path_at(step.command_mut(), root.parent().expect("tool parent"))?;
+            step.command_mut()
+                .args(["install", "--prefix"])
                 .arg(root)
                 .args(["--no-save", package])
-                .env("NPM_CONFIG_CACHE", project_root.join(".asb-cache/npm"))
-                .logged_status()
+                .env("NPM_CONFIG_CACHE", context.root().join(".asb-cache/npm"))
+                .stdin(Stdio::null());
+            let result = scope.run(step)?;
+            result.status
         }
         Recipe::Python {
             package,
             dependencies,
             ..
         } => {
-            let project_python = crate::python_runtime::ensure(project_root, output)?;
+            let project_python = crate::python_runtime::ensure_in(context, output)?;
             let venv = root.join("venv");
-            if fs::symlink_metadata(&venv).is_ok() && !crate::python_runtime::matches_project(&venv.join("bin/python"), &project_python)
-                && let Some(backup) = crate::python_runtime::preserve_environment(&venv)? {
-                writeln!(output, "Preserved the previous tool Python environment at {}.", backup.display())
-                    .map_err(crate::io_error)?;
+            if fs::symlink_metadata(&venv).is_ok()
+                && !crate::python_runtime::matches_project_in(
+                    &mut scope,
+                    &venv.join("bin/python"),
+                    &project_python,
+                )?
+                && let Some(backup) = crate::python_runtime::preserve_environment(&venv)?
+            {
+                writeln!(
+                    output,
+                    "Preserved the previous tool Python environment at {}.",
+                    backup.display()
+                )
+                .map_err(crate::io_error)?;
             }
-            let created = Command::new(&project_python)
-                .args(["-m", "venv"]).arg(&venv).logged_status()
-                .map_err(|error| Error::Io(format!("cannot create agent environment with {}: {error}", project_python.display())))?;
-            if !created.success() {
-                return Err(Error::Io("could not create the agent Python environment; see .asb/install.log for details".into()));
+            let mut step = scope.prepare(
+                &project_python,
+                Purpose::Configure,
+                "agent Python environment creation",
+            )?;
+            step.command_mut()
+                .args(["-m", "venv"])
+                .arg(&venv)
+                .stdin(Stdio::null());
+            let created = scope.run(step)?;
+            if !created.status.success() {
+                return Err(Error::Io(format!("could not create the agent Python environment ({}); inspect the installation diagnostics", created.status)).into());
             }
-            progress(35, crate::install::ProgressStage::InstallingPackage);
+            progress(35, ProgressStage::InstallingPackage);
             let python = venv.join("bin/python");
-            let status = Command::new(&python)
+            let mut step = scope.prepare(
+                &python,
+                Purpose::Package,
+                "agent Python package installation",
+            )?;
+            step.command_mut()
                 .args(["-m", "pip", "install", package])
-                .logged_status()
-                .map_err(|error| {
-                    Error::Io(format!("cannot install Python package {package}: {error}"))
-                })?;
-            if !status.success() {
-                return Err(Error::Io(format!(
-                    "Python package installation failed for {package}; see .asb/install.log for details"
-                )));
+                .stdin(Stdio::null());
+            let installed = scope.run(step)?;
+            if !installed.status.success() {
+                return Err(Error::Io(format!("Python package installation failed for {package} ({}); inspect the installation diagnostics", installed.status)).into());
             }
             for dependency in dependencies {
-                progress(45, crate::install::ProgressStage::Dependencies);
-                let dependency_status = Command::new(&python)
+                progress(45, ProgressStage::Dependencies);
+                let mut step = scope.prepare(
+                    &python,
+                    Purpose::Package,
+                    "Python runtime dependency installation",
+                )?;
+                step.command_mut()
                     .args(["-m", "pip", "install", dependency])
-                    .logged_status()
-                    .map_err(|error| {
-                        Error::Io(format!(
-                            "cannot install Python runtime dependency {dependency}: {error}"
-                        ))
-                    })?;
-                if !dependency_status.success() {
+                    .stdin(Stdio::null());
+                let result = scope.run(step)?;
+                if !result.status.success() {
                     return Err(Error::Io(format!(
-                        "Python runtime dependency installation failed for {dependency}"
-                    )));
+                        "Python runtime dependency installation failed for {dependency} ({})",
+                        result.status
+                    ))
+                    .into());
                 }
             }
-            Ok(status)
+            installed.status
         }
-        Recipe::Host {..}|Recipe::Custom {..}|Recipe::Goose=>unreachable!("prepared executable recipes bypass package managers"),
-    }
-    .map_err(|error| {
-        if error.kind() == std::io::ErrorKind::NotFound {
-            let dependency = match recipe {
-                Recipe::Npm { .. } => "npm",
-                Recipe::Python { .. } => "python3",
-                Recipe::Host { .. } => "host measurement binary",
-                Recipe::Custom { .. } => "custom installer dependency",
-                Recipe::Goose => "curl, tar, and sha256sum",
-            };
-            missing_dependency(dependency, "agent installation", error)
-        } else {
-            Error::Io(format!("cannot start agent installer: {error}"))
+        Recipe::Host { .. } | Recipe::Custom { .. } | Recipe::Goose => {
+            unreachable!("prepared executable recipes bypass package managers")
         }
-    })?;
+    };
+    owner.consume(scope.finish()?)?;
     if !status.success() {
-        return Err(Error::Io(
-            "agent package installation failed; verify the prerequisite tool and rerun `asb tool install`".into(),
-        ));
+        return Err(Error::Io(format!("agent package installation failed ({status}); verify the prerequisite tool and rerun `asb tool install`")).into());
     }
-    let executable = executable(recipe, root);
-    Ok(executable)
+    Ok(executable(recipe, root))
 }
 
 /// Reuse a compatible host runtime or install its registered project-local recipe.
+#[cfg(test)]
 pub(crate) fn ensure_runtime_dependency(
     id: &str,
     project_root: &Path,
@@ -958,31 +1112,46 @@ pub(crate) fn ensure_runtime_dependency(
     output: &mut dyn std::io::Write,
     progress: &mut dyn FnMut(u8, crate::install::ProgressStage),
 ) -> Result<(), Error> {
+    let context = OperationContext::load(project_root).map_err(InstallFailure::into_public)?;
+    let result = ensure_runtime_dependency_in(&context, id, tools_root, output, progress);
+    let diagnostic = context.report_diagnostics(output);
+    result.map_err(InstallFailure::into_public)?;
+    diagnostic
+}
+
+pub(crate) fn ensure_runtime_dependency_in(
+    context: &OperationContext,
+    id: &str,
+    tools_root: &Path,
+    output: &mut dyn std::io::Write,
+    progress: &mut dyn FnMut(u8, ProgressStage),
+) -> InstallResult<()> {
     let tool = tools::find(id)
         .ok_or_else(|| Error::Input(format!("runtime dependency `{id}` is not registered")))?;
-    if tool_installed_locally(id, tools_root) || tool.host_runtime_usable() {
+    if tool_installed_locally(id, tools_root) || tool.host_runtime_usable(context)? {
         return Ok(());
     }
-    let destination = install_recipe(
+    let destination = install_recipe_in(
+        context,
         tool.recipe(),
         &tools_root.join(id),
-        project_root,
         output,
         progress,
     )?;
-    tool.post_install(&destination, progress, output)?;
+    tool.post_install(context, &destination, progress, output)?;
     writeln!(output, "Installed required runtime {id} for this project.")
         .map_err(crate::io_error)?;
     Ok(())
 }
 
 fn goose_archive(
+    context: &OperationContext,
     root: &Path,
     progress: &mut dyn FnMut(u8, crate::install::ProgressStage),
-) -> Result<PathBuf, Error> {
+) -> InstallResult<PathBuf> {
     let (url, checksum) = goose_distribution()?;
     let archive = root.join("cache/goose.tar.gz");
-    tools::runtime::cached_archive(&archive, url, checksum, progress)
+    tools::runtime::cached_archive_in(context, &archive, url, checksum, progress)
 }
 
 fn goose_distribution() -> Result<(&'static str, &'static str), Error> {
@@ -1003,24 +1172,17 @@ pub(crate) fn verify_sha256_preserving(
     expected_hash: &str,
     label: &str,
 ) -> Result<(), Error> {
-    let digest = command_output(
-        &PathBuf::from("sha256sum"),
-        &[
-            std::ffi::OsStr::new("--zero"),
-            std::ffi::OsStr::new("--"),
-            destination.as_os_str(),
-        ],
-        &format!("{label} checksum"),
-    )?;
-    let actual_hash = digest.split_whitespace().next().unwrap_or_default();
-    if actual_hash != expected_hash {
-        return Err(Error::Io(format!(
-            "{label} checksum mismatch: expected {expected_hash}, got {actual_hash}"
-        )));
-    }
-    Ok(())
+    let handle = source::open_named(destination).map_err(crate::io_error)?;
+    source::verify_pinned_checksum(
+        &handle,
+        destination,
+        expected_hash,
+        label,
+        source::MAX_SOURCE_BYTES,
+    )
 }
 
+#[cfg(test)]
 pub(crate) fn command_output<S: AsRef<std::ffi::OsStr>>(
     program: &Path,
     args: &[S],
@@ -1043,6 +1205,114 @@ pub(crate) fn command_output<S: AsRef<std::ffi::OsStr>>(
         )));
     }
     Ok(text)
+}
+
+pub(crate) fn command_output_in<S: AsRef<std::ffi::OsStr>>(
+    scope: &mut ProcessScope,
+    program: &Path,
+    args: &[S],
+    label: &str,
+) -> InstallResult<String> {
+    let mut step = scope.prepare(program, Purpose::Probe, label)?;
+    step.capture(process::Capture::inspection());
+    step.command_mut().args(args).stdin(Stdio::null());
+    let output = scope.run(step)?;
+    if !output.status.success() {
+        return Err(Error::Io(format!(
+            "cannot inspect {label}: command exited with {}; {}",
+            output.status,
+            if output.stderr.is_empty() {
+                "no diagnostic output"
+            } else {
+                "diagnostic output was captured privately"
+            }
+        ))
+        .into());
+    }
+    let text = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    if text.is_empty() {
+        return Err(Error::Io(format!(
+            "cannot inspect {label}: command returned no output"
+        ))
+        .into());
+    }
+    Ok(text)
+}
+
+pub(crate) fn install_source_in(
+    context: &OperationContext,
+    source: &str,
+    destination: &Path,
+    kind: &str,
+) -> InstallResult<()> {
+    install_source_bounded_in(context, source, destination, kind, source::MAX_SOURCE_BYTES)
+}
+
+pub(crate) fn install_source_bounded_in(
+    context: &OperationContext,
+    source: &str,
+    destination: &Path,
+    kind: &str,
+    limit: u64,
+) -> InstallResult<()> {
+    source::install_input_in(
+        context,
+        &source::Input::from_os(std::ffi::OsStr::new(source)),
+        destination,
+        source::Options {
+            kind,
+            limit,
+            checksum: None,
+            executable: false,
+        },
+        |_, _| Ok(()),
+        source::Publication::Replace,
+    )
+}
+
+pub(crate) fn install_executable_source_in(
+    context: &OperationContext,
+    source: &str,
+    destination: &Path,
+    kind: &str,
+) -> InstallResult<()> {
+    source::install_input_in(
+        context,
+        &source::Input::from_os(std::ffi::OsStr::new(source)),
+        destination,
+        source::Options {
+            kind,
+            limit: source::MAX_SOURCE_BYTES,
+            checksum: None,
+            executable: true,
+        },
+        |_, _| Ok(()),
+        source::Publication::Replace,
+    )
+}
+
+pub(crate) fn install_verified_source_in(
+    context: &OperationContext,
+    source: &str,
+    destination: &Path,
+    kind: &str,
+    checksum: &str,
+    executable: bool,
+    validate: impl FnOnce(&Path, &mut ProcessScope) -> InstallResult<()>,
+) -> InstallResult<()> {
+    source::install_input_in(
+        context,
+        &source::Input::from_os(std::ffi::OsStr::new(source)),
+        destination,
+        source::Options {
+            kind,
+            limit: source::MAX_SOURCE_BYTES,
+            checksum: Some(checksum),
+            executable,
+        },
+        validate,
+        source::Publication::Replace,
+    )
 }
 
 pub(crate) fn json_string(value: &str) -> String {
@@ -1183,6 +1453,7 @@ fn resolve_path(root: &Path, value: &Path) -> PathBuf {
     }
 }
 
+#[cfg(test)]
 fn missing_dependency(tool: &str, operation: &str, error: std::io::Error) -> Error {
     let command = match tool {
         "npm" => {
@@ -1200,11 +1471,13 @@ fn missing_dependency(tool: &str, operation: &str, error: std::io::Error) -> Err
     ))
 }
 
+#[cfg(test)]
 pub(crate) fn install_source(source: &str, destination: &Path, kind: &str) -> Result<(), Error> {
     install_source_with_limit(source, destination, kind, None)
 }
 
 /// Publish an unsigned executable only after its complete source is available.
+#[cfg(test)]
 pub(crate) fn install_executable_source(
     source: &str,
     destination: &Path,
@@ -1224,6 +1497,7 @@ pub(crate) fn install_executable_source(
 }
 
 /// Verify pinned bytes and any executable-specific probe before publication.
+#[cfg(test)]
 pub(crate) fn install_verified_source(
     source: &str,
     destination: &Path,
@@ -1245,15 +1519,7 @@ pub(crate) fn install_verified_source(
     )
 }
 
-pub(crate) fn install_runtime_source(source: &str, destination: &Path) -> Result<(), Error> {
-    install_source_with_limit(
-        source,
-        destination,
-        "runtime archive",
-        Some(256 * 1024 * 1024),
-    )
-}
-
+#[cfg(test)]
 fn install_source_with_limit(
     source: &str,
     destination: &Path,

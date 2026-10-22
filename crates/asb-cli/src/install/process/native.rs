@@ -368,6 +368,7 @@ fn abort(
         config_path: step.context.config_path.clone(),
         limit_key: key,
         evidence,
+        detail: None,
     }
 }
 
@@ -386,6 +387,49 @@ fn supervise(
         #[cfg(test)]
         step.log_writer.take(),
     );
+    #[cfg(test)]
+    let replacement = step.observation.take();
+    #[cfg(not(test))]
+    let replacement = None;
+    let mut observation = match super::observer::Observer::start(&_lease, replacement) {
+        Ok(observation) => observation,
+        Err(error) => {
+            ticket.settle(ProducerProof::NoNewAdmission);
+            let _ = send.send(Err(crate::Error::Io(format!(
+                "cannot establish installation resource observer: {}",
+                error.kind()
+            ))
+            .into()));
+            return;
+        }
+    };
+    loop {
+        observation.poll();
+        let reason = interrupted(&step.context, deadline)
+            .or_else(|| observation.failure().map(|_| AbortCause::OwnerObservation));
+        if let Some(reason) = reason {
+            observation.request_stop();
+            ticket.poison();
+            ticket.settle(ProducerProof::NoNewAdmission);
+            let report = log.finish();
+            step.context.record_log(&report);
+            let failure = abort(
+                &step,
+                key,
+                reason,
+                true,
+                false,
+                _lease.evidence.clone().or(report.path),
+            )
+            .detail(observation.failure().map(str::to_owned));
+            let _ = send.send(Err(InstallFailure::Abort(failure)));
+            return; // No client was exposed; a blocked observer retains its lease.
+        }
+        if observation.ready() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    }
     if let Some(reason) = interrupted(&step.context, deadline) {
         ticket.poison();
         ticket.settle(ProducerProof::NoNewAdmission);
@@ -451,7 +495,7 @@ fn supervise(
         }
     }
     if cause.is_none() {
-        let resumed = match gate.resume_when(|| {
+        let _resumed = match gate.resume_when(|| {
             cause = interrupted(&step.context, deadline);
             cause.is_none()
         }) {
@@ -462,7 +506,7 @@ fn supervise(
             }
         };
         #[cfg(test)]
-        if resumed && let Some(pause) = &step.before_continue {
+        if _resumed && let Some(pause) = &step.before_continue {
             // An observation-only scheduling hook ensures an already resumed
             // target can publish its marker before cancellation is polled.
             let until = Instant::now() + Duration::from_secs(2);
@@ -473,8 +517,13 @@ fn supervise(
     }
     let mut status = None;
     let mut cleanup_deadline = None;
+    let mut observation_deadline = None;
     let mut sent = false;
     loop {
+        observation.poll();
+        if observation.failure().is_some() {
+            cause.get_or_insert(AbortCause::OwnerObservation);
+        }
         if Instant::now() >= deadline {
             cause.get_or_insert(AbortCause::Deadline);
         }
@@ -510,6 +559,18 @@ fn supervise(
                 cause.get_or_insert(AbortCause::Custody);
             }
         }
+        if status.is_some() && pipes.iter().all(|pipe| pipe.ended) {
+            #[cfg(test)]
+            if let Some(pause) = &step.before_continue {
+                pause.settled.store(true, Ordering::Release);
+            }
+            observation.request_stop();
+            let end = *observation_deadline.get_or_insert_with(|| Instant::now() + CLEANUP);
+            if !observation.finished() && Instant::now() >= end {
+                cause.get_or_insert(AbortCause::OwnerObservation);
+                cleanup_deadline.get_or_insert(end);
+            }
+        }
         if let Some(reason) = cause {
             let end = *cleanup_deadline.get_or_insert_with(|| Instant::now() + CLEANUP);
             if status.is_none() {
@@ -521,6 +582,7 @@ fn supervise(
                     .evidence
                     .clone()
                     .or_else(|| log.report.lock().unwrap().path.clone());
+                step.context.record_log(&log.report.lock().unwrap().clone());
                 let _ = send.send(Err(InstallFailure::Abort(abort(
                     &step,
                     key,
@@ -528,7 +590,8 @@ fn supervise(
                     status.is_some(),
                     false,
                     evidence,
-                ))));
+                ).detail(observation.failure().map(str::to_owned).or_else(||
+                    (!observation.finished()).then(|| "required resource observation remains pending; its owned worker retains staging".into()))))));
                 sent = true;
                 // Keep exact gate, pumps, and the actual producer dependency in
                 // this existing worker until proof, regardless of parent wait.
@@ -536,26 +599,27 @@ fn supervise(
         }
         if let Some(status) = status
             && pipes.iter().all(|pipe| pipe.ended)
+            && observation.finished()
         {
             if cause.is_some() {
                 ticket.poison();
             }
             ticket.settle(ProducerProof::Quiescent);
-            #[cfg(test)]
-            if let Some(pause) = &step.before_continue {
-                pause.settled.store(true, Ordering::Release);
-            }
             if !sent {
                 let log = log.finish();
+                step.context.record_log(&log);
                 let result = match cause {
-                    Some(cause) => Err(InstallFailure::Abort(abort(
-                        &step,
-                        key,
-                        cause,
-                        true,
-                        false,
-                        _lease.evidence.clone().or(log.path),
-                    ))),
+                    Some(cause) => Err(InstallFailure::Abort(
+                        abort(
+                            &step,
+                            key,
+                            cause,
+                            true,
+                            false,
+                            _lease.evidence.clone().or(log.path),
+                        )
+                        .detail(observation.failure().map(str::to_owned)),
+                    )),
                     None => {
                         let [stdout, stderr] = pipes;
                         Ok(SettledStep {

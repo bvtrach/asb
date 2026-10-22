@@ -1,6 +1,6 @@
 use super::{StaticTool, ToolKind};
 use crate::Error;
-use crate::install::{Recipe, check_executable_version, install_verified_source};
+use crate::install::{InstallResult, OperationContext, Recipe, install_verified_source_in};
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -36,9 +36,10 @@ pub(super) static ADAPTER: StaticTool = StaticTool::new(
 /// project. Tracebox is the Linux Perfetto collector used by the optional
 /// scheduler and userspace tracepoint measurement adapter.
 fn install_perfetto(
+    context: &OperationContext,
     root: &Path,
     progress: &mut dyn FnMut(u8, crate::install::ProgressStage),
-) -> Result<PathBuf, Error> {
+) -> InstallResult<PathBuf> {
     let ((tracebox_url, tracebox_hash), (processor_url, processor_hash)) =
         match std::env::consts::ARCH {
             "x86_64" => (
@@ -58,7 +59,7 @@ fn install_perfetto(
             architecture => {
                 return Err(Error::Input(format!(
                     "Perfetto Tracebox is currently packaged by ASB only for Linux x86_64 and aarch64; this project is running on {architecture}"
-                )));
+                )).into());
             }
         };
     let bin = root.join("bin");
@@ -66,24 +67,26 @@ fn install_perfetto(
         .map_err(|error| Error::Io(format!("cannot create {}: {error}", bin.display())))?;
     let destination = bin.join("tracebox");
     progress(20, crate::install::ProgressStage::DownloadingAndValidating);
-    install_verified_source(
+    install_verified_source_in(
+        context,
         tracebox_url,
         &destination,
         "Perfetto Tracebox",
         tracebox_hash,
         true,
-        |path| check_executable_version(path, "Perfetto Tracebox"),
+        |path, scope| crate::install::check_version_in(scope, path, "Perfetto Tracebox"),
     )?;
     progress(45, crate::install::ProgressStage::Validating);
     let processor = bin.join("trace_processor_shell");
     progress(60, crate::install::ProgressStage::DownloadingAndValidating);
-    install_verified_source(
+    install_verified_source_in(
+        context,
         processor_url,
         &processor,
         "Perfetto trace processor",
         processor_hash,
         true,
-        |path| check_executable_version(path, "Perfetto trace processor"),
+        |path, scope| crate::install::check_version_in(scope, path, "Perfetto trace processor"),
     )?;
     progress(90, crate::install::ProgressStage::Validating);
     Ok(destination)

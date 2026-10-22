@@ -1,5 +1,6 @@
 //! Fake source/build commands never download or run a host collector.
 use super::*;
+use std::process::Command;
 #[cfg(unix)]
 #[test]
 fn isolated_bpftrace_build_and_install_contracts() {
@@ -117,6 +118,7 @@ fn isolated_bpftrace_build_and_install_contracts() {
         return;
     };
     let root = PathBuf::from(std::env::var_os("ASB_INSTALL_FIXTURE_ROOT").unwrap());
+    let context = OperationContext::new(&root, &crate::project::ProjectConfig::default()).unwrap();
     let commands = root.join("commands");
     let tool = root.join("tool");
     let executable = |name: &str, body: &str| {
@@ -192,7 +194,7 @@ esac"#,
             }
             _ => {}
         }
-        let result = install_bpftrace(&tool, &mut |percent, _| progress.push(percent));
+        let result = install_bpftrace(&context, &tool, &mut |percent, _| progress.push(percent));
         if case == "install" {
             let binary = result.unwrap();
             assert_eq!(binary, tool.join("bin/bpftrace"));
@@ -246,7 +248,7 @@ esac"#,
             fs::remove_file(commands.join(command)).unwrap();
         }
     }
-    let result = build_bpftrace(&tool, &mut |percent, stage| {
+    let result = build_bpftrace(&context, &tool, &mut |percent, stage| {
         progress.push(percent);
         if case == "held" {
             fs::write(root.join("phase"), format!("{percent} {}", stage.label())).unwrap();

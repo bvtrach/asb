@@ -752,3 +752,237 @@ fn unknown_cleanup_keeps_actual_staging_owner_then_retains_raw_after_late_quiesc
     assert_eq!(fs::read_to_string(destination).unwrap(), "old-installed");
     assert!(sentinel.0.try_wait().unwrap().is_none());
 }
+
+#[test]
+fn blocked_required_observer_cannot_hold_principal_or_descendant_cancellation() {
+    let root = root();
+    let context = context(&root);
+    struct CancelOnDrop(OperationContext);
+    impl Drop for CancelOnDrop {
+        fn drop(&mut self) {
+            self.0.cancel();
+        }
+    }
+    let _cancel = CancelOnDrop(context.clone());
+    let destination = root.join("installed");
+    fs::write(&destination, "old-installed").unwrap();
+    let staging = Arc::new(crate::install::source::Staging::new(&destination).unwrap());
+    let source = staging.producer_path().to_owned();
+    let weak = Arc::downgrade(&staging);
+    let mut scope = staging.producer_scope(&context);
+    let mut sentinel = Sentinel::start();
+    let reached = Arc::new(AtomicBool::new(false));
+    let release = Arc::new((Mutex::new(false), Condvar::new()));
+    let releasing = Release(Arc::clone(&release));
+    let settled = Arc::new(AtomicBool::new(false));
+    let mut step = scope
+        .prepare(
+            "/bin/sh",
+            Purpose::Probe,
+            "blocked required observer fixture",
+        )
+        .unwrap();
+    step.command_mut().env_clear().env("PATH", "/usr/bin:/bin").current_dir(&root)
+        .args(["-c", "printf partial > \"$1\"; printf %s $$ > principal.pid; /bin/sh -c 'printf %s $$ > descendant.pid; exec sleep 30' & wait", "fixture"])
+        .arg(&source);
+    let marker = root.join("descendant.pid");
+    step.before_continue = Some(native::AdmissionPause {
+        reached: Arc::new(AtomicBool::new(false)),
+        release: Arc::new(AtomicBool::new(true)),
+        settled: Arc::clone(&settled),
+        client_marker: marker.clone(),
+    });
+    let observed = Arc::clone(&reached);
+    let held = Arc::clone(&release);
+    let mut first = true;
+    step.observation = Some(Box::new(move || {
+        if first {
+            first = false;
+            return Ok(());
+        }
+        wait_file(&marker);
+        observed.store(true, Ordering::Release);
+        let (lock, wake) = &*held;
+        let mut released = lock.lock().unwrap();
+        while !*released {
+            released = wake.wait(released).unwrap();
+        }
+        Ok(())
+    }));
+    let (send, receive) = mpsc::sync_channel(1);
+    std::thread::spawn(move || {
+        let result = scope.run(step);
+        drop(scope);
+        let _ = send.send(result);
+    });
+    wait_file(&root.join("principal.pid"));
+    wait_file(&root.join("descendant.pid"));
+    let wait_pid = |name: &str| {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Some(pid) = fs::read_to_string(root.join(name))
+                .ok()
+                .and_then(|text| text.parse().ok())
+            {
+                break pid;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "incomplete actual fixture PID handshake"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    };
+    let principal = pin(wait_pid("principal.pid"));
+    let descendant = pin(wait_pid("descendant.pid"));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !reached.load(Ordering::Acquire) {
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    context.cancel();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !settled.load(Ordering::Acquire) || !exited(&principal) || !exited(&descendant) {
+        assert!(
+            Instant::now() < deadline,
+            "observer held actual producer cancellation or base quiescence"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(
+        !*release.0.lock().unwrap(),
+        "observer was released before actual tree settlement"
+    );
+    assert!(sentinel.0.try_wait().unwrap().is_none());
+    let abort = match receive.recv_timeout(Duration::from_secs(8)).unwrap() {
+        Err(InstallFailure::Abort(abort)) => abort,
+        _ => panic!("blocked required observation became a successful settled step"),
+    };
+    assert!(!abort.capture_complete);
+    drop(staging);
+    assert!(
+        weak.upgrade().is_some(),
+        "blocked observer lost the actual stage owner"
+    );
+    assert!(source.exists());
+    drop(releasing);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while weak.upgrade().is_some() {
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(
+        source.exists(),
+        "late observer completion removed raw evidence after an uncertain return"
+    );
+    assert_eq!(fs::read_to_string(destination).unwrap(), "old-installed");
+    assert!(sentinel.0.try_wait().unwrap().is_none());
+    sentinel.0.stop().unwrap();
+    fs::write(root.join("blocked-observer-cleanup-confirmed"), "actual principal, descendant and guardian quiesced before observer release; sentinel stopped separately").unwrap();
+}
+
+#[test]
+fn operation_review_cancelled_and_expired_local_copies_must_not_publish() {
+    let root = root();
+    let mut violations = Vec::new();
+    for case in ["cancelled", "expired"] {
+        let directory = root.join(case);
+        fs::create_dir(&directory).unwrap();
+        let mut context = context(&directory);
+        if case == "cancelled" {
+            context.cancel();
+        } else {
+            context.deadline = Instant::now() - Duration::from_millis(1);
+        }
+        let source = directory.join("source");
+        let destination = directory.join("installed");
+        fs::write(&source, "new fixture bytes").unwrap();
+        fs::write(&destination, "old-installed").unwrap();
+        let result = crate::install::source::install_input_in(
+            &context,
+            &crate::install::source::Input::pin_local(source).unwrap(),
+            &destination,
+            crate::install::source::Options {
+                kind: "offline operation-liveness fixture",
+                limit: 4096,
+                checksum: None,
+                executable: false,
+            },
+            |_, _| Ok(()),
+            crate::install::source::Publication::Replace,
+        );
+        if !matches!(result, Err(InstallFailure::Abort(_)))
+            || fs::read_to_string(&destination).unwrap() != "old-installed"
+        {
+            violations.push(case);
+        }
+    }
+    fs::write(
+        root.join("local-copy-operation-review-confirmed"),
+        format!("violations: {violations:?}"),
+    )
+    .unwrap();
+    assert!(
+        violations.is_empty(),
+        "local publication ignored cancelled/expired operation: {violations:?}"
+    );
+}
+
+#[test]
+fn operation_review_previously_settled_permission_must_not_survive_cancellation() {
+    let root = root();
+    let context = context(&root);
+    let lease = ProducerLease::default();
+    let permission = ProcessScope::new(&context, lease.clone()).finish().unwrap();
+    context.cancel();
+    assert!(
+        matches!(
+            permission.consume_for(&lease.state),
+            Err(InstallFailure::Abort(_))
+        ),
+        "cancelled operation retained a publish/cleanup permission"
+    );
+}
+
+#[test]
+fn operation_review_actual_required_capture_abort_must_stop_another_owner_lane() {
+    let root = root();
+    let context = context(&root);
+    let first = ProducerDirectory::open(&root).unwrap();
+    let mut scope = first.scope(&context);
+    let mut step = scope
+        .prepare("/bin/sh", Purpose::Probe, "actual required-capture abort")
+        .unwrap();
+    step.command_mut()
+        .args(["-c", "printf too-much-required-output"]);
+    step.capture(Capture::Inspect {
+        stream_bytes: 1,
+        total_bytes: 1,
+    });
+    assert!(matches!(scope.run(step), Err(InstallFailure::Abort(_))));
+    drop(scope);
+    let directory = root.join("different-owner");
+    fs::create_dir(&directory).unwrap();
+    let next = ProducerDirectory::open(&directory).unwrap();
+    let mut scope = next.scope(&context);
+    let mut step = scope
+        .prepare("/bin/sh", Purpose::Probe, "forbidden later owner lane")
+        .unwrap();
+    step.command_mut()
+        .current_dir(&root)
+        .args(["-c", "printf forbidden > later-admission"]);
+    let result = scope.run(step);
+    if result.is_ok() {
+        next.consume(scope.finish().unwrap()).unwrap();
+    }
+    let denied = matches!(result, Err(InstallFailure::Abort(_)));
+    fs::write(
+        root.join("later-lane-operation-review-confirmed"),
+        "both attempted native helpers settled or were never admitted",
+    )
+    .unwrap();
+    assert!(
+        denied && !root.join("later-admission").exists(),
+        "required capture abort did not stop a different actual owner lane"
+    );
+}

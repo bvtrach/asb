@@ -182,6 +182,11 @@ fn local_install_verifies_runtime_and_catalog_without_fetching_or_replacing_subs
     let fixture = Fixture::new();
     let tool = fixture.mock_runtime("#!/bin/sh\nexit 0\n");
     let context = InstallationContext {
+        process: &crate::install::OperationContext::new(
+            &fixture.0,
+            &crate::project::ProjectConfig::default(),
+        )
+        .unwrap(),
         project_root: &fixture.0,
         tools_root: &fixture.0.join("tools"),
         workloads_root: &fixture.directory(),
@@ -234,6 +239,11 @@ fn rejected_cached_catalog_validation_is_actionable_without_network() {
     let archive = cache.join("fixture-suite-pinned.tar.gz");
     fs::write(&archive, "fixture cached archive validated by mock runtime").unwrap();
     let context = InstallationContext {
+        process: &crate::install::OperationContext::new(
+            &fixture.0,
+            &crate::project::ProjectConfig::default(),
+        )
+        .unwrap(),
         project_root: &fixture.0,
         tools_root: &fixture.0.join("tools"),
         workloads_root: &fixture.directory(),

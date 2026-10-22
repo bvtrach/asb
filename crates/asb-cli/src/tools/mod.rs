@@ -57,15 +57,19 @@ pub(crate) trait ToolAdapter: Sync {
     fn runtime_path(&self, _root: &Path) -> Option<std::path::PathBuf> {
         None
     }
-    fn host_runtime_usable(&self) -> bool {
-        self.executable().is_some_and(host_program_on_path)
+    fn host_runtime_usable(
+        &self,
+        _context: &crate::install::OperationContext,
+    ) -> crate::install::InstallResult<bool> {
+        Ok(self.executable().is_some_and(host_program_on_path))
     }
     fn post_install(
         &self,
+        _context: &crate::install::OperationContext,
         _executable: &Path,
         _progress: &mut dyn FnMut(u8, crate::install::ProgressStage),
         _output: &mut dyn std::io::Write,
-    ) -> Result<(), crate::Error> {
+    ) -> crate::install::InstallResult<()> {
         Ok(())
     }
 
@@ -83,10 +87,11 @@ pub(crate) trait ToolAdapter: Sync {
 }
 
 type PostInstallHook = fn(
+    &crate::install::OperationContext,
     &Path,
     &mut dyn FnMut(u8, crate::install::ProgressStage),
     &mut dyn std::io::Write,
-) -> Result<(), crate::Error>;
+) -> crate::install::InstallResult<()>;
 
 #[derive(serde::Serialize)]
 pub(crate) struct GuestAsset {
@@ -103,7 +108,8 @@ pub(crate) struct StaticTool {
     kind: ToolKind,
     post_install: Option<PostInstallHook>,
     runtime_path: bool,
-    host_probe: Option<fn() -> bool>,
+    host_probe:
+        Option<fn(&crate::install::OperationContext) -> crate::install::InstallResult<bool>>,
     guest_assets: Option<GuestAssetsHook>,
     helper_executables: &'static [&'static str],
 }
@@ -132,7 +138,10 @@ impl StaticTool {
         self.helper_executables = names;
         self
     }
-    pub(crate) const fn with_host_probe(mut self, probe: fn() -> bool) -> Self {
+    pub(crate) const fn with_host_probe(
+        mut self,
+        probe: fn(&crate::install::OperationContext) -> crate::install::InstallResult<bool>,
+    ) -> Self {
         self.host_probe = Some(probe);
         self
     }
@@ -163,20 +172,24 @@ impl ToolAdapter for StaticTool {
             .then(|| root.join("bin"))
             .filter(|path| path.is_dir())
     }
-    fn host_runtime_usable(&self) -> bool {
+    fn host_runtime_usable(
+        &self,
+        context: &crate::install::OperationContext,
+    ) -> crate::install::InstallResult<bool> {
         if let Some(probe) = self.host_probe {
-            return probe();
+            return probe(context);
         }
-        self.executable().is_some_and(host_program_on_path)
+        Ok(self.executable().is_some_and(host_program_on_path))
     }
     fn post_install(
         &self,
+        context: &crate::install::OperationContext,
         executable: &Path,
         progress: &mut dyn FnMut(u8, crate::install::ProgressStage),
         output: &mut dyn std::io::Write,
-    ) -> Result<(), crate::Error> {
+    ) -> crate::install::InstallResult<()> {
         self.post_install
-            .map_or(Ok(()), |hook| hook(executable, progress, output))
+            .map_or(Ok(()), |hook| hook(context, executable, progress, output))
     }
 }
 

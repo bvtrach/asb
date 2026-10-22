@@ -699,3 +699,99 @@ and earlier frozen binaries/logs remain untouched. No pre-run final libtest hash
 full suite, production installer qualification, PR, push or release is claimed.
 All handles are terminal; the API awaits independent review before broad callers
 depend on it. Prior read/panic/start/fallback and all-caller obligations still hold.
+
+## Broad production graph and independent required-resource observer: partial
+
+Root independently approved056dc8bd and its intrinsic-owner construction after
+reading the complete delta, actual alternate-constructor regression,20-pass
+focus, strict lint and matching actual/frozen35f8 hashes. Broad migration resumed.
+
+Production tool/dependency/recipe/custom/post-install APIs now carry the frozen
+OperationContext and typed InstallResult. Npm/pip/venv, Node version probing,
+Python/uv discovery/bootstrap, perf package/extraction/build/runnable fallback,
+bpftrace configure/build/version, runtime archives, Perfetto and FlameGraph,
+and SWE/Terminal evaluator/catalog/source subprocesses use prepared commands.
+Project-init distinguishes optional ordinary Python setup failure from a typed
+Abort; the latter stops initialization rather than becoming a warning/fallback.
+Nested installers use the same context instead of reloading configuration.
+Pure SHA256 cache inspection reuses the existing pinned Rust checksum helper,
+not another external inspection child. The existing non-Linux direct-child
+backend is explicitly compatibility-only; no tree/pipe/deadline qualification
+for it is inferred from Linux fixtures. No new authorization policy is added.
+
+Actual source preparation carries the SAME Arc<Staging> through helper callbacks,
+requires its intrinsic permission before existing identity-bound publication,
+and returns typed Abort without destructive cleanup. Generic directory owners
+hold opened real resource directories rather than only evidence path strings.
+Perf Abort bypasses candidate/source fallback, runnable=false classification,
+publication and scratch removal; bpftrace propagates it without help-text erasure.
+Custom perf/bpf binary/metadata atomicity remains the separately assigned class45
+residual, not something this subprocess migration claims to repair.
+
+Required source size/identity inspection now has its OWN pre-established worker,
+not a callback running on the cancellation pump. The owner supplies its policy;
+the generic worker carries a clone of the actual owner and emits at most Ready
+and Finished through a two-slot channel. First readiness precedes admission;
+cancel/deadline is checked while waiting and again before actual continuation.
+The supervisor retains independent gate/pipe/cancellation authority throughout
+blocked observer IO. It requires observer completion separately from principal
+exit, matching guardian quiescence and complete pipe capture. A pending reserve
+expiry/failure poisons permission and keeps raw staging. No thread join occurs.
+Both observer closure and actual-owner keepalive drop BEFORE Finished is sent,
+avoiding a positive completion signal while that worker still holds the stage.
+Ancillary log diagnostics are bounded snapshots, explicitly reporting pending
+writers and retained/accepted/discarded counts without raw payloads.
+
+`target/installer44-observer-focus.log` records21PASS/0FAIL/0ignored in31.36s
+after23.17s libtest compilation. This includes all prior20 core tests plus actual
+blocked-resource-observer ordering: a real principal and grandchild are observed
+exited through pinned descriptors, and the actual guardian/pipe settlement hook
+is positive BEFORE the deliberately held observer is released. The unrelated
+sentinel remains alive and is stopped independently. The parent returns bounded
+Abort; the real Stage stays alive until observer return, then raw evidence still
+remains. The final fixture marker is blocked-observer-cleanup-confirmed.
+The actual ASB built FIRST in13.43s; before/after/frozen hash is
+`d29c8a077720ac420786aa2cf11209b58f7c97b49eef0ce8dce3a08c39da2f11`,
+preserved at target/qualification/installer44-observer-focused-asb.
+
+Intermediate diagnostics are preserved, not hidden by retries:
+production-source-build (unused not-yet-wired APIs), broad-migration-build-v1
+(four import/type/borrow issues), broad-migration-build-v2 (obsolete production
+API dead code), and successful broad-migration-build-v3 (14.26s). Fixture
+compile-v1 exposed71 signature/import errors; compile-v2 left four obsolete
+unused test wrappers, which were removed. No runtime was claimed from those
+compile failures. Strict broad-observer-clippy-v1 then found three needless
+borrows; those were corrected without suppression before the next baseline.
+
+### Newly observed operation-liveness gaps, not yet corrected here
+
+Auditing the pure-copy path exposed missing operation-live checks in permission
+current/consume: operation Arc identity alone does not reject its cancelled or
+expired state. A local source copy with no external helper can publish anyway.
+Also a physical required-capture Abort does not yet mark the shared context
+cancelled, so a different actual owner lane can still admit a new producer.
+
+Three new actual regressions were run BEFORE correction. They show both
+cancelled and expired local copies overwrote their isolated old destinations,
+a previously issued permission survived cancellation, and a real capture abort
+was followed by a different lane actually writing its forbidden marker. The
+native helpers settled through their owned gate before final assertions; the
+pure-copy and permission cases start no external producer. Retained markers are
+local-copy-operation-review-confirmed and later-lane-operation-review-confirmed.
+
+`target/installer44-operation-review-red.log`:0PASS/3intendedFAIL/0ignored in0.06s,
+exit101,26.87s compilation. Owning actual build FIRST13.27s, with unchanged
+before/after/frozen SHA256
+`5993d07542c3bb3fb4af138b21a865a9167cd76d51ce00b711f84cdfb12dad7d` at
+target/qualification/installer44-operation-review-red-asb. This checkpoint
+preserves the failures; no operation-liveness correction is claimed yet.
+
+This is a partial production graph/core proof, NOT final class clearance. Legacy
+LoggedStatus/command_output/DownloadChild definitions temporarily remain cfg(test)
+ONLY while historical fixture entries are modernized; they are no longer used
+by production callers and are not a final dead-code retention strategy. Required
+read/panic/start/pre-exec/binary-stdin/aggregate-log faults, all migrated owning
+CLI/fallback cases, meaningful final timeout diagnostics and the new operation
+regressions still need completion. No full suite, PR, push, merge or release.
+Actual delivered main ancestry will be merged normally before combined final
+qualification; immutable prior source, failures and frozen binaries are preserved.

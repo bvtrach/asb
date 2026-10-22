@@ -1,15 +1,14 @@
 //! Immutable source catalogs for the two original Terminal-Bench versions.
 use super::TerminalBenchAdapter;
-use crate::install::{self, LoggedStatus};
+use crate::Error;
+use crate::install;
 use crate::workloads::session::DatasetIdentity;
 use crate::workloads::{InstallationContext, TaskIdentity, Trial, TrialSet};
-use crate::{Error, project};
 use serde::Deserialize;
 use std::collections::BTreeSet;
 use std::fs;
 use std::io::{Read, Write};
 use std::path::Path;
-use std::process::Command;
 
 #[cfg(test)]
 #[path = "catalog/download_tests.rs"]
@@ -206,17 +205,39 @@ pub(super) fn runtime_available(
     adapter: &TerminalBenchAdapter,
     root: &Path,
 ) -> Result<bool, Error> {
-    Ok(Command::new(root.join("venv/bin/python"))
-        .arg(root.join("asb_terminal_catalog.py"))
-        .args(["runtime", "--workload", adapter.id, "--directory"])
-        .arg(root)
-        .env("PYTHONDONTWRITEBYTECODE", "1")
-        .logged_status()
-        .map_err(|error| {
-            Error::Io(format!(
-                "cannot inspect installed evaluator runtime: {error}"
-            ))
-        })?
+    let context =
+        install::OperationContext::load(root).map_err(install::InstallFailure::into_public)?;
+    let owner =
+        install::ProducerDirectory::open(root).map_err(install::InstallFailure::into_public)?;
+    let mut scope = owner.scope(&context);
+    let available = runtime_available_in(&mut scope, adapter, root);
+    owner
+        .consume(
+            scope
+                .finish()
+                .map_err(install::InstallFailure::into_public)?,
+        )
+        .map_err(install::InstallFailure::into_public)?;
+    available.map_err(install::InstallFailure::into_public)
+}
+fn runtime_available_in(
+    scope: &mut install::ProcessScope,
+    adapter: &TerminalBenchAdapter,
+    root: &Path,
+) -> install::InstallResult<bool> {
+    Ok(scope
+        .status(
+            root.join("venv/bin/python"),
+            install::Purpose::Probe,
+            "Terminal-Bench evaluator runtime",
+            |command| {
+                command
+                    .arg(root.join("asb_terminal_catalog.py"))
+                    .args(["runtime", "--workload", adapter.id, "--directory"])
+                    .arg(root)
+                    .env("PYTHONDONTWRITEBYTECODE", "1");
+            },
+        )?
         .success())
 }
 
@@ -225,10 +246,10 @@ pub(super) fn install(
     context: &InstallationContext<'_>,
     output: &mut dyn Write,
     progress: &mut dyn FnMut(u8, crate::install::ProgressStage),
-) -> Result<(), Error> {
-    let _network = project::network_project(context.project_root);
+) -> install::InstallResult<()> {
     if !install::tool_installed_locally(adapter.engine.tool(), context.tools_root) {
-        install::tool_with_progress(
+        install::tool_in(
+            context.process,
             install::ToolInstallOptions {
                 name: adapter.engine.tool().into(),
                 source: None,
@@ -242,9 +263,12 @@ pub(super) fn install(
     let tool = context.tools_root.join(adapter.engine.tool());
     let helper = tool.join("asb_terminal_catalog.py");
     ensure_helpers(&tool)?;
-    if !runtime_available(adapter, &tool)? {
+    let owner = install::ProducerDirectory::open(context.workloads_root)?;
+    let mut scope = owner.scope(context.process);
+    if !runtime_available_in(&mut scope, adapter, &tool)? {
         progress(10, crate::install::ProgressStage::Dependencies);
-        install::tool_with_progress(
+        install::tool_in(
+            context.process,
             install::ToolInstallOptions {
                 name: adapter.engine.tool().into(),
                 source: None,
@@ -254,17 +278,24 @@ pub(super) fn install(
             output,
             progress,
         )?;
-        if !runtime_available(adapter, &tool)? {
+        if !runtime_available_in(&mut scope, adapter, &tool)? {
             return Err(Error::Input(format!(
                 "installed evaluator runtime is unusable; run `asb tool install {}` and inspect .asb/install.log",
                 adapter.engine.tool()
-            )));
+            )).into());
         }
     }
     let directory = context.workloads_root.join(adapter.id);
-    let run = |operation: &str, archive: Option<&Path>| -> Result<bool, Error> {
-        let mut command = Command::new(tool.join("venv/bin/python"));
-        command
+    let run = |scope: &mut install::ProcessScope,
+               operation: &str,
+               archive: Option<&Path>|
+     -> install::InstallResult<bool> {
+        let mut step = scope.prepare(
+            tool.join("venv/bin/python"),
+            install::Purpose::Configure,
+            "official Terminal-Bench catalog operation",
+        )?;
+        step.command_mut()
             .arg(&helper)
             .arg(operation)
             .arg("--workload")
@@ -273,18 +304,15 @@ pub(super) fn install(
             .arg(&directory)
             .env("PYTHONDONTWRITEBYTECODE", "1");
         if let Some(archive) = archive {
-            command.arg("--archive").arg(archive);
+            step.command_mut().arg("--archive").arg(archive);
         }
-        Ok(command
-            .logged_status()
-            .map_err(|error| Error::Io(format!("cannot run official catalog validator: {error}")))?
-            .success())
+        Ok(scope.run(step)?.status.success())
     };
-    if read(adapter, context.workloads_root).is_err() || !run("verify", None)? {
+    if read(adapter, context.workloads_root).is_err() || !run(&mut scope, "verify", None)? {
         let cache = context.project_root.join(".asb-cache/workload-sources");
         fs::create_dir_all(&cache).map_err(|error| Error::Io(error.to_string()))?;
         let archive = cache.join(format!("{}-{}.tar.gz", adapter.id, adapter.revision));
-        if archive.exists() && !run("archive", Some(&archive))? {
+        if archive.exists() && !run(&mut scope, "archive", Some(&archive))? {
             let backup = archive.with_extension(format!(
                 "damaged-{}",
                 TaskIdentity::local(adapter.id, None).attempt_id
@@ -303,43 +331,29 @@ pub(super) fn install(
                 "part-{}",
                 TaskIdentity::local(adapter.id, None).attempt_id
             ));
-            let status = Command::new("curl")
-                .args([
-                    "--fail",
-                    "--location",
-                    "--silent",
-                    "--show-error",
-                    "--max-filesize",
-                    "268435456",
-                    "--output",
-                ])
-                .arg(&temporary)
-                .arg(adapter.archive)
-                .logged_status()
-                .map_err(|error| {
-                    Error::Io(format!("cannot download official task source: {error}"))
-                })?;
-            if !status.success() {
-                return Err(Error::Io(format!(
-                    "{} source download failed; check network/proxy access and .asb/install.log",
-                    adapter.id
-                )));
-            }
-            if !run("archive", Some(&temporary))? {
-                return Err(Error::Io("downloaded task archive is incomplete or unsafe; retained evidence in the project cache; retry the installation".into()));
+            install::install_source_bounded_in(
+                context.process,
+                adapter.archive,
+                &temporary,
+                "official Terminal-Bench task source",
+                256 * 1024 * 1024,
+            )?;
+            if !run(&mut scope, "archive", Some(&temporary))? {
+                return Err(Error::Io("downloaded task archive is incomplete or unsafe; retained evidence in the project cache; retry the installation".into()).into());
             }
             fs::rename(&temporary, &archive).map_err(|error| Error::Io(error.to_string()))?;
         }
         progress(50, crate::install::ProgressStage::Validating);
-        if !run("install", Some(&archive))? {
+        if !run(&mut scope, "install", Some(&archive))? {
             return Err(Error::Input(format!(
                 "{} dataset validation failed; inspect .asb/install.log; reinstall `{}` with `asb tool install {}` if its SDK is incompatible",
                 adapter.id,
                 adapter.engine.tool(),
                 adapter.engine.tool()
-            )));
+            )).into());
         }
     }
+    owner.consume(scope.finish()?)?;
     let catalog = read(adapter, context.workloads_root).map_err(Error::Input)?;
     fs::write(
         context.workloads_root.join(format!("{}.txt", adapter.id)),
@@ -357,7 +371,8 @@ pub(super) fn install(
         adapter.id,
         catalog.tasks.len()
     )
-    .map_err(crate::io_error)
+    .map_err(crate::io_error)?;
+    Ok(())
 }
 
 fn selection(

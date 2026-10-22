@@ -69,10 +69,13 @@ pub(in crate::install) struct Staging {
     directory_handle: fs::File,
     settled: bool,
     published: bool,
-    #[cfg(all(test, target_os = "linux"))]
     producer: crate::install::process::ProducerState,
-    #[cfg(all(test, target_os = "linux"))]
     producer_quiet: std::sync::atomic::AtomicBool,
+    monitor: std::sync::OnceLock<ProducerMonitor>,
+}
+struct ProducerMonitor {
+    kind: String,
+    bytes: u64,
 }
 impl Staging {
     pub(in crate::install) fn new(destination: &Path) -> Result<Self, Error> {
@@ -128,10 +131,9 @@ impl Staging {
                 directory_handle,
                 settled: false,
                 published: false,
-                #[cfg(all(test, target_os = "linux"))]
                 producer: crate::install::process::ProducerState::default(),
-                #[cfg(all(test, target_os = "linux"))]
                 producer_quiet: std::sync::atomic::AtomicBool::new(true),
+                monitor: std::sync::OnceLock::new(),
             })
         })();
         created.map_err(|error: io::Error| {
@@ -233,7 +235,6 @@ impl Staging {
         validated: &Snapshot,
         publication: Publication,
     ) -> Result<(), Error> {
-        #[cfg(all(test, target_os = "linux"))]
         self.require_quiet_producer().map_err(crate::io_error)?;
         // The probe knows the original pathname (and may retain its directory
         // handle). Move that entry out before trusting a commit pathname.
@@ -318,7 +319,6 @@ impl Staging {
         quiet.finish(result)
     }
     fn settle(&self) -> io::Result<()> {
-        #[cfg(all(test, target_os = "linux"))]
         self.require_quiet_producer()?;
         checkpoint(FaultPoint::Cleanup, &self.file)
             .map_err(|error| io::Error::other(error.to_string()))?;
@@ -566,7 +566,6 @@ impl Drop for Staging {
     }
 }
 
-#[cfg(all(test, target_os = "linux"))]
 impl crate::install::process::ProducerOwner for Staging {
     fn producer_state(&self) -> &crate::install::process::ProducerState {
         &self.producer
@@ -575,10 +574,53 @@ impl crate::install::process::ProducerOwner for Staging {
         self.producer_quiet
             .store(false, std::sync::atomic::Ordering::Release);
     }
+    fn observation(
+        self: std::sync::Arc<Self>,
+    ) -> Option<crate::install::process::ObservationCheck> {
+        self.monitor.get()?;
+        Some(Box::new(move || {
+            let policy = self.monitor.get().expect("fixed source observation policy");
+            self.file_owned().map_err(|error| error.to_string())?;
+            let metadata = self.handle.metadata().map_err(|error| {
+                format!(
+                    "cannot inspect staged {} at {}: {error}",
+                    policy.kind,
+                    self.file.display()
+                )
+            })?;
+            if !metadata.is_file() {
+                return Err(format!(
+                    "staged {} at {} is not a regular file",
+                    policy.kind,
+                    self.file.display()
+                ));
+            }
+            if metadata.len() > policy.bytes {
+                return Err(format!(
+                    "staged {} at {} exceeds the installation size limit ({} bytes); raw evidence was retained",
+                    policy.kind,
+                    self.file.display(),
+                    policy.bytes
+                ));
+            }
+            Ok(())
+        }))
+    }
 }
 
-#[cfg(all(test, target_os = "linux"))]
 impl Staging {
+    pub(in crate::install) fn monitor_producer(&self, kind: &str, bytes: u64) -> Result<(), Error> {
+        self.monitor
+            .set(ProducerMonitor {
+                kind: kind.to_owned(),
+                bytes,
+            })
+            .map_err(|_| {
+                Error::Input(
+                    "source observation policy was already fixed for this staging owner".into(),
+                )
+            })
+    }
     fn require_quiet_producer(&self) -> io::Result<()> {
         if self
             .producer_quiet
@@ -612,9 +654,11 @@ impl Staging {
             .store(true, std::sync::atomic::Ordering::Release);
         Ok(())
     }
+    #[cfg(all(test, target_os = "linux"))]
     pub(in crate::install) fn producer_path(&self) -> &Path {
         &self.file
     }
+    #[cfg(all(test, target_os = "linux"))]
     pub(in crate::install) fn publish_with_permission_for_test(
         mut self,
         permission: crate::install::process::ProducerPermission,

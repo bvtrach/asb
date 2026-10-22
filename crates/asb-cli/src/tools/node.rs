@@ -17,23 +17,31 @@ pub(super) static ADAPTER: StaticTool = StaticTool::new(
 .with_host_probe(host_usable)
 .with_guest_assets(guest_assets);
 
-fn host_usable() -> bool {
-    std::process::Command::new("node")
+fn host_usable(context: &crate::install::OperationContext) -> crate::install::InstallResult<bool> {
+    let Some(program) = super::host_executable(Path::new("node")) else {
+        return Ok(false);
+    };
+    let owner = crate::install::ProducerDirectory::open(context.root())?;
+    let mut scope = owner.scope(context);
+    let mut step = scope.prepare(
+        program,
+        crate::install::Purpose::Version,
+        "host Node.js version",
+    )?;
+    step.capture(crate::install::process::Capture::inspection());
+    step.command_mut()
         .arg("--version")
-        .stdin(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .output()
-        .ok()
-        .is_some_and(|output| {
-            output.status.success()
-                && String::from_utf8_lossy(&output.stdout)
-                    .trim()
-                    .trim_start_matches('v')
-                    .split('.')
-                    .next()
-                    .and_then(|major| major.parse::<u32>().ok())
-                    .is_some_and(|major| major >= 22)
-        })
+        .stdin(std::process::Stdio::null());
+    let output = scope.run(step)?;
+    owner.consume(scope.finish()?)?;
+    Ok(output.status.success()
+        && String::from_utf8_lossy(&output.stdout)
+            .trim()
+            .trim_start_matches('v')
+            .split('.')
+            .next()
+            .and_then(|major| major.parse::<u32>().ok())
+            .is_some_and(|major| major >= 22))
 }
 
 fn distribution() -> Result<(&'static str, &'static str), Error> {
@@ -60,11 +68,13 @@ fn guest_assets(root: &Path) -> Result<Vec<super::GuestAsset>, Error> {
 }
 
 fn install(
+    context: &crate::install::OperationContext,
     root: &Path,
     progress: &mut dyn FnMut(u8, crate::install::ProgressStage),
-) -> Result<PathBuf, Error> {
+) -> crate::install::InstallResult<PathBuf> {
     let (url, hash) = distribution()?;
     super::runtime::archive(
+        context,
         root,
         url,
         hash,

@@ -1,12 +1,12 @@
 use super::{StaticTool, ToolKind};
 use crate::Error;
 use crate::install::{
-    LoggedStatus, Recipe, command_output, host_executable, json_string, make_executable,
+    InstallFailure, InstallResult, OperationContext, ProducerDirectory, Purpose, Recipe,
+    command_output_in, host_executable, json_string, make_executable,
 };
 use std::{
     fs,
     path::{Path, PathBuf},
-    process::Command,
 };
 
 const BPFTRACE_SOURCE: &str =
@@ -28,29 +28,36 @@ pub(super) static ADAPTER: StaticTool = StaticTool::new(
 /// recording `uname -r` prevents silently reusing a project tool from another
 /// machine or kernel image.
 fn install_bpftrace(
+    context: &OperationContext,
     root: &Path,
     progress: &mut dyn FnMut(u8, crate::install::ProgressStage),
-) -> Result<PathBuf, Error> {
+) -> InstallResult<PathBuf> {
+    fs::create_dir_all(root).map_err(crate::io_error)?;
     progress(10, crate::install::ProgressStage::CheckingHost);
     let source = match host_executable("bpftrace") {
         Ok(source) => source,
-        Err(host_error) => match build_bpftrace(root, progress) {
+        Err(host_error) => match build_bpftrace(context, root, progress) {
             Ok(source) => source,
-            Err(build_error) => {
-                return Err(Error::Io(format!(
-                    "could not install bpftrace: {host_error}\n\n{build_error}\n\nTo install a matching host tool instead, run one of these commands:\n{}",
-                    bpftrace_host_commands()
-                )));
-            }
+            Err(InstallFailure::Abort(abort)) => return Err(InstallFailure::Abort(abort)),
+            Err(InstallFailure::Ordinary(build_error)) => return Err(Error::Io(format!(
+                "could not install bpftrace: {host_error}\n\n{build_error}\n\nTo install a matching host tool instead, run one of these commands:\n{}",
+                bpftrace_host_commands())).into()),
         },
     };
-    let version = command_output(&source, &["--version"], "bpftrace version")?;
+    let owner = ProducerDirectory::open(root)?;
+    let mut scope = owner.scope(context);
+    let version = command_output_in(&mut scope, &source, &["--version"], "bpftrace version")?;
     progress(95, crate::install::ProgressStage::Finalizing);
-    let kernel = command_output(Path::new("uname"), &["-r"], "kernel release")?;
-    let machine = command_output(Path::new("uname"), &["-m"], "kernel architecture")?;
+    let kernel = command_output_in(&mut scope, Path::new("uname"), &["-r"], "kernel release")?;
+    let machine = command_output_in(
+        &mut scope,
+        Path::new("uname"),
+        &["-m"],
+        "kernel architecture",
+    )?;
+    owner.consume(scope.finish()?)?;
     let bin = root.join("bin");
-    fs::create_dir_all(&bin)
-        .map_err(|error| Error::Io(format!("cannot create {}: {error}", bin.display())))?;
+    fs::create_dir_all(&bin).map_err(crate::io_error)?;
     let destination = bin.join("bpftrace");
     fs::copy(&source, &destination).map_err(|error| {
         Error::Io(format!(
@@ -76,18 +83,23 @@ fn install_bpftrace(
 }
 
 fn build_bpftrace(
+    context: &OperationContext,
     root: &Path,
     progress: &mut dyn FnMut(u8, crate::install::ProgressStage),
-) -> Result<PathBuf, Error> {
+) -> InstallResult<PathBuf> {
+    fs::create_dir_all(root).map_err(crate::io_error)?;
+    let owner = ProducerDirectory::open(root)?;
+    let mut scope = owner.scope(context);
     let source_dir = root.join("source");
     let build_dir = root.join("build");
     let archive = root.join(".bpftrace-source.tar.gz");
     if !source_dir.is_dir() {
-        fs::create_dir_all(root)
-            .map_err(|error| Error::Io(format!("cannot create {}: {error}", root.display())))?;
         progress(10, crate::install::ProgressStage::Downloading);
-        let status = Command::new("curl")
+        let mut step =
+            scope.prepare("curl", Purpose::Download, "pinned bpftrace source download")?;
+        step.command_mut()
             .args([
+                "--disable",
                 "--fail",
                 "--location",
                 "--silent",
@@ -96,67 +108,58 @@ fn build_bpftrace(
             ])
             .arg(&archive)
             .arg(BPFTRACE_SOURCE)
-            .logged_status()
-            .map_err(|error| bpftrace_missing_dependency("curl", error))?;
-        if !status.success() {
-            return Err(Error::Io(format!(
-                "could not download pinned bpftrace source from {BPFTRACE_SOURCE}; verify network access and retry\n\n{}",
-                bpftrace_source_commands()
-            )));
+            .stdin(std::process::Stdio::null());
+        if !scope.run(step)?.status.success() {
+            return Err(Error::Io(format!("could not download pinned bpftrace source from {BPFTRACE_SOURCE}; verify network access and retry\n\n{}", bpftrace_source_commands())).into());
         }
         progress(25, crate::install::ProgressStage::Extracting);
-        fs::create_dir_all(&source_dir).map_err(|error| {
-            Error::Io(format!("cannot create bpftrace source directory: {error}"))
-        })?;
-        let status = Command::new("tar")
-            .args(["-xzf"])
+        fs::create_dir_all(&source_dir).map_err(crate::io_error)?;
+        let mut step = scope.prepare("tar", Purpose::Extract, "bpftrace source extraction")?;
+        step.command_mut()
+            .arg("-xzf")
             .arg(&archive)
-            .args(["-C"])
+            .arg("-C")
             .arg(&source_dir)
-            .args(["--strip-components=1"])
-            .logged_status()
-            .map_err(|error| bpftrace_missing_dependency("tar", error))?;
-        if !status.success() {
+            .arg("--strip-components=1")
+            .stdin(std::process::Stdio::null());
+        if !scope.run(step)?.status.success() {
             return Err(Error::Io(format!(
                 "could not extract the pinned bpftrace source; install tar and retry\n\n{}",
                 bpftrace_dependency_commands("tar")
-            )));
+            ))
+            .into());
         }
     }
     progress(40, crate::install::ProgressStage::Configuring);
-    let status = Command::new("cmake")
-        .args(["-S"])
+    let mut step = scope.prepare("cmake", Purpose::Configure, "bpftrace configuration")?;
+    step.command_mut()
+        .arg("-S")
         .arg(&source_dir)
-        .args(["-B"])
+        .arg("-B")
         .arg(&build_dir)
         .args(["-DBUILD_TESTING=OFF", "-DBPFTRACE_BUILD_TESTING=OFF"])
-        .logged_status()
-        .map_err(|error| bpftrace_missing_dependency("cmake", error))?;
-    if !status.success() {
-        return Err(Error::Io(format!(
-            "cmake could not configure bpftrace; the BCC, libbpf, libclang, compiler, or CMake development packages are missing. Install them and rerun `asb tool install bpftrace`:\n\n{}",
-            bpftrace_source_commands()
-        )));
+        .stdin(std::process::Stdio::null());
+    if !scope.run(step)?.status.success() {
+        return Err(Error::Io(format!("cmake could not configure bpftrace; the BCC, libbpf, libclang, compiler, or CMake development packages are missing. Install them and rerun `asb tool install bpftrace`:\n\n{}", bpftrace_source_commands())).into());
     }
     progress(60, crate::install::ProgressStage::Building);
-    let status = Command::new("cmake")
-        .args(["--build"])
+    let mut step = scope.prepare("cmake", Purpose::Build, "bpftrace compilation")?;
+    step.command_mut()
+        .arg("--build")
         .arg(&build_dir)
         .args(["--target", "bpftrace", "--parallel"])
-        .logged_status()
-        .map_err(|error| bpftrace_missing_dependency("cmake", error))?;
-    if !status.success() {
-        return Err(Error::Io(format!(
-            "bpftrace source compilation failed; install the compiler and BCC/libbpf/libclang development packages, then rerun `asb tool install bpftrace`:\n\n{}",
-            bpftrace_source_commands()
-        )));
+        .stdin(std::process::Stdio::null());
+    if !scope.run(step)?.status.success() {
+        return Err(Error::Io(format!("bpftrace source compilation failed; install the compiler and BCC/libbpf/libclang development packages, then rerun `asb tool install bpftrace`:\n\n{}", bpftrace_source_commands())).into());
     }
+    owner.consume(scope.finish()?)?;
     progress(90, crate::install::ProgressStage::Validating);
     find_built_bpftrace(&build_dir).ok_or_else(|| {
         Error::Io(format!(
             "bpftrace built without a discoverable executable under {}",
             build_dir.display()
         ))
+        .into()
     })
 }
 
@@ -200,6 +203,7 @@ fn bpftrace_dependency_commands(dependency: &str) -> &'static str {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn bpftrace_missing_dependency(dependency: &str, error: std::io::Error) -> Error {
     Error::Io(format!(
         "bpftrace source build needs `{dependency}`, but it could not be started: {error}. Install it, then rerun `asb tool install bpftrace`:\n\n{}",

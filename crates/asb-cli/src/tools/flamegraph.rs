@@ -1,6 +1,6 @@
 use super::{StaticTool, ToolKind};
 use crate::Error;
-use crate::install::{Recipe, install_executable_source};
+use crate::install::{InstallResult, OperationContext, Recipe, install_executable_source_in};
 use std::path::{Path, PathBuf};
 
 pub(super) static ADAPTER: StaticTool = StaticTool::new(
@@ -16,9 +16,10 @@ pub(super) static ADAPTER: StaticTool = StaticTool::new(
 .with_helper_executables(&["stackcollapse-perf.pl"]);
 
 fn install(
+    context: &OperationContext,
     root: &Path,
     progress: &mut dyn FnMut(u8, crate::install::ProgressStage),
-) -> Result<PathBuf, Error> {
+) -> InstallResult<PathBuf> {
     progress(25, crate::install::ProgressStage::Downloading);
     let bin = root.join("bin");
     std::fs::create_dir_all(&bin)
@@ -38,7 +39,7 @@ fn install(
             if name == "flamegraph" { 60 } else { 25 },
             crate::install::ProgressStage::DownloadingAndValidating,
         );
-        install_executable_source(url, &destination, "flamegraph tool")?;
+        install_executable_source_in(context, url, &destination, "flamegraph tool")?;
         progress(
             if name == "flamegraph" { 90 } else { 60 },
             crate::install::ProgressStage::Copying,

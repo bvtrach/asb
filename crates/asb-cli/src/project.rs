@@ -289,10 +289,21 @@ pub fn init(
     let text = toml::to_string_pretty(&config).map_err(|error| Error::Input(error.to_string()))?;
     fs::write(&path, text)
         .map_err(|error| Error::Io(format!("cannot write {}: {error}", path.display())))?;
-    if let Err(error) = crate::python_runtime::ensure(&root, output) {
-        writeln!(output, "Warning: project Python is not ready: {error}\nPython-based tool installation will retry setup; other ASB commands remain available.")
-            .map_err(super::io_error)?;
+    let installation = crate::install::OperationContext::new(&root, &config)
+        .map_err(crate::install::InstallFailure::into_public)?;
+    let python = crate::python_runtime::ensure_in(&installation, output);
+    let diagnostics = installation.report_diagnostics(output);
+    match python {
+        Ok(_) => {}
+        Err(crate::install::InstallFailure::Ordinary(error)) => {
+            writeln!(output, "Warning: project Python is not ready: {error}\nPython-based tool installation will retry setup; other ASB commands remain available.")
+                .map_err(super::io_error)?;
+        }
+        Err(crate::install::InstallFailure::Abort(abort)) => {
+            return Err(crate::install::InstallFailure::Abort(abort).into_public());
+        }
     }
+    diagnostics?;
     writeln!(
         output,
         "Initialized ASB project at {}\nBundled workloads available: {bundled}\nFixture files available: {fixtures}",

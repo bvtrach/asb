@@ -1,12 +1,17 @@
 //! Complete, validate and synchronize private source bytes before atomic publication.
 use super::*;
 use std::io::Read;
+#[cfg(test)]
 use std::time::{Duration, Instant};
 
 pub(super) const MAX_SOURCE_BYTES: u64 = 1024 * 1024 * 1024;
+#[cfg(test)]
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(300);
 
+mod controlled;
 mod prepared;
+pub(crate) use controlled::check_version_in;
+pub(in crate::install) use controlled::install_input_in;
 pub(super) use prepared::Input;
 pub(super) use prepared::Quarantined;
 pub(in crate::install) use prepared::Staging;
@@ -85,11 +90,13 @@ pub(super) struct Options<'a> {
     pub executable: bool,
 }
 
+#[cfg(test)]
 struct DownloadChild {
     child: Option<std::process::Child>,
     reaper: crate::process_cleanup::OwnedReaper,
 }
 
+#[cfg(test)]
 impl DownloadChild {
     fn spawn(command: &mut Command, label: &str, dependency: Option<&str>) -> Result<Self, Error> {
         // Establish fallback custody before admitting any external process.
@@ -149,6 +156,7 @@ impl DownloadChild {
     }
 }
 
+#[cfg(test)]
 fn cleanup_poll(
     child: &mut std::process::Child,
 ) -> std::io::Result<Option<std::process::ExitStatus>> {
@@ -159,6 +167,7 @@ fn cleanup_poll(
     child.try_wait()
 }
 
+#[cfg(test)]
 impl Drop for DownloadChild {
     fn drop(&mut self) {
         // Every early failure owns exactly this subprocess, not a process group.
@@ -194,6 +203,7 @@ fn validate_file(path: &Path, options: &Options<'_>) -> Result<fs::Metadata, Err
     Ok(metadata)
 }
 
+#[cfg(test)]
 fn download(
     source: &str,
     staging: &Path,
@@ -259,29 +269,12 @@ fn download(
 }
 
 /// Check a staged pinned executable without an unbounded version subprocess.
+#[cfg(test)]
 pub(crate) fn check_executable_version(path: &Path, label: &str) -> Result<(), Error> {
     check_version_with_timeout(path, label, Duration::from_secs(10))
 }
 
-pub(super) fn command_status(
-    command: &mut Command,
-    label: &str,
-    dependency: &str,
-) -> Result<ExitStatus, Error> {
-    let mut child = DownloadChild::spawn(command, label, Some(dependency))?;
-    let deadline = Instant::now() + DOWNLOAD_TIMEOUT;
-    let result = (|| loop {
-        if let Some(status) = child.child().try_wait().map_err(crate::io_error)? {
-            return Ok(status);
-        }
-        if Instant::now() >= deadline {
-            return Err(Error::Io(format!("{label} timed out")));
-        }
-        std::thread::sleep(Duration::from_millis(25));
-    })();
-    child.finish(result)
-}
-
+#[cfg(test)]
 fn check_version_with_timeout(path: &Path, label: &str, timeout: Duration) -> Result<(), Error> {
     let mut child = DownloadChild::spawn(
         Command::new(path).arg("--version").stdin(Stdio::null()),
@@ -310,6 +303,7 @@ fn check_version_with_timeout(path: &Path, label: &str, timeout: Duration) -> Re
     child.finish(result)
 }
 
+#[cfg(test)]
 pub(super) fn install(
     source: &str,
     destination: &Path,
@@ -319,6 +313,7 @@ pub(super) fn install(
     install_with_timeout(source, destination, options, validate, DOWNLOAD_TIMEOUT)
 }
 
+#[cfg(test)]
 fn install_with_timeout(
     source: &str,
     destination: &Path,
@@ -342,6 +337,7 @@ pub(super) enum Publication {
     NoClobber,
 }
 
+#[cfg(test)]
 pub(super) fn install_input(
     source: &Input,
     destination: &Path,
@@ -359,6 +355,7 @@ pub(super) fn install_input(
     )
 }
 
+#[cfg(test)]
 fn install_input_with_timeout(
     source: &Input,
     destination: &Path,
