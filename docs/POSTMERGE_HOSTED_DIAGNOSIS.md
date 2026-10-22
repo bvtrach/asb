@@ -134,3 +134,11 @@ normal checks remain ubuntu-latest. This is reproduction, not pinning normal CI
 to Ubuntu24 to bypass failures. Label source:
 https://github.com/actions/runner-images/blob/main/README.md#available-images
 No runtime/build has run on this revised source; review precedes qualification.
+
+Root's independent complete source review approved the owning replacement.
+Before its first compile, a narrow followup imports Read locally on Linux and
+adds explicit test-only ASB_TEST_RUNTIME_DIAGNOSTIC_ASB for a previously built
+frozen image. Default CI keeps its existing expected debug layout; this is not
+universal executable discovery. Both paths require an absolute existing file,
+and the script records the actual image's bounded streaming hash. Actual-FIRST
+build/freeze remains mandatory. No compile failure is claimed from source review.

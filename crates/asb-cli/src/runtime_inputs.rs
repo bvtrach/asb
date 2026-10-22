@@ -289,6 +289,7 @@ mod tests {
     fn hosted_runtime_diagnostic_requires_actual_gate_settlement() {
         use crate::launch::ProcessLaunch;
         use crate::process_gate::Admission;
+        use std::io::Read;
         use std::os::unix::fs::DirBuilderExt;
 
         let parent = Path::new(env!("CARGO_MANIFEST_DIR")).join("target");
@@ -303,13 +304,18 @@ mod tests {
             .unwrap();
         // This namespace is deliberately retained on every outcome. A bounded
         // caller return never permits recursive deletion under an uncertain owner.
-        let binary = std::env::current_exe()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .join("asb");
+        let binary = std::env::var_os("ASB_TEST_RUNTIME_DIAGNOSTIC_ASB")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                std::env::current_exe()
+                    .unwrap()
+                    .parent()
+                    .unwrap()
+                    .parent()
+                    .unwrap()
+                    .join("asb")
+            });
+        assert!(binary.is_absolute(), "diagnostic image must be absolute");
         assert!(binary.is_file(), "build the actual executable first");
         let (mut command, route) = ProcessLaunch::new("/bin/sleep").native(Some(&binary));
         command
