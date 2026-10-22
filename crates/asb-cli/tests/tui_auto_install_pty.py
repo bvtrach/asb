@@ -62,6 +62,10 @@ def wait_for(needle):
 
 try:
     wait_for(b"agentbench" if mode == "workload" else b"codex")
+    # Setup reserves the first row for the non-domain `[all]` operation;
+    # installation coverage must select the first concrete agent instead.
+    if mode != "workload":
+        os.write(master, b"\x1b[B")
     os.write(master, b" ")
     if mode in ("failure", "no-executable", "not-runnable"):
         wait_for(b"Cannot install" if mode == "failure" else b"finished but it is not ready")
@@ -78,7 +82,8 @@ try:
             wait_for(b"Choose tool-capable models")
             os.write(master, b" \r")
             wait_for(b"Choose one or more workload prompts")
-            os.write(master, b" \r")
+            # The setup workload pane has the same leading `[all]` control.
+            os.write(master, b"\x1b[B \r")
             wait_for(b"Choose the measurement collectors")
             os.write(master, b"flamegraph")
             wait_for(b"search: flamegraph")
