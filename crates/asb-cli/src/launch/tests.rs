@@ -173,10 +173,23 @@ fn child_only_path_cwd_stdio_and_appended_args_use_the_same_command() {
 #[test]
 fn non_utf8_executable_arguments_and_explicit_client_arg0_are_preserved() {
     let fixture = Fixture::new();
-    let client = fixture.0.join(OsStr::from_bytes(b"client-\xff"));
-    std::fs::copy("/bin/echo", &client).unwrap();
+    // Keep an applet's basename: /bin/echo may itself be a multicall image.
+    // The complete executable pathname and argument must still preserve bytes.
+    let directory = fixture.0.join(OsStr::from_bytes(b"client-\xff"));
+    std::fs::create_dir(&directory).unwrap();
+    let client = directory.join("echo");
+    let image =
+        std::env::var_os("ASB_TEST_MULTICALL_ECHO_IMAGE").unwrap_or_else(|| "/bin/echo".into());
+    std::fs::copy(image, &client).unwrap();
     let mut launch = ProcessLaunch::new(&client);
     launch.arg(OsStr::from_bytes(b"argument-\xfe"));
+    let (command, route) = launch.native(Some(&binary()));
+    let target = route.target(&command);
+    assert_eq!(
+        target.program.as_os_str().as_bytes(),
+        client.as_os_str().as_bytes()
+    );
+    assert_eq!(target.args, [OsString::from_vec(b"argument-\xfe".to_vec())]);
     let output = execute(&launch, |command| {
         command.env_clear();
     });
