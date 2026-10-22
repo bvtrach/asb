@@ -54,11 +54,12 @@ fn configuration(options: SetupOptions) -> Result<BenchmarkConfig, Error> {
         Error::Input(format!("unknown agent `{agent}`{suggestion}"))
     })?;
     let provider = required(provider.into_iter().next())?;
-    if let Some(candidate) = suggestions::closest(&provider, providers::names()) {
-        return Err(Error::Input(format!(
-            "unknown provider `{provider}`; did you mean `{candidate}`?"
-        )));
-    }
+    providers::model_spec(&provider).ok_or_else(|| {
+        let suggestion = suggestions::closest(&provider, providers::names())
+            .map(|candidate| format!("; did you mean `{candidate}`?"))
+            .unwrap_or_default();
+        Error::Input(format!("unknown provider `{provider}`{suggestion}"))
+    })?;
     let model = required(model.into_iter().next())?;
     for (name, kind) in [
         (&agent, "agent"),
@@ -259,7 +260,7 @@ mod tests {
     }
 
     #[test]
-    fn setup_rejects_unknown_agents_and_incompatible_endpoint_pairs() {
+    fn setup_rejects_unknown_names_and_incompatible_endpoint_pairs() {
         let unknown = setup(
             options("unknown-agent", "cli2key", "fixture"),
             &mut Vec::new(),
@@ -269,6 +270,17 @@ mod tests {
             unknown
                 .to_string()
                 .contains("unknown agent `unknown-agent`")
+        );
+
+        let unknown = setup(
+            options("opencode", "unknown-provider", "fixture"),
+            &mut Vec::new(),
+        )
+        .expect_err("unknown provider must be rejected");
+        assert!(
+            unknown
+                .to_string()
+                .contains("unknown provider `unknown-provider`")
         );
 
         let incompatible = setup(options("hermes", "gemini", "fixture"), &mut Vec::new())
