@@ -22,7 +22,9 @@ impl Fixture {
         let deadline = Instant::now() + Duration::from_secs(3);
         loop {
             if let Ok(value) = fs::read_to_string(path) {
-                return value;
+                if !value.is_empty() {
+                    return value;
+                }
             }
             assert!(
                 Instant::now() < deadline,
