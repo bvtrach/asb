@@ -1658,7 +1658,7 @@ fn repeats_fresh_batches_preserve_users_collect_all_outcomes_and_continue_ordina
     let project = Project::new();
     project.config(2);
     fs::write(project.0.join("fail-first"), "fixture").unwrap();
-    let output = project.run("3");
+    let output = project.run_extra("3", &["--measurements", "measurements"]);
     assert!(!output.status.success());
     let out = String::from_utf8_lossy(&output.stdout);
     let err = String::from_utf8_lossy(&output.stderr);
@@ -1732,6 +1732,29 @@ fn repeats_fresh_batches_preserve_users_collect_all_outcomes_and_continue_ordina
             serde_json::from_slice(&fs::read(row["execution_plan"].as_str().unwrap()).unwrap())
                 .unwrap();
         assert_eq!(policy["policy"], row["planning"]);
+        let dispatch = json!({"schema_version":1,"configured":2,"admitted":2});
+        assert_eq!(row["execution_cohort"]["dispatch"], dispatch);
+        assert_eq!(policy["dispatch"], dispatch);
+        let measured: Value = serde_json::from_slice(
+            &fs::read(
+                PathBuf::from(row["measurement_directory"].as_str().unwrap()).join("run.json"),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(measured["execution_cohort"], row["execution_cohort"]);
+        let batch = index / 2 + 1;
+        let replica = index % 2 + 1;
+        let start: Value = serde_json::from_slice(
+            &fs::read(root.join(format!("batch-{batch}/starts/{replica}.json"))).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(start["execution_cohort"], row["execution_cohort"]);
+        let log: Value = serde_json::from_slice(
+            &fs::read(root.join(format!("batch-{batch}/run-concurrency-{replica}.jsonl"))).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(log["execution_cohort"], row["execution_cohort"]);
     }
     assert_eq!(plan["admission"]["material_seconds"], 1800);
     assert_eq!(plan["admission"]["launch_seconds"], 1800);

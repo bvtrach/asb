@@ -235,6 +235,7 @@ pub(super) mod tests {
             id: "abc-123".into(),
             selected_replicas: 2,
             admitted_slots: vec![1, 2],
+            dispatch: None,
         };
         for index in 1..=2 {
             let replica = Identity { index, total: 2 };

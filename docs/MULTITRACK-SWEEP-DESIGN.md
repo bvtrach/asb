@@ -734,3 +734,52 @@ not become an official independent-task population or conceal failed attempts.
 - Independent review plus fmt, strict Clippy, full offline source/extracted
   tests, package/install, build, documentation/diagrams and exact-head hosted CI.
   Deliver in a separate PR and publish a patch release after verified merge.
+
+## Actual dispatch population checkpoint
+
+New admissions now derive a schema-1 runtime dispatch descriptor from the actual
+validated cohort: configured original concurrency C and admitted participant
+count P. Original replica IDs, occurrence IDs and generation/cohort names do not
+enter the descriptor. It travels inside the existing cohort through start intent,
+streamed summaries, immutable outcomes, logs and measurements; the same optional
+value enters the persisted execution plan and runtime protocol fingerprint.
+Neither per-replica configuration concurrency one nor a caller-supplied count
+can replace original C or actual cohort membership. A supplied cohort with absent
+dispatch stays absent in all outputs, not retroactively upgraded.
+
+The common outcome and report consumers validate cohort membership, descriptor
+agreement and new dispatch-bearing runtime hashes. The pure historical hash
+projection uses the saved module and a bounded passive admission identity, never
+today's registry, Docker state or current operational deadline values. Passive
+historical admission does not authorize work: the active BatchAdmissionPolicy
+deserializer still requires the supported current contract. Missing historical
+dispatch leaves the exact old hash projection intact. Replay compatibility is
+unchanged and still excludes concurrency/repetition/collectors.
+
+Report metric, resolution and population grouping now uses the pair of runtime
+fingerprint and optional typed dispatch. Unknown observations cannot join a known
+P group merely by sharing its fingerprint string. Missing planned slots still
+contribute conservatively to compatible observed denominators without acquiring
+observed metadata themselves. HTML discloses configured/admitted counts and
+labels partial admission or historical descriptor absence; original slot IDs stay
+unchanged. This is not evidence of simultaneous overlap or a continuation badge:
+actual generation identity still needs the pending manifest/start binding.
+
+Independent read-only review identified and verified repairs for absent-value
+inference, current-registry historical hashing, known/unknown group pooling and
+current-policy historical admission coupling. Focused tests cover schema/type/
+population bounds, original C4 noncontiguous IDs, same-P occurrence independence,
+full/partial hash separation, pre-dispatch projection preservation, passive old
+admission values with strict active refusal, saved retired-module metadata,
+unchanged reports after forged P, and missing-slot denominator preservation.
+Actual synthetic CLI qualification checks six fresh measured executions' plan/
+start/log/measurement agreement and completed record/replay reuse with no extra
+clients. The executable stayed byte-identical during those focused checks.
+
+At the preceding 20f79bb2 checkpoint, the complete offline suite passed: 1,256
+library tests, 13 opt-in ignores, all integration targets and doctests, with an
+unchanged actual executable. This branch subsequently integrated main 66fb5fda
+(v0.2.43) and added dispatch changes; full current-head qualification remains
+required. Generation activation, continued recording, reconciliation/import,
+packaging/installed-SDK/hosted qualification, feature merge and release are still
+pending. This checkpoint does not claim feature-five completion.

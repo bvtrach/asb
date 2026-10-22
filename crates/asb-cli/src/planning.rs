@@ -7,6 +7,56 @@ pub(crate) const DEFAULT_NATIVE_EXECUTION_SECONDS: u64 = 900;
 pub(crate) const DEFAULT_ENVIRONMENT_PREPARATION_SECONDS: u64 = 900;
 pub(crate) const DEFAULT_EVALUATION_SECONDS: u64 = 1800;
 
+/// Runtime dispatch population, not replay identity or observed overlap.
+/// Occurrence IDs and original slot membership deliberately do not enter it.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(try_from = "DispatchWire")]
+pub(crate) struct Dispatch {
+    schema_version: u8,
+    configured: usize,
+    admitted: usize,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DispatchWire {
+    schema_version: u8,
+    configured: usize,
+    admitted: usize,
+}
+
+impl TryFrom<DispatchWire> for Dispatch {
+    type Error = &'static str;
+    fn try_from(value: DispatchWire) -> Result<Self, Self::Error> {
+        if value.schema_version != 1 {
+            return Err("unsupported dispatch schema");
+        }
+        Self::new(value.configured, value.admitted)
+    }
+}
+
+impl Dispatch {
+    pub(crate) fn new(configured: usize, admitted: usize) -> Result<Self, &'static str> {
+        if !(1..=crate::benchmark::MAX_CONCURRENCY).contains(&configured)
+            || admitted == 0
+            || admitted > configured
+        {
+            return Err("invalid configured/admitted dispatch population");
+        }
+        Ok(Self {
+            schema_version: 1,
+            configured,
+            admitted,
+        })
+    }
+    pub(crate) fn configured(self) -> usize {
+        self.configured
+    }
+    pub(crate) fn admitted(self) -> usize {
+        self.admitted
+    }
+}
+
 /// Persisted execution mode shared by sweep and standalone campaign plans.
 /// Legacy missing modes are unknown, never implicit permission to run live.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -70,6 +120,61 @@ impl BatchAdmissionPolicy {
     }
     pub(crate) fn launch_timeout(self) -> std::time::Duration {
         std::time::Duration::from_secs(self.launch_seconds)
+    }
+}
+
+/// Passive historical identity only. This never grants launch permission and
+/// deliberately does not require the current operational deadline constants.
+#[derive(Deserialize, Serialize)]
+#[serde(try_from = "RecordedAdmissionWire")]
+struct RecordedAdmission {
+    scope: String,
+    material_seconds: u64,
+    launch_seconds: u64,
+    material_arming: String,
+    launch_arming: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RecordedAdmissionWire {
+    scope: String,
+    material_seconds: u64,
+    launch_seconds: u64,
+    material_arming: String,
+    launch_arming: String,
+}
+
+impl TryFrom<RecordedAdmissionWire> for RecordedAdmission {
+    type Error = &'static str;
+    fn try_from(value: RecordedAdmissionWire) -> Result<Self, Self::Error> {
+        if [&value.scope, &value.material_arming, &value.launch_arming]
+            .into_iter()
+            .any(|text| text.is_empty() || text.len() > 128 || text.chars().any(char::is_control))
+            || !(1..=86400).contains(&value.material_seconds)
+            || !(1..=86400).contains(&value.launch_seconds)
+        {
+            return Err("invalid historical batch admission identity");
+        }
+        Ok(Self {
+            scope: value.scope,
+            material_seconds: value.material_seconds,
+            launch_seconds: value.launch_seconds,
+            material_arming: value.material_arming,
+            launch_arming: value.launch_arming,
+        })
+    }
+}
+
+impl From<BatchAdmissionPolicy> for RecordedAdmission {
+    fn from(value: BatchAdmissionPolicy) -> Self {
+        Self {
+            scope: value.scope.into(),
+            material_seconds: value.material_seconds,
+            launch_seconds: value.launch_seconds,
+            material_arming: value.material_arming.into(),
+            launch_arming: value.launch_arming.into(),
+        }
     }
 }
 
@@ -247,6 +352,7 @@ pub(crate) fn protocol_fingerprint(
     protocol_fingerprint_with_admission(config, policy, effective, replica_concurrency, None)
 }
 
+#[cfg(test)]
 pub(crate) fn protocol_fingerprint_with_admission(
     config: &BenchmarkConfig,
     policy: &ResolvedPlan,
@@ -254,8 +360,47 @@ pub(crate) fn protocol_fingerprint_with_admission(
     replica_concurrency: usize,
     admission: Option<BatchAdmissionPolicy>,
 ) -> Result<ExecutionPlanFingerprint, Error> {
-    use sha2::{Digest, Sha256};
+    protocol_fingerprint_with_dispatch(
+        config,
+        policy,
+        effective,
+        replica_concurrency,
+        admission,
+        None,
+    )
+}
+
+pub(crate) fn protocol_fingerprint_with_dispatch(
+    config: &BenchmarkConfig,
+    policy: &ResolvedPlan,
+    effective: EffectiveBudgets,
+    replica_concurrency: usize,
+    admission: Option<BatchAdmissionPolicy>,
+    dispatch: Option<Dispatch>,
+) -> Result<ExecutionPlanFingerprint, Error> {
     resolve_snapshot(config, !policy.collectors.is_empty(), Some(policy))?;
+    let admission = admission.map(RecordedAdmission::from);
+    protocol_fingerprint_core(
+        workloads::descriptor(&config.workload).as_ref(),
+        policy,
+        effective,
+        replica_concurrency,
+        admission.as_ref(),
+        dispatch,
+    )
+}
+
+/// Pure historical verification must not discover Docker, collectors or host
+/// capabilities. Their saved policy is checked here, never re-resolved.
+fn protocol_fingerprint_core(
+    module: Option<&workloads::contracts::ModuleDescriptor>,
+    policy: &ResolvedPlan,
+    effective: EffectiveBudgets,
+    replica_concurrency: usize,
+    admission: Option<&RecordedAdmission>,
+    dispatch: Option<Dispatch>,
+) -> Result<ExecutionPlanFingerprint, Error> {
+    use sha2::{Digest, Sha256};
     let task_default = effective.task_default_execution_seconds;
     let selected_execution = policy
         .budgets
@@ -264,6 +409,7 @@ pub(crate) fn protocol_fingerprint_with_admission(
         .map(|n| n as f64)
         .or(task_default);
     if !(1..=crate::benchmark::MAX_CONCURRENCY).contains(&replica_concurrency)
+        || dispatch.is_some_and(|value| value.configured() != replica_concurrency)
         || effective
             .execution_seconds
             .is_none_or(|n| !n.is_finite() || !(0.001..=86400.0).contains(&n))
@@ -314,7 +460,7 @@ pub(crate) fn protocol_fingerprint_with_admission(
         .remove("index");
     let mut identity = serde_json::json!({
         "schema_version":1,
-        "module": workloads::descriptor(&config.workload),
+        "module": module,
         "policy":cohort,
         "execution_default_rule":if policy.backend == "local-docker" { "pinned-module-ready-invocation" } else { "native-controller-default" },
         "replica_concurrency":replica_concurrency,
@@ -323,11 +469,66 @@ pub(crate) fn protocol_fingerprint_with_admission(
         identity["batch_admission"] =
             serde_json::to_value(admission).map_err(|error| Error::Io(error.to_string()))?;
     }
+    // Missing historical metadata retains its exact prior hash. New dispatch
+    // evidence separates partial admission from a full configured population.
+    if let Some(dispatch) = dispatch {
+        identity["dispatch"] =
+            serde_json::to_value(dispatch).map_err(|error| Error::Io(error.to_string()))?;
+    }
     let bytes = serde_json::to_vec(&identity).map_err(|error| Error::Io(error.to_string()))?;
     Ok(ExecutionPlanFingerprint(format!(
         "asb-protocol-v1:{:x}",
         Sha256::digest(bytes)
     )))
+}
+
+/// Validate new dispatch-bearing records through the same runtime identity
+/// projection. Missing historical dispatch stays unknown and is not rehashed.
+pub(crate) fn validate_recorded_dispatch(
+    record: &serde_json::Value,
+    cohort: &crate::measurements::ExecutionCohort,
+    index: usize,
+    total: usize,
+) -> Result<(), Error> {
+    let invalid =
+        || Error::Input("recorded dispatch does not match its runtime protocol fingerprint".into());
+    if !cohort.admits(index, total) {
+        return Err(invalid());
+    }
+    let Some(dispatch) = cohort.dispatch else {
+        return Ok(());
+    };
+    let module: Option<workloads::contracts::ModuleDescriptor> =
+        serde_json::from_value(record["module"].clone()).map_err(|_| invalid())?;
+    if module.as_ref().is_some_and(|module| {
+        !module.valid() || record["workload"].as_str() != Some(module.id.as_str())
+    }) {
+        return Err(invalid());
+    }
+    let policy: ResolvedPlan =
+        serde_json::from_value(record["planning"].clone()).map_err(|_| invalid())?;
+    let effective: EffectiveBudgets =
+        serde_json::from_value(record["effective_budgets"].clone()).map_err(|_| invalid())?;
+    let admission = if record["execution"].is_null() {
+        None
+    } else {
+        Some(
+            serde_json::from_value(record["execution"]["admission"].clone())
+                .map_err(|_| invalid())?,
+        )
+    };
+    let expected = protocol_fingerprint_core(
+        module.as_ref(),
+        &policy,
+        effective,
+        total,
+        admission.as_ref(),
+        Some(dispatch),
+    )?;
+    if record["execution_plan_fingerprint"].as_str() != Some(expected.as_str()) {
+        return Err(invalid());
+    }
+    Ok(())
 }
 
 pub(crate) fn resolve(config: &BenchmarkConfig) -> Result<ResolvedPlan, Error> {
@@ -360,6 +561,16 @@ pub(crate) fn persist(
     policy: &ResolvedPlan,
     effective: Option<EffectiveBudgets>,
     task: Option<&workloads::TaskIdentity>,
+) -> Result<std::path::PathBuf, Error> {
+    persist_with_dispatch(root, policy, effective, task, None)
+}
+
+pub(crate) fn persist_with_dispatch(
+    root: &std::path::Path,
+    policy: &ResolvedPlan,
+    effective: Option<EffectiveBudgets>,
+    task: Option<&workloads::TaskIdentity>,
+    dispatch: Option<Dispatch>,
 ) -> Result<std::path::PathBuf, Error> {
     use std::io::Write;
     let state = root.join(".asb");
@@ -395,7 +606,12 @@ pub(crate) fn persist(
         options.mode(0o600);
     }
     let mut file = options.open(&path).map_err(crate::io_error)?;
-    let bytes = serde_json::to_vec(&serde_json::json!({"schema_version":1,"policy":policy,"effective_controller_caps":effective,"task":task})).map_err(|error| Error::Io(error.to_string()))?;
+    let mut record = serde_json::json!({"schema_version":1,"policy":policy,"effective_controller_caps":effective,"task":task});
+    if let Some(dispatch) = dispatch {
+        record["dispatch"] =
+            serde_json::to_value(dispatch).map_err(|error| Error::Io(error.to_string()))?;
+    }
+    let bytes = serde_json::to_vec(&record).map_err(|error| Error::Io(error.to_string()))?;
     file.write_all(&bytes)
         .and_then(|()| file.sync_all())
         .map_err(crate::io_error)?;
@@ -631,6 +847,216 @@ pub(crate) fn resolve_for_run(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn historical_admission_hash_is_passive_and_does_not_authorize_old_launch_policy() {
+        let config = config("");
+        let policy = resolve(&config).unwrap();
+        let caps = EffectiveBudgets {
+            execution_seconds: Some(900.0),
+            ..Default::default()
+        };
+        let module = workloads::descriptor(&config.workload);
+        let dispatch = Dispatch::new(4, 2).unwrap();
+        let cohort = crate::measurements::ExecutionCohort {
+            id: "abc".into(),
+            selected_replicas: 4,
+            admitted_slots: vec![2, 4],
+            dispatch: Some(dispatch),
+        };
+        let mut historical = serde_json::to_value(BatchAdmissionPolicy::current()).unwrap();
+        historical["material_seconds"] = serde_json::json!(2400);
+        historical["launch_seconds"] = serde_json::json!(2700);
+        assert!(serde_json::from_value::<BatchAdmissionPolicy>(historical.clone()).is_err());
+        let passive: RecordedAdmission = serde_json::from_value(historical.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&passive).unwrap(), historical);
+        let fingerprint = protocol_fingerprint_core(
+            module.as_ref(),
+            &policy,
+            caps,
+            4,
+            Some(&passive),
+            Some(dispatch),
+        )
+        .unwrap();
+        let mut record = serde_json::json!({"workload":config.workload,"module":module,"planning":policy,"effective_budgets":caps,"execution":{"admission":historical},"execution_plan_fingerprint":fingerprint});
+        validate_recorded_dispatch(&record, &cohort, 2, 4).unwrap();
+        record["execution"]["admission"]["launch_seconds"] = serde_json::json!(2701);
+        assert!(validate_recorded_dispatch(&record, &cohort, 2, 4).is_err());
+        for (field, value) in [
+            ("launch_seconds", serde_json::json!(0)),
+            ("material_seconds", serde_json::json!(86401)),
+            ("scope", serde_json::json!("x".repeat(129))),
+            ("launch_arming", serde_json::json!("bad\ncontrol")),
+            ("material_arming", serde_json::json!("")),
+        ] {
+            let mut bad = historical.clone();
+            bad[field] = value;
+            assert!(serde_json::from_value::<RecordedAdmission>(bad).is_err());
+        }
+        let mut extra = historical;
+        extra["extra"] = serde_json::json!(true);
+        assert!(serde_json::from_value::<RecordedAdmission>(extra).is_err());
+    }
+
+    #[test]
+    fn recorded_dispatch_verification_uses_saved_module_not_current_registry() {
+        let config = config("");
+        let policy = resolve(&config).unwrap();
+        let caps = EffectiveBudgets {
+            execution_seconds: Some(900.0),
+            ..Default::default()
+        };
+        let dispatch = Dispatch::new(4, 2).unwrap();
+        let cohort = crate::measurements::ExecutionCohort {
+            id: "abc".into(),
+            selected_replicas: 4,
+            admitted_slots: vec![2, 4],
+            dispatch: Some(dispatch),
+        };
+        let mut module =
+            workloads::contracts::ModuleDescriptor::local("retired-fixture", "bundled-fixture");
+        module.suite_version = "historical-v1".into();
+        assert!(workloads::descriptor(&module.id).is_none());
+        let fingerprint =
+            protocol_fingerprint_core(Some(&module), &policy, caps, 4, None, Some(dispatch))
+                .unwrap();
+        let mut record = serde_json::json!({"workload":module.id,"module":module,"planning":policy,"effective_budgets":caps,"execution_plan_fingerprint":fingerprint});
+        validate_recorded_dispatch(&record, &cohort, 2, 4).unwrap();
+        record["module"]["suite_version"] = serde_json::json!("new-v2");
+        assert!(validate_recorded_dispatch(&record, &cohort, 2, 4).is_err());
+    }
+
+    #[test]
+    fn dispatch_schema_rejects_missing_unknown_wrong_type_and_invalid_populations() {
+        let value = serde_json::json!({"schema_version":1,"configured":4,"admitted":2});
+        let dispatch: Dispatch = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(serde_json::to_value(dispatch).unwrap(), value);
+        for field in ["schema_version", "configured", "admitted"] {
+            let mut missing = value.clone();
+            missing.as_object_mut().unwrap().remove(field);
+            assert!(serde_json::from_value::<Dispatch>(missing).is_err());
+            for bad in [
+                serde_json::Value::Null,
+                serde_json::json!(true),
+                serde_json::json!("2"),
+                serde_json::json!(2.0),
+            ] {
+                let mut changed = value.clone();
+                changed[field] = bad;
+                assert!(
+                    serde_json::from_value::<Dispatch>(changed).is_err(),
+                    "{field}"
+                );
+            }
+        }
+        for (field, bad) in [
+            ("schema_version", 0),
+            ("schema_version", 2),
+            ("configured", 0),
+            ("configured", 65),
+            ("admitted", 0),
+            ("admitted", 5),
+        ] {
+            let mut changed = value.clone();
+            changed[field] = serde_json::json!(bad);
+            assert!(serde_json::from_value::<Dispatch>(changed).is_err());
+        }
+        let mut extra = value;
+        extra["extra"] = serde_json::json!(1);
+        assert!(serde_json::from_value::<Dispatch>(extra).is_err());
+    }
+
+    #[test]
+    fn runtime_dispatch_binds_population_not_occurrence_and_preserves_historical_hash() {
+        let mut config = config("[planning.repetition]\nindex=1\ntotal=3");
+        let caps = EffectiveBudgets {
+            execution_seconds: Some(900.0),
+            ..Default::default()
+        };
+        let policy = resolve(&config).unwrap();
+        let admission = Some(BatchAdmissionPolicy::current());
+        let hash = |config: &BenchmarkConfig, dispatch| {
+            protocol_fingerprint_with_dispatch(
+                config,
+                &resolve(config).unwrap(),
+                caps,
+                4,
+                admission,
+                dispatch,
+            )
+            .unwrap()
+        };
+        let historical =
+            protocol_fingerprint_with_admission(&config, &policy, caps, 4, admission).unwrap();
+        assert_eq!(historical, hash(&config, None));
+        // Freeze the pre-dispatch wire projection independently of the new
+        // wrapper/core, including omission rather than a new null field.
+        let mut old_policy = serde_json::to_value(&policy).unwrap();
+        old_policy
+            .as_object_mut()
+            .unwrap()
+            .remove("task_requirements");
+        old_policy["repetition"]
+            .as_object_mut()
+            .unwrap()
+            .remove("index");
+        let old_projection = serde_json::json!({"schema_version":1,"module":workloads::descriptor("bug-fix"),"policy":old_policy,"execution_default_rule":"native-controller-default","replica_concurrency":4,"batch_admission":admission});
+        assert_eq!(
+            historical.as_str(),
+            format!(
+                "asb-protocol-v1:{}",
+                crate::cassette::digest(&serde_json::to_vec(&old_projection).unwrap())
+            )
+        );
+        let mut cohort = crate::measurements::ExecutionCohort {
+            id: "abc".into(),
+            selected_replicas: 4,
+            admitted_slots: vec![2, 4],
+            dispatch: None,
+        };
+        let partial = cohort.dispatch_for(2, 4).unwrap();
+        let partial_hash = hash(&config, Some(partial));
+        assert_ne!(historical, partial_hash);
+        assert_ne!(
+            partial_hash,
+            hash(&config, Some(Dispatch::new(4, 4).unwrap()))
+        );
+        cohort.id = "def".into();
+        cohort.admitted_slots = vec![1, 3];
+        config.planning.as_mut().unwrap().repetition.index = 2;
+        assert_eq!(
+            partial_hash,
+            hash(&config, Some(cohort.dispatch_for(1, 4).unwrap()))
+        );
+        assert!(
+            protocol_fingerprint_with_dispatch(
+                &config,
+                &resolve(&config).unwrap(),
+                caps,
+                4,
+                admission,
+                Some(Dispatch::new(2, 2).unwrap())
+            )
+            .is_err()
+        );
+        let mut record = serde_json::json!({"workload":"bug-fix","module":workloads::descriptor("bug-fix"),"planning":resolve(&config).unwrap(),"effective_budgets":caps,"execution":{"admission":admission},"execution_plan_fingerprint":partial_hash.as_str()});
+        cohort.dispatch = Some(partial);
+        validate_recorded_dispatch(&record, &cohort, 1, 4).unwrap();
+        record["execution_plan_fingerprint"] = serde_json::json!(historical.as_str());
+        assert!(validate_recorded_dispatch(&record, &cohort, 1, 4).is_err());
+        cohort.dispatch = None;
+        validate_recorded_dispatch(&record, &cohort, 1, 4).unwrap();
+        cohort.dispatch = Some(partial);
+        for field in [
+            "planning",
+            "effective_budgets",
+            "execution_plan_fingerprint",
+        ] {
+            let mut missing = record.clone();
+            missing.as_object_mut().unwrap().remove(field);
+            assert!(validate_recorded_dispatch(&missing, &cohort, 1, 4).is_err());
+        }
+    }
     #[test]
     fn saved_admission_round_trips_only_the_exact_operational_contract() {
         let current = BatchAdmissionPolicy::current();

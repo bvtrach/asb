@@ -530,13 +530,21 @@ fn write_html_report(stage: &Path, prepared: &PreparedReport) -> Result<(), Erro
                 "<details><summary>Run artifacts</summary>{previews}<ul class=\"artifact-list\">{links}</ul></details>"
             )
         };
+        let dispatch_details = benchmark.execution_cohort.as_ref().map_or_else(
+            || "Dispatch context unknown (legacy or missing measurement).".into(),
+            |cohort| {
+                let descriptor = cohort.dispatch.map_or_else(
+                    || "Runtime population descriptor unknown (historical).".into(),
+                    |dispatch| format!("Configured {} · admitted {}{}.", dispatch.configured(), dispatch.admitted(), if dispatch.admitted() < dispatch.configured() { " (partial admission)" } else { "" }),
+                );
+                format!("Dispatch group {}: {} of {} selected replicas admitted; slots {}. {descriptor} Dispatch membership is not proof of simultaneous execution. Resumed measurements may belong to different cohorts.", dispatch_groups[cohort.id.as_str()], cohort.admitted_slots.len(), cohort.selected_replicas, cohort.admitted_slots.iter().map(usize::to_string).collect::<Vec<_>>().join(", "))
+            },
+        );
         html.push_str(&format!("<tr data-dimension-benchmark=\"{}\" data-dimension-agent=\"{}\" data-dimension-provider=\"{}\" data-dimension-model=\"{}\" data-dimension-workload=\"{}\"><td><strong>{}</strong></td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td class=\"details\">{}{}{}{}{}{}</td></tr>",
             escape(&benchmark.label), escape(&benchmark.agent), escape(&benchmark.provider), escape(&benchmark.model), escape(&benchmark.workload),
             escape(&benchmark.label), escape(&benchmark.agent), escape(&benchmark.provider), escape(&benchmark.model), escape(&benchmark.workload),
             runtime, success, tokens,
-            format_args!("{}{}<p>{}</p>", evaluation_details, if benchmark.reconciled { "<p>Reconciled retained local outcome: current artifact consistency checked; no agent rerun or historical attestation.</p>" } else { "" }, benchmark.execution_cohort.as_ref().map_or_else(
-                || "Dispatch context unknown (legacy or missing measurement).".into(),
-                |cohort| format!("Dispatch group {}: {} of {} selected replicas admitted; slots {}. Dispatch membership is not proof of simultaneous execution. Resumed measurements may belong to different cohorts.", dispatch_groups[cohort.id.as_str()], cohort.admitted_slots.len(), cohort.selected_replicas, cohort.admitted_slots.iter().map(usize::to_string).collect::<Vec<_>>().join(", ")))),
+            format_args!("{}{}<p>{dispatch_details}</p>", evaluation_details, if benchmark.reconciled { "<p>Reconciled retained local outcome: current artifact consistency checked; no agent rerun or historical attestation.</p>" } else { "" }),
             format_args!("{execution_details}{component_details}"),
             host_details,
             metrics_details,

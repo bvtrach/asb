@@ -206,13 +206,17 @@ fn run_loaded(
             return reuse::render_reused(std::slice::from_ref(summary), options.json, output);
         }
     }
-    let cohort = measurements::ExecutionCohort {
+    let mut cohort = measurements::ExecutionCohort {
         id: workloads::TaskIdentity::local("execution-cohort", None).attempt_id,
         selected_replicas: config.concurrency,
         admitted_slots: (1..=config.concurrency)
             .filter(|slot| !options.reused.is_some_and(|saved| saved.contains_key(slot)))
             .collect(),
+        dispatch: None,
     };
+    if let Some(index) = cohort.admitted_slots.first() {
+        cohort.dispatch = Some(cohort.dispatch_for(*index, config.concurrency)?);
+    }
     let options = RunOptions {
         execution_cohort: Some(&cohort),
         ..options
@@ -650,18 +654,34 @@ fn run_mode(
                     .unwrap_or(MAX_AGENT_RUNTIME.as_secs()) as f64,
             );
         }
-        let execution_plan = crate::planning::persist(
+        let dispatch = options
+            .execution_cohort
+            .map(|cohort| {
+                if !cohort.admits(options.replica.index, options.replica.total) {
+                    return Err(Error::Input(
+                        "dispatch differs from actual cohort membership".into(),
+                    ));
+                }
+                // A supplied legacy/unknown cohort must not acquire metadata
+                // in its plan/hash that its observer and summary do not carry.
+                Ok(cohort.dispatch)
+            })
+            .transpose()?
+            .flatten();
+        let execution_plan = crate::planning::persist_with_dispatch(
             &project_root,
             &policy,
             Some(effective_budgets),
             Some(&workload_session.invocation().identity),
+            dispatch,
         )?;
-        let execution_plan_fingerprint = crate::planning::protocol_fingerprint_with_admission(
+        let execution_plan_fingerprint = crate::planning::protocol_fingerprint_with_dispatch(
             &config,
             &policy,
             effective_budgets,
             options.replica.total,
             options.batch.map(repeated::BatchIdentity::admission),
+            dispatch,
         )?;
         let module = workload_session.module_descriptor();
         let metric_policy = workload_session.metric_policy();

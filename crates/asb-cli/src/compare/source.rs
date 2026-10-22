@@ -890,6 +890,9 @@ fn decode_record(run_value: &Value, attempt: &AttemptContext<'_>) -> Result<Deco
             run_path.display()
         )));
     }
+    if let Some(cohort) = &execution_cohort {
+        crate::planning::validate_recorded_dispatch(run_value, cohort, replica, concurrency)?;
+    }
     let task = run_value
         .get("task")
         .filter(|value| !value.is_null())

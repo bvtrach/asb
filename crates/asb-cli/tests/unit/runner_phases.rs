@@ -1950,6 +1950,7 @@ fn full_entry_child(case: &str) {
         id: workloads::TaskIdentity::local("execution-cohort", None).attempt_id,
         selected_replicas: 1,
         admitted_slots: vec![1],
+        dispatch: None,
     };
     let options = RunOptions {
         json: !(disposition_case && case.contains("output")),

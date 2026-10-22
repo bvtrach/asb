@@ -1350,6 +1350,7 @@ mod tests {
             id: "abc-123".into(),
             selected_replicas: 4,
             admitted_slots: vec![2, 4],
+            dispatch: None,
         };
         let path = root.join("starts/2.json");
         assert!(observer.starting(replica, None).is_err());

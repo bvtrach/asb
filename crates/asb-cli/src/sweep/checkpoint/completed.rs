@@ -575,6 +575,12 @@ impl Outcome {
                     "outcome cohort does not match its selected replica",
                 ));
             }
+            crate::planning::validate_recorded_dispatch(
+                summary,
+                &cohort,
+                replica.index,
+                replica.total,
+            )?;
         } else if !summary["replica_index"].is_null() {
             return Err(invalid("outcome replica has no execution cohort"));
         }

@@ -56,6 +56,7 @@ fn admission_rejects_bad_replica_reuse_and_cohort_before_any_execution() {
         id: "fixture".into(),
         selected_replicas: 1,
         admitted_slots: Vec::new(),
+        dispatch: None,
     };
     let options = RunOptions {
         execution_cohort: Some(&cohort),
