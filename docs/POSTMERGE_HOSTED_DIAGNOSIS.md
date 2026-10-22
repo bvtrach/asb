@@ -267,3 +267,31 @@ all baseline RED, hosted four-failure logs and real metadata artifacts remain.
 Root authorized a draft-only push after these gates. Actual26 four-filter
 success, removal/review of temporary diagnostics, final full/package/current-main
 qualification and both postmerge jobs remain required before merge/release.
+
+## Actual Ubuntu26 repaired regression proof and diagnostic retirement
+
+Exact4d04924d ran39715179497 job119615456855 on Ubuntu26.04.1 image
+20261018.168.1 (synthetic f2e590f merge into actual a32). All nine declarations
+now report ok. More importantly, ALL FOUR original full exact owning filters
+passed independently1/0/0: perfetto0.14s, runtime-inputs0.27s, unmeasured
+capture sweep12.34s and sweep presentation23.01s. Root independently retrieved
+the full job log and accepted this failing-host obligation. This is not broad
+full/package or actual postmerge clearance. The old five/four-failure logs,
+strict baseline RED, original15 loader captures and successful repaired artifact
+remain immutable locally; every captured loader length/digest was verified.
+
+After actual26 success and with all own runtime handles terminal, the temporary
+diagnostic workflow, private Rust diagnostic test and Python script are removed
+as instructed. They remain recoverable in signed Git/PR history and downloaded
+artifacts; no evidence, source-local diagnostic namespace or cache was deleted.
+runtime_inputs.rs is byte-identical to actual main a32. Net-vs-a32 source now
+contains ONLY15-line Python parser correction,17-line permanent launch-fixture
+correction,33-line permanent parser tests plus exact261-byte captured fixture,
+the independently reviewed5-line CI incremental0 policy and this evidence ledger.
+Cargo remains unreleased0.2.44. Normal CI is not runner-pinned or weakened;
+there is no new runtime helper, diagnostic entry point, optional env hook beyond
+the permanent test-only BusyBox image opt-in, skip or budget relaxation.
+
+This stripped source checkpoint has NOT been built or run. Independent net-diff
+review precedes fresh actual-FIRST/frozen final full/package qualification and
+any new push. PR312 stays draft and root owns eventual merge/postmerge/release.
