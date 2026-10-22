@@ -29,6 +29,17 @@ impl From<crate::Error> for InstallFailure {
     }
 }
 impl InstallFailure {
+    pub(in crate::install) fn with_prior_ordinary(mut self, prior: Option<&crate::Error>) -> Self {
+        if let (Self::Abort(abort), Some(prior)) = (&mut self, prior) {
+            let preceding = format!("preceding installation failure: {prior}");
+            abort.detail = Some(match abort.detail.take() {
+                Some(detail) => format!("{detail}; {preceding}"),
+                None => preceding,
+            });
+        }
+        self
+    }
+
     pub(crate) fn into_public(self) -> crate::Error {
         match self {
             Self::Ordinary(error) => error,
