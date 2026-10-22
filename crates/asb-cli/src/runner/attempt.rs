@@ -94,6 +94,17 @@ impl<'a> ConfiguredAttempt<'a> {
             .iter()
             .map(|collector| collector.id.clone())
             .collect();
+        if measurement_path.is_some() {
+            let selected = if measurement_collectors.is_empty() {
+                "none".into()
+            } else {
+                measurement_collectors.join(", ")
+            };
+            progress::status(
+                options.interactive,
+                &format!("starting collectors: {selected}"),
+            );
+        }
         let mut measurement_session = measurement_path
             .as_deref()
             .map(|dir| {
@@ -121,6 +132,12 @@ impl<'a> ConfiguredAttempt<'a> {
             session
                 .event(LifecycleEvent::RunStarted)
                 .map_err(Error::Run)?;
+        }
+        if measurement_path.is_some() {
+            progress::status(
+                options.interactive,
+                "collectors ready; preparing provider and workload",
+            );
         }
         if let Some((tape::Mode::Replay, cassette)) = tape_cassette.as_ref() {
             models::ensure_replay_tool_capable(cassette, &config.model)?;
@@ -1208,6 +1225,10 @@ impl Publication<'_, '_> {
         let log_publication =
             phases::LogPublication::publish(&context.publication_config, &config.log_file, result)
                 .with_artifact_evidence(&artifact_evidence);
+        progress::status(
+            options.interactive,
+            "tearing down collectors and publishing measurements",
+        );
         let measurement_completion = phases::finish_measurements(measurement_session, result)
             .with_artifact_evidence(&artifact_evidence);
         // This private record preserves evaluator outcomes, including unresolved
@@ -1276,6 +1297,7 @@ impl Publication<'_, '_> {
                 )),
             }
         }
+        progress::clear(options.interactive);
         let presentation = (|| {
             if json {
                 render_json(result, output)?;
