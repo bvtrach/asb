@@ -57,6 +57,39 @@ class RuntimeTests(unittest.TestCase):
             with self.subTest(invalid=invalid),self.assertRaises(ExecutionError):
                 subject.library_paths(invalid)
 
+    def test_captured_ubuntu26_main_mapping_is_not_a_library_identity(self):
+        captured = (Path(__file__).parent/"fixtures/loader-ubuntu26-asb.txt").read_text()
+        self.assertEqual(hashlib.sha256(captured.encode()).hexdigest(),
+                         "2b5ef0db4ee89223c334d3eab68a7a1dbe8c6f503d3426844484153fce59847d")
+        expected = {"libgcc_s.so.1":"/usr/lib/x86_64-linux-gnu/libgcc_s.so.1",
+                    "libc.so.6":"/usr/lib/x86_64-linux-gnu/libc.so.6",
+                    "ld-linux-x86-64.so.2":"/lib64/ld-linux-x86-64.so.2"}
+        self.assertEqual(subject.library_paths(captured), expected)
+        tail = "\n".join(captured.splitlines()[1:])+"\n"
+        for address in ["0", "1", "ABCDEF", "0123456789abcdef"]:
+            with self.subTest(address=address):
+                self.assertEqual(subject.library_paths(f"\n\t (0x{address})\n"+tail),expected)
+
+    def test_anonymous_mapping_never_hides_unknown_or_unresolved_dependencies(self):
+        header = "\t (0x000072fb98000000)\n"
+        library = "libc.so.6 => /lib/libc.so.6 (0x456)\n"
+        invalid = [
+            header, header+"linux-vdso.so.1 (0x123)\n",
+            header+header+library, library+header,
+            "linux-vdso.so.1 (0x123)\n"+header+library,
+            "(0x)\n"+library, "(0x123456789abcdef01)\n"+library,
+            "(0xNOTHEX)\n"+library, "(0x123) extra\n"+library,
+            "missing => (0x123)\n"+library,
+            header+"libmissing.so => not found\n",
+            header+library+"libmissing.so => not found\n",
+            header+library+"libc.so.6 => /other/libc.so.6 (0x457)\n",
+            header+"unexpected loader text\n"+library,
+            header+"".join(f"lib{i}.so => /lib/lib{i}.so (0x123)\n" for i in range(65)),
+        ]
+        for text in invalid:
+            with self.subTest(text=text),self.assertRaises(ExecutionError):
+                subject.library_paths(text)
+
     @unittest.skipUnless(os.environ.get("ASB_TEST_HOST_ASB"),"needs the just-built ASB executable")
     def test_real_asb_bundle_executes_without_injecting_library_paths_into_children(self):
         path = Path(os.environ["ASB_TEST_HOST_ASB"]).absolute()

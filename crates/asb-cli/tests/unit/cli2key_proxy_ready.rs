@@ -139,7 +139,7 @@ fn listener_cloexec_stays_parent_local_and_unrelated_children_cannot_keep_it() {
     let end = Instant::now() + Duration::from_secs(3);
     let inode = identity.1.to_string();
     loop {
-        let present = std::fs::read_to_string("/proc/net/tcp")
+        let present = std::fs::read_to_string("/proc/self/net/tcp")
             .unwrap()
             .lines()
             .any(|line| line.split_whitespace().nth(9) == Some(inode.as_str()));
