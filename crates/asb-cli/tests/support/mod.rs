@@ -2,6 +2,9 @@
 
 use std::process::Command;
 
+#[cfg(unix)]
+pub mod fixture_writer;
+
 /// Clear inherited credentials/state without losing subprocess LLVM coverage.
 pub trait IsolatedEnvironment {
     fn isolated_env(&mut self) -> &mut Self;

@@ -41,6 +41,23 @@ mod tape;
 #[cfg(all(test, unix))]
 #[path = "../tests/support/mod.rs"]
 pub(crate) mod test_support;
+#[cfg(all(test, unix))]
+impl test_support::fixture_writer::Keeper for process_cleanup::OwnedReaper {
+    fn adopt(&self, child: std::process::Child) {
+        self.adopt(child);
+    }
+}
+#[cfg(all(test, unix))]
+pub(crate) fn write_test_script(
+    root: &std::path::Path,
+    path: &std::path::Path,
+    bytes: &[u8],
+    mode: Option<u32>,
+) -> std::io::Result<()> {
+    test_support::fixture_writer::write_with(root, path, bytes, mode, || {
+        process_cleanup::OwnedReaper::new("test-executable-writer").map_err(std::io::Error::other)
+    })
+}
 mod tools;
 mod tui;
 mod workloads;
