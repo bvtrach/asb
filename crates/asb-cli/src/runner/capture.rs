@@ -204,6 +204,13 @@ pub(super) struct CapturedOutput {
     pub capture_error: Option<String>,
 }
 
+/// Best-effort terminal presentation is independent from capture custody.
+/// It must never delay, cancel, or alter the agent execution.
+pub(super) trait Progress {
+    fn update(&mut self, stdout: &[u8], stderr: &[u8]);
+    fn finish(&mut self);
+}
+
 trait Pipe: Read {
     fn prepare(&self) -> io::Result<()>;
     fn available(&self) -> io::Result<Option<usize>>;
@@ -376,12 +383,37 @@ impl<R: Pipe> Stream<R> {
 }
 
 pub(super) fn capture_with_output_streams(
+    child: OwnedChild,
+    show_output: bool,
+    output: &mut dyn Write,
+    error_output: Option<&mut dyn Write>,
+    runtime: Duration,
+    policy: PresentationPolicy,
+    after_exit: &mut dyn FnMut() -> io::Result<()>,
+) -> io::Result<CapturedOutput> {
+    capture_with_output_streams_progress(
+        child,
+        show_output,
+        output,
+        error_output,
+        runtime,
+        policy,
+        None,
+        after_exit,
+    )
+}
+
+// Progress is best-effort presentation and intentionally remains outside the
+// bounded capture/presentation policy object.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn capture_with_output_streams_progress(
     mut child: OwnedChild,
     show_output: bool,
     output: &mut dyn Write,
     error_output: Option<&mut dyn Write>,
     runtime: Duration,
     policy: PresentationPolicy,
+    mut progress: Option<&mut dyn Progress>,
     after_exit: &mut dyn FnMut() -> io::Result<()>,
 ) -> io::Result<CapturedOutput> {
     let result = capture_inner(
@@ -391,8 +423,12 @@ pub(super) fn capture_with_output_streams(
         error_output,
         runtime,
         policy,
+        &mut progress,
         after_exit,
     );
+    if let Some(progress) = progress {
+        progress.finish();
+    }
     result.map_err(|primary| match child.stop() {
         Ok(_) => primary,
         Err(cleanup) => io::Error::other(format!(
@@ -401,6 +437,7 @@ pub(super) fn capture_with_output_streams(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn capture_inner(
     child: &mut OwnedChild,
     mut show_output: bool,
@@ -408,6 +445,7 @@ fn capture_inner(
     mut error_output: Option<&mut dyn Write>,
     runtime: Duration,
     policy: PresentationPolicy,
+    progress_display: &mut Option<&mut dyn Progress>,
     after_exit: &mut dyn FnMut() -> io::Result<()>,
 ) -> io::Result<CapturedOutput> {
     let stdout = child
@@ -481,6 +519,9 @@ fn capture_inner(
         }
         if stdout.truncated || stderr.truncated {
             capture_error.get_or_insert_with(|| format!("agent output exceeded the {CAPTURE_LIMIT}-byte per-stream capture limit; transcript evidence is incomplete"));
+        }
+        if let Some(progress) = progress_display.as_deref_mut() {
+            progress.update(&stdout.bytes, &stderr.bytes);
         }
         // A failed pipe cannot drain a live writer safely. Stop the owned child
         // and retain partial evidence; the native caller still grades once.

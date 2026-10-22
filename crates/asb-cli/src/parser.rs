@@ -23,6 +23,17 @@ pub(crate) fn completion_command() -> clap::Command {
 }
 
 pub(crate) fn run(args: &[OsString], stdout: &mut dyn Write, stderr: &mut dyn Write) -> u8 {
+    run_with_interactive(args, stdout, stderr, false)
+}
+
+/// Execute with the terminal capability observed by the process entry point.
+/// Injectable writers deliberately never infer terminal control support.
+pub(crate) fn run_with_interactive(
+    args: &[OsString],
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+    interactive: bool,
+) -> u8 {
     // Like the native gate helpers, completion generation is an internal entry
     // point, not a public option to duplicate in generated shell candidates.
     const COMPLETION_FLAG: &str = "--__generate-completion";
@@ -109,6 +120,7 @@ pub(crate) fn run(args: &[OsString], stdout: &mut dyn Write, stderr: &mut dyn Wr
                     mode,
                     cassette: options.cassette.as_deref(),
                     respect_record_timings: options.respect_record_timings,
+                    interactive: interactive && !options.json,
                     ..Default::default()
                 },
                 stdout,

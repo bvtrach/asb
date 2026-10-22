@@ -83,6 +83,45 @@ fn dual_pipe_pressure_is_drained_with_bounded_capture_and_preserved_exit() {
     assert_eq!(calls, 1);
 }
 
+#[test]
+fn progress_receives_incremental_transcript_and_is_finished() {
+    #[derive(Default)]
+    struct Spy {
+        updates: usize,
+        stdout: Vec<u8>,
+        stderr: Vec<u8>,
+        finished: bool,
+    }
+    impl Progress for Spy {
+        fn update(&mut self, stdout: &[u8], stderr: &[u8]) {
+            self.updates += 1;
+            self.stdout = stdout.into();
+            self.stderr = stderr.into();
+        }
+        fn finish(&mut self) {
+            self.finished = true;
+        }
+    }
+
+    let mut spy = Spy::default();
+    let output = capture_with_output_streams_progress(
+        child("printf step; printf token >&2"),
+        false,
+        &mut io::sink(),
+        None,
+        Duration::from_secs(1),
+        PresentationPolicy::PreserveEvidence,
+        Some(&mut spy),
+        &mut || Ok(()),
+    )
+    .unwrap();
+    assert!(output.output.status.success());
+    assert!(spy.updates > 0);
+    assert_eq!(spy.stdout, b"step");
+    assert_eq!(spy.stderr, b"token");
+    assert!(spy.finished);
+}
+
 struct ScriptedRead {
     interrupted: bool,
     failed: bool,

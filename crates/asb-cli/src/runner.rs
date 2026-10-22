@@ -9,6 +9,7 @@ use disposition::RunStatus;
 use disposition::{FailureKind, RunDisposition, RunFacts, RunFailure};
 mod native;
 mod phases;
+mod progress;
 pub(crate) mod recording;
 mod repeated;
 use phases::{
@@ -122,6 +123,8 @@ pub(crate) struct RunOptions<'a> {
     pub execution_cohort: Option<&'a measurements::ExecutionCohort>,
     pub json: bool,
     pub show_output: bool,
+    /// The process was launched with both presentation streams attached to a terminal.
+    pub interactive: bool,
     pub measurement_dir: Option<&'a str>,
     pub mode: Option<tape::Mode>,
     pub cassette: Option<&'a str>,
@@ -129,6 +132,13 @@ pub(crate) struct RunOptions<'a> {
     pub replica: replica::Identity,
     pub on_completion: Option<&'a dyn replica::CompletionObserver>,
     pub reused: Option<&'a std::collections::BTreeMap<usize, serde_json::Value>>,
+}
+
+impl RunOptions<'_> {
+    fn replay_statistics(&self) -> Option<crate::cassette::Statistics> {
+        self.batch
+            .and_then(|batch| batch.replay_statistics(self.replica.index))
+    }
 }
 
 /// Execute one configured benchmark, optionally through a local llmtape proxy.
@@ -246,6 +256,8 @@ fn run_loaded(
         ..options
     };
     if config.concurrency > 1 {
+        // Concurrent replicas buffer ordinary output for deterministic ordered
+        // presentation. A shared one-line display would race those buffers.
         return run_concurrent(config_path, &config, options, output, warnings);
     }
     run_mode(config_path, config, options, output, warnings)
@@ -313,6 +325,7 @@ fn run_concurrent(
                             measurement_dir: measurement_path,
                             mode,
                             cassette: cassette_path,
+                            interactive: false,
                             ..options
                         },
                         &mut buffer,
@@ -572,13 +585,39 @@ fn native_launch_failure(
     Error::Run(child.failure(primary))
 }
 
+#[cfg(test)]
 fn run_measured_agent_with_launch(
+    command: &mut Command,
+    target: &crate::launch::TargetLaunch,
+    route: Option<crate::launch::CommandRoute>,
+    session: Option<&mut measurements::Session>,
+    show_output: bool,
+    output: &mut dyn Write,
+    control: NativeLaunch<'_>,
+) -> Result<MeasuredOutput, Error> {
+    run_measured_agent_with_launch_progress(
+        command,
+        target,
+        route,
+        session,
+        show_output,
+        output,
+        progress::Context::default(),
+        control,
+    )
+}
+
+// Progress is deliberately a separate argument: it is presentation-only and
+// must not become part of launch, measurement, or agent-custody state.
+#[allow(clippy::too_many_arguments)]
+fn run_measured_agent_with_launch_progress(
     command: &mut Command,
     target: &crate::launch::TargetLaunch,
     route: Option<crate::launch::CommandRoute>,
     mut session: Option<&mut measurements::Session>,
     show_output: bool,
     output: &mut dyn Write,
+    progress: progress::Context,
     control: NativeLaunch<'_>,
 ) -> Result<MeasuredOutput, Error> {
     let NativeLaunch {
@@ -702,13 +741,17 @@ fn run_measured_agent_with_launch(
         ));
     }
     let mut execution_finished = None;
-    let result = capture_with_output_streams(
+    let mut progress = progress.display();
+    let result = capture::capture_with_output_streams_progress(
         child,
         show_output,
         output,
         None,
         runtime,
         PresentationPolicy::PreserveEvidence,
+        progress
+            .as_mut()
+            .map(|display| display as &mut dyn capture::Progress),
         &mut || {
             execution_finished = Some(Instant::now());
             Ok(())
