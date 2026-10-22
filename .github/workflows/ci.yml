@@ -9,6 +9,11 @@ on:
 permissions:
   contents: read
 
+env:
+  # Persistent native runners must not accumulate incremental compiler state
+  # across revisions. CI validates clean artifacts, not incremental reuse.
+  CARGO_INCREMENTAL: '0'
+
 jobs:
   checks:
     runs-on: ubuntu-latest
