@@ -5,7 +5,25 @@ use crate::{cassette, measurements};
 use std::io::{self, Write};
 use std::time::{Duration, Instant};
 
-const REFRESH: Duration = Duration::from_millis(100);
+const REFRESH: Duration = Duration::from_millis(250);
+
+/// Emit a transition before an operation that may not produce agent output.
+/// This is presentation-only: terminal failures never affect benchmark custody.
+pub(super) fn status(enabled: bool, stage: &str) {
+    if !enabled {
+        return;
+    }
+    let mut stderr = io::stderr().lock();
+    let _ = write!(stderr, "\r\x1b[2KBenchmark progress: {stage}");
+    let _ = stderr.flush();
+}
+
+pub(super) fn clear(enabled: bool) {
+    if enabled {
+        let mut stderr = io::stderr().lock();
+        let _ = writeln!(stderr, "\r\x1b[2K");
+    }
+}
 
 #[derive(Clone, Default)]
 pub(super) struct Context {
@@ -35,7 +53,12 @@ impl Context {
             context: self,
             last: None,
             visible: false,
+            frame: 0,
         })
+    }
+
+    pub(super) fn enabled(&self) -> bool {
+        self.enabled
     }
 }
 
@@ -43,6 +66,7 @@ pub(super) struct Display {
     context: Context,
     last: Option<Instant>,
     visible: bool,
+    frame: usize,
 }
 
 impl Display {
@@ -66,7 +90,11 @@ impl Display {
             tokens,
             self.context.replay.as_ref().and_then(|value| value.tokens),
         );
-        format!("Benchmark progress: steps {step_text} · tokens {token_text}")
+        const SLIDER: [&str; 8] = ["▱▱▱", "▰▱▱", "▰▰▱", "▰▰▰", "▰▰▱", "▰▱▱", "▱▱▱", "▱▰▱"];
+        format!(
+            "Benchmark progress {} steps {step_text} · tokens {token_text}",
+            SLIDER[self.frame % SLIDER.len()]
+        )
     }
 
     fn write_line(&mut self, line: &str) {
@@ -90,6 +118,7 @@ impl Progress for Display {
             return;
         }
         self.last = Some(now);
+        self.frame = self.frame.wrapping_add(1);
         self.write_line(&self.line(stdout, stderr));
     }
 
