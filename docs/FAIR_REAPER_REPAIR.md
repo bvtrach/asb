@@ -101,3 +101,30 @@ wait, extra worker, handoff API, release policy, deadline reset or caller retry
 is introduced. Completion remains after actual empty population only. The
 original five tests/assertions are unchanged. This implementation has NOT been
 built or run; independent source review precedes new runtime qualification.
+
+## Focused fixed-source qualification at 0bb3c480
+
+After independent source approval, actual ASB was built FIRST (terminal0,13.77s)
+in the exclusive fair-reaper HOME cache, then frozen read-only at
+`target/qualification/fair-reaper-fixed-0bb3c480-asb`. Before/after/final actual
+and frozen SHA256:
+`2902c98ecdb396eda1873a72e7ef4c58dc8abd446dc7ab1f76655f461b97e663`.
+The corresponding fixed libtest is preserved read-only alongside it; digests
+are recorded in `target/fair-reaper-fixed-final.sha256`. RED actual/libtest,
+signed source and both intended-failure transcripts remain immutable.
+
+All seven reaper tests passed7/0/0 in0.02s, including the original five unchanged
+cases and both unchanged former REDs. Held-first now reports later_progress=true
+while first_survived/sentinel_survived remain true, then settled/actual_reaps=true.
+The first-child-local synthetic observation-fault case reports injected=true,
+later_progress=true with first/sentinel survival and actual final settlement/reap.
+This establishes fairness through a controlled error, not real kernel-error or
+permission-denial qualification. No source edit or actual-binary relink occurred
+during runtime.
+
+Strict offline/locked workspace/all-target/all-feature Clippy -Dwarnings passed
+(27.00s), fmt and diff-check passed, and all handles are terminal. Evidence:
+`target/fair-reaper-fixed-{build,seven,clippy,fmt}.log`, before/after/final digest
+files and separately named readonly frozen executables. The source tree is clean
+and this focused checkpoint awaits independent proof review. No full suite,
+current-main integration, release version, push or PR is claimed or authorized.
