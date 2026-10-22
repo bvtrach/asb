@@ -61,3 +61,31 @@ Source review precedes actual-first build/frozen binary and the two expected RED
 runs. Preserve red logs/hash/actual cleanup observations before production edits.
 No full suite, push, PR, version bump or changes to the qualified73/material50
 trees are authorized here.
+
+## Observed RED checkpoint at source 29a37405
+
+After independent full source/design review, actual ASB was built FIRST in the
+new exclusive `/home/martin/projects/asb-build-cache-fair-reaper/target` cache,
+offline/locked/jobs1/incremental0; no qualified73/material50/delivery cache was
+modified. Build exited0 in37.54s. Actual was frozen read-only before runtime at
+`target/qualification/fair-reaper-red-29a37405-asb`; before/after SHA256 matches:
+`ed44e69de45ada85464dff64db7ded8cb00297aec1bc83d837f1da51eda07aa2`.
+The exact reexecutible RED libtest was also preserved after both runs at
+`target/qualification/fair-reaper-red-29a37405-libtests`; its digest is recorded
+in `target/fair-reaper-red-frozen.sha256`.
+
+Both separate runs exited101 at their intended final fairness assertion:
+
+- Held WaitOnly/later Terminate: later_progress=false, first_survived=true,
+  sentinel_survived=true, settled=true, actual_reaps=true;0pass/1intendedfail,
+  1.01s. Every actual actor was released/reaped before that assertion.
+- Two Terminate owners, first-child-local controlled observation error and later
+  actual exited child: injected=true, later_progress=false, first_survived=true,
+  sentinel_survived=true, settled=true, actual_reaps=true;0pass/1intendedfail,
+  1.02s. Fault and actual actors were released, with confirmed reap before the
+  assertion. This does not qualify a real kernel error or permission denial.
+
+Evidence: `target/fair-reaper-red-{build,held,localfault}.log`, matching
+`before/after.sha256`, and frozen actual/libtest copies. All runtime/build handles
+are terminal; no production fairness edits, full suite, release, PR or push.
+Independent observed-RED approval is required before the proposed correction.
