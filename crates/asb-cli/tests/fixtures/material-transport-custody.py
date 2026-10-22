@@ -139,7 +139,13 @@ def container_task(root, scenario):
             status = serve(Task(), sys.stdin, sys.stdout)
         finally:
             # Exactly the real DockerSession teardown outside real serve.
-            session.__exit__(None, None, None)
+            try:
+                session.__exit__(None, None, None)
+            except DockerAccessError:
+                save(root, "transport-close.json", {"outcome": "error", "error": "DockerAccessError"})
+                raise
+            else:
+                save(root, "transport-close.json", {"outcome": "closed"})
         return status
     except (PermissionError, DockerAccessError) as error:
         save(root, "transport-error.json", type(error).__name__)

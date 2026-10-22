@@ -221,7 +221,17 @@ fn whole_path(test: &str, scenario: &str) {
             "failed material exchange returned with live pipe workers; guardian cleanup already complete"
         );
     } else {
-        assert_eq!(read("transport-error.json"), "DockerAccessError");
+        let close = read("transport-close.json");
+        let close_error = json!({"outcome":"error","error":"DockerAccessError"});
+        if scenario == "retained" {
+            // Real release after the short caller deadline can precede the
+            // first denied signal. Require an explicit actual close outcome,
+            // never infer success merely from an absent error file.
+            assert!(close == json!({"outcome":"closed"}) || close == close_error);
+        } else {
+            assert_eq!(close, close_error);
+            assert_eq!(read("transport-error.json"), "DockerAccessError");
+        }
         assert_eq!(read("connections.json").as_array().unwrap().len(), 3);
     }
     assert!(
