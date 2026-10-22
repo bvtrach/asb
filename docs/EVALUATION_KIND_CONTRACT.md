@@ -1,10 +1,10 @@
 # Known producer evaluation kinds: class47 design and baseline
 
-Current implementation checkpoint: normal signed integration a881645a retained
-the reviewed runner/transport stack before the urgent fixture-repair diversion.
-Inherited Cargo0.2.45 is provisional metadata, not a delivery-slot allocation.
-The source extraction is now resumed under root approval; no full qualification,
-new current-main integration, PR, push or release is authorized at this stage.
+Current source-only integration: signed merges8b660f7e and17bf4e18 retain the
+reviewed material/fair/runner/fixture stack and qualified procfs hotfix alongside
+the independently reviewed typed extraction. Root coordinated provisional
+Cargo0.2.48; earlier45 was inherited metadata, not this patch's reserved slot.
+No combined build, runtime, full qualification, PR, push or release is claimed.
 
 ## Historical design/baseline checkpoint
 
@@ -243,3 +243,33 @@ Only this owned HOME cache was used. Cargo45 remains inherited provisional
 metadata, not an allocated release. Current-main/fixture-stack integration,
 fresh combined qualification and independent delivery review remain pending;
 no full suite, PR, push or release is claimed by this checkpoint.
+
+## Reviewed-stack integration, source only staged48
+
+Normal signed merge8b660f7e combines focused typed72823bce with root-approved
+material eafbb48d1dd49111280f78d35d85df0a8591e577. There were NO conflicts;
+remote.rs, lib.rs and runner_phases.rs merged automatically. The only manual
+integration edit changed the workspace/package Cargo version pair47→48, as
+coordinated. Normal signed merge17bf4e18 then adds qualified hotfix
+00eebceae959f417f19f5b643226d01c2bfd413a without conflicts: exactly three procfs
+test-path literals and its owning ledger. The exact reviewed ab877 consent-input
+fixture was already present through material/fair, so no duplicate delta arose.
+
+The shared remote seam preserves all four incoming ControllerCommand producers,
+their preconfiguration materialization and gate custody, alongside typed
+UpstreamHarness/session/baseline projections. lib.rs keeps both incoming private
+fixture/guardian wiring and the exact evaluation.rs layout exception. The two
+runner-phase mock session producers remain typed; incoming isolated-writer setup
+and every phase test remain. No runner body, controller, resource/grade policy,
+saved wire value, eligibility rule or literal official golden was reconstructed.
+
+Direct diff parity proves the incoming process_cleanup fair worker, entire gate
+and controller trees, material Python transports and guardian fixtures/tests
+byte-identical to eafbb48d. All three hotfix/consent owning files are byte-identical
+to00eebcea. The typed evaluation core, contract tests and unchanged official
+goldens remain byte-identical to72823bce. Historical84 typed passes and incoming
+1489 material/1466 hotfix passes remain separate parent evidence, NOT combined
+qualification. All historical caches/binaries/logs are unchanged; no build,
+runtime, cache copy, PR, push, release or claim preceding patches are delivered
+has occurred in this integration step. Root independently reviews this signed
+source checkpoint before authorizing combined actual-FIRST/frozen qualification.
