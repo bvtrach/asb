@@ -74,4 +74,5 @@ evidence. Extend the actual fixtures separately from passive metadata tests;
 synthetic receipt construction is not execution qualification.
 
 Feature delivery additionally requires full source, documentation, packaging,
-extracted-install, coverage, hosted exact-head and relevant original-SDK gates.
+extracted-install, hosted exact-head and relevant original-SDK gates. Coverage
+remains an optional diagnostic under DEVELOPMENT.md, not a merge threshold.
