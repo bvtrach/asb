@@ -7,6 +7,27 @@ use std::os::unix::fs::{PermissionsExt, symlink};
 const OLD: &[u8] = b"#!/bin/sh\nprintf 'old tool\\n'\n";
 const NEW: &[u8] = b"#!/bin/sh\nprintf 'new tool\\n'\n";
 
+// Fixture orchestration only: all byte preparation, producer settlement and
+// publication are the actual production path, with its same callback scope.
+fn install_fixture_input(
+    root: &Path,
+    source: &Input,
+    destination: &Path,
+    options: Options<'_>,
+    validate: impl FnOnce(&Path, &mut ProcessScope) -> InstallResult<()>,
+    publication: Publication,
+) -> InstallResult<()> {
+    let context = OperationContext::load(root)?;
+    install_input_in(
+        &context,
+        source,
+        destination,
+        options,
+        validate,
+        publication,
+    )
+}
+
 #[test]
 fn nonexecutable_readonly_source_keeps_its_previously_supported_mode() {
     let fixture = Fixture::new();
@@ -14,14 +35,15 @@ fn nonexecutable_readonly_source_keeps_its_previously_supported_mode() {
     fs::write(&source, b"validated workload").unwrap();
     fs::set_permissions(&source, fs::Permissions::from_mode(0o444)).unwrap();
     let destination = fixture.0.join("readonly-destination");
-    install_input(
+    install_fixture_input(
+        &fixture.0,
         &Input::Local(source),
         &destination,
         Options {
             executable: false,
             ..options()
         },
-        |_| Ok(()),
+        |_, _| Ok(()),
         Publication::Replace,
     )
     .unwrap();
@@ -42,11 +64,12 @@ fn quiet_commit_io_failures_preserve_prior_bytes_and_detached_name_arrivals() {
         let fixture = Fixture::new();
         let destination = old_destination(&fixture.0);
         let _fault = faults::set(point, |_| Err(Error::Io("quiet commit I/O fault".into())));
-        let error = install_input(
+        let error = install_fixture_input(
+            &fixture.0,
             &Input::Local(fixture.0.join("new-source")),
             &destination,
             options(),
-            |_| Ok(()),
+            |_, _| Ok(()),
             Publication::Replace,
         )
         .unwrap_err()
@@ -64,11 +87,12 @@ fn quiet_commit_io_failures_preserve_prior_bytes_and_detached_name_arrivals() {
         *saved.borrow_mut() = Some(exposed.to_owned());
         Ok(())
     });
-    let error = install_input(
+    let error = install_fixture_input(
+        &fixture.0,
         &Input::Local(fixture.0.join("new-source")),
         &destination,
         options(),
-        |_| Ok(()),
+        |_, _| Ok(()),
         Publication::Replace,
     )
     .unwrap_err()
@@ -97,13 +121,14 @@ fn arrivals_after_final_check_are_not_published_or_unlinked() {
             *observed.borrow_mut() = Some(path.to_owned());
             Ok(())
         });
-        let result = install_input(
+        let result = install_fixture_input(
+            &fixture.0,
             &Input::Local(fixture.0.join("new-source")),
             &destination,
             options(),
-            |_| {
+            |_, _| {
                 if point == FaultPoint::CleanupTake {
-                    Err(Error::Io("primary probe failure".into()))
+                    Err(Error::Io("primary probe failure".into()).into())
                 } else {
                     Ok(())
                 }
@@ -140,11 +165,12 @@ fn symlink_arrival_and_recovery_collision_retain_both_foreign_entries() {
             }
             Ok(())
         });
-        let error = install_input(
+        let error = install_fixture_input(
+            &fixture.0,
             &Input::Local(fixture.0.join("new-source")),
             &destination,
             options(),
-            |_| Ok(()),
+            |_, _| Ok(()),
             Publication::Replace,
         )
         .unwrap_err()
@@ -179,11 +205,12 @@ fn empty_foreign_directory_arriving_after_last_check_is_retained() {
         *saved.borrow_mut() = Some(fs::metadata(path).map_err(crate::io_error)?);
         Ok(())
     });
-    let error = install_input(
+    let error = install_fixture_input(
+        &fixture.0,
         &Input::Local(fixture.0.join("new-source")),
         &destination,
         options(),
-        |_| Err(Error::Io("primary failure".into())),
+        |_, _| Err(Error::Io("primary failure".into()).into()),
         Publication::Replace,
     )
     .unwrap_err()
@@ -245,11 +272,12 @@ fn probe_identity_content_mode_empty_and_size_obligations_are_independent() {
             },
             ..options()
         };
-        let result = install_input(
+        let result = install_fixture_input(
+            &fixture.0,
             &Input::Local(fixture.0.join("new-source")),
             &destination,
             checked,
-            |path| {
+            |path, _| {
                 (|| -> io::Result<()> {
                     match change {
                         "identical-replacement" | "identical-replacement-checksum" => {
@@ -269,7 +297,7 @@ fn probe_identity_content_mode_empty_and_size_obligations_are_independent() {
                     }
                     Ok(())
                 })()
-                .map_err(crate::io_error)
+                .map_err(|error| crate::io_error(error).into())
             },
             Publication::Replace,
         );
@@ -292,11 +320,12 @@ fn copy_mode_sync_and_commit_faults_preserve_old_bytes_and_permissions() {
             fs::write(path, b"partial private output").map_err(crate::io_error)?;
             Err(Error::Io("fixture publication fault".into()))
         });
-        let result = install_input(
+        let result = install_fixture_input(
+            &fixture.0,
             &Input::Local(fixture.0.join("new-source")),
             &destination,
             options(),
-            |_| Ok(()),
+            |_, _| Ok(()),
             Publication::Replace,
         );
         assert!(
@@ -332,13 +361,14 @@ fn replacement_at_commit_or_cleanup_is_retained_and_explicit_failure_is_not_retr
             symlink(&target, path).map_err(crate::io_error)?;
             Ok(())
         });
-        let result = install_input(
+        let result = install_fixture_input(
+            &fixture.0,
             &Input::Local(fixture.0.join("new-source")),
             &destination,
             options(),
-            |_| {
+            |_, _| {
                 if point == FaultPoint::Cleanup {
-                    Err(Error::Io("primary probe failure".into()))
+                    Err(Error::Io("primary probe failure".into()).into())
                 } else {
                     Ok(())
                 }
@@ -367,11 +397,12 @@ fn replacement_at_commit_or_cleanup_is_retained_and_explicit_failure_is_not_retr
         count.set(count.get() + 1);
         Err(Error::Io("cleanup refused".into()))
     });
-    let error = install_input(
+    let error = install_fixture_input(
+        &fixture.0,
         &Input::Local(fixture.0.join("new-source")),
         &destination,
         options(),
-        |_| Err(Error::Io("primary failure".into())),
+        |_, _| Err(Error::Io("primary failure".into()).into()),
         Publication::Replace,
     )
     .unwrap_err()
@@ -403,11 +434,12 @@ fn raw_local_sources_and_destination_paths_are_not_lossily_round_tripped() {
     fs::create_dir(&directory).unwrap();
     fs::write(&input, NEW).unwrap();
     let destination = directory.join("fixture");
-    install_input(
+    install_fixture_input(
+        &fixture.0,
         &Input::Local(input.clone()),
         &destination,
         options(),
-        |_| Ok(()),
+        |_, _| Ok(()),
         Publication::Replace,
     )
     .unwrap();
@@ -424,11 +456,12 @@ fn prepared_source_keeps_its_original_file_when_the_name_is_replaced() {
     fs::rename(&path, fixture.0.join("admitted-source")).unwrap();
     fs::write(&path, b"foreign arrival").unwrap();
     let destination = old_destination(&fixture.0);
-    install_input(
+    install_fixture_input(
+        &fixture.0,
         &input,
         &destination,
         options(),
-        |_| Ok(()),
+        |_, _| Ok(()),
         Publication::Replace,
     )
     .unwrap();
@@ -459,11 +492,12 @@ pub(super) fn child(case: &str, root: &Path) {
             let destination = old_destination(root);
             let source = root.join("self-mutation");
             fs::write(&source, b"#!/bin/sh\nprintf changed >> \"$0\"\nexit 0\n").unwrap();
-            let result = install_input(
+            let result = install_fixture_input(
+                root,
                 &Input::Local(source.clone()),
                 &destination,
                 options(),
-                |path| check_executable_version(path, "self-mutating fixture"),
+                |path, scope| check_version_in(scope, path, "self-mutating fixture"),
                 Publication::Replace,
             );
             assert!(result.is_err());
@@ -473,11 +507,12 @@ pub(super) fn child(case: &str, root: &Path) {
                 b"#!/bin/sh\ntest \"${0##*/}\" = perf\nprintf 'healthy version\\n'\n",
             )
             .unwrap();
-            install_input(
+            install_fixture_input(
+                root,
                 &Input::Local(source),
                 &destination,
                 options(),
-                |path| check_executable_version(path, "multicall fixture"),
+                |path, scope| check_version_in(scope, path, "multicall fixture"),
                 Publication::Replace,
             )
             .unwrap();

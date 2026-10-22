@@ -3,6 +3,7 @@
 //! production pin is independently checked below with a corrupt input.
 use super::*;
 use std::path::PathBuf;
+use std::process::Command;
 const ADAPTER: SweBenchAdapter = SweBenchAdapter {
     id: "fixture-suite",
     dataset: "fixture/source",
@@ -34,18 +35,23 @@ fn isolated_pinned_source_orchestration_preserves_and_validates_local_archive_by
             "changed-cache",
             "changed-installed",
             "curl-fails",
+            "curl-127",
+            "missing-curl",
             "checksum-fails",
             "catalog-fails",
             "missing-python",
+            "python-127",
             "cache-directory-error",
             "destination-directory",
         ] {
             let directory = root.join(case);
             fs::create_dir_all(directory.join("commands")).unwrap();
             let curl = directory.join("commands/curl");
-            crate::write_test_file(&directory, &curl,r#"#!/bin/sh
+            if case != "missing-curl" {
+                crate::write_test_file(&directory, &curl,r#"#!/bin/sh
 printf '%s\n' "$*" > "$ASB_SWE_SOURCE_ROOT/curl-arguments"
 [ "$ASB_SWE_SOURCE_CASE" != curl-fails ] || exit 2
+[ "$ASB_SWE_SOURCE_CASE" != curl-127 ] || exit 127
 while [ "$#" -gt 0 ]; do
  if [ "$1" = --output ]; then
   shift
@@ -54,7 +60,8 @@ while [ "$#" -gt 0 ]; do
  shift
 done
 "#).unwrap();
-            fs::set_permissions(curl, fs::Permissions::from_mode(0o700)).unwrap();
+                fs::set_permissions(curl, fs::Permissions::from_mode(0o700)).unwrap();
+            }
             let output = Command::new(std::env::current_exe().unwrap())
                 .args(["--exact", &name, "--nocapture"])
                 .current_dir(&directory)
@@ -81,7 +88,11 @@ done
     let tool = tools.join("swebench");
     fs::create_dir_all(tool.join("venv/bin")).unwrap();
     fs::create_dir_all(workloads.join(ADAPTER.id)).unwrap();
-    if case != "missing-python" {
+    if case == "python-127" {
+        let interpreter = tool.join("venv/bin/python");
+        fs::write(&interpreter, "#!/bin/sh\nprintf 'started127\\n' >> \"$ASB_SWE_SOURCE_ROOT/verify-calls\"\nexit 127\n").unwrap();
+        fs::set_permissions(interpreter, fs::Permissions::from_mode(0o700)).unwrap();
+    } else if case != "missing-python" {
         std::os::unix::fs::symlink(
             std::env::var_os("ASB_SWE_SOURCE_PYTHON").unwrap(),
             tool.join("venv/bin/python"),
@@ -110,7 +121,7 @@ if args.catalog and os.environ['ASB_SWE_SOURCE_CASE']=='catalog-fails': sys.exit
         }
         "changed-cache" => fs::write(&archive, b"damaged cached evidence").unwrap(),
         "installed" => fs::write(&destination, PAYLOAD).unwrap(),
-        "missing-python" => fs::write(&archive, PAYLOAD).unwrap(),
+        "missing-python" | "python-127" => fs::write(&archive, PAYLOAD).unwrap(),
         "cache-directory-error" => {
             fs::remove_dir(&cache).unwrap();
             fs::write(&cache, b"blocked directory").unwrap();
@@ -124,6 +135,11 @@ if args.catalog and os.environ['ASB_SWE_SOURCE_CASE']=='catalog-fails': sys.exit
         fs::create_dir(&destination).unwrap();
     }
     let context = InstallationContext {
+        process: &crate::install::OperationContext::new(
+            &root,
+            &crate::project::ProjectConfig::default(),
+        )
+        .unwrap(),
         project_root: &root,
         tools_root: &tools,
         workloads_root: &workloads,
@@ -174,12 +190,26 @@ if args.catalog and os.environ['ASB_SWE_SOURCE_CASE']=='catalog-fails': sys.exit
         if matches!(case.as_str(), "download" | "changed-cache") {
             let args = fs::read_to_string(root.join("curl-arguments")).unwrap();
             assert!(args.contains(URL));
-            assert!(args.contains("--max-time 90 --max-filesize 67108864"));
+            let args = args.split_whitespace().collect::<Vec<_>>();
+            assert!(
+                args.windows(2)
+                    .any(|pair| pair == ["--connect-timeout", "10"])
+            );
+            assert!(
+                args.windows(2)
+                    .any(|pair| pair == ["--max-filesize", "67108864"])
+            );
+            // ProcessScope owns the frozen remaining operation/download
+            // deadline; no separate fixed90s curl timer may override it.
+            assert!(!args.contains(&"--max-time"));
+            assert!(args.contains(&"--fail"));
         }
     } else {
         let error = result.unwrap_err().to_string();
         let expected = match case.as_str() {
-            "curl-fails" | "checksum-fails" => "did not match its pinned checksum",
+            "curl-fails" | "curl-127" => "could not download original SWE-bench Dockerfiles",
+            "missing-curl" => "original SWE-bench Dockerfiles needs `curl`",
+            "checksum-fails" | "python-127" => "did not match its pinned checksum",
             "catalog-fails" => "do not match the installed dataset",
             "missing-python" => "cannot validate original SWE-bench source",
             "cache-directory-error" => "",
@@ -187,9 +217,34 @@ if args.catalog and os.environ['ASB_SWE_SOURCE_CASE']=='catalog-fails': sys.exit
             _ => unreachable!(),
         };
         assert!(error.contains(expected), "{error}");
-        if matches!(case.as_str(), "curl-fails" | "checksum-fails") {
+        if matches!(
+            case.as_str(),
+            "curl-fails" | "curl-127" | "missing-curl" | "checksum-fails" | "python-127"
+        ) {
             assert!(!archive.exists());
             assert!(!destination.exists());
+        }
+        if matches!(case.as_str(), "curl-fails" | "curl-127" | "missing-curl") {
+            assert_eq!(stages, [80]);
+            assert!(!root.join("verify-calls").exists());
+            assert_eq!(root.join("curl-arguments").exists(), case != "missing-curl");
+            if case == "curl-127" {
+                assert!(error.contains("exit status: 127"), "{error}");
+                assert!(!error.contains("needs `curl`"));
+            }
+        }
+        if case == "missing-python" {
+            assert!(!root.join("verify-calls").exists());
+            assert!(!root.join("curl-arguments").exists());
+            assert_eq!(fs::read(&archive).unwrap(), PAYLOAD);
+            assert!(error.contains(&tool.join("venv/bin/python").display().to_string()));
+        }
+        if case == "python-127" {
+            assert_eq!(
+                fs::read_to_string(root.join("verify-calls")).unwrap(),
+                "started127\nstarted127\n"
+            );
+            assert!(!error.contains("cannot validate original SWE-bench source"));
         }
     }
 }

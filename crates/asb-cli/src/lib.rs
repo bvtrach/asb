@@ -77,7 +77,7 @@ mod tui;
 mod workloads;
 
 use std::ffi::OsString;
-use std::io::{self, Read, Write};
+use std::io::{self, IsTerminal, Read, Write};
 use std::process::ExitCode;
 
 /// Run the process CLI.
@@ -128,10 +128,11 @@ pub fn entry(args: Vec<OsString>) -> ExitCode {
     if args.first().is_some_and(|arg| arg == "__asb-install") {
         return install::operation::entry(&args[1..]);
     }
-    ExitCode::from(run(
+    ExitCode::from(parser::run_with_interactive(
         &args,
         &mut io::stdout().lock(),
         &mut io::stderr().lock(),
+        io::stdout().is_terminal() && io::stderr().is_terminal(),
     ))
 }
 

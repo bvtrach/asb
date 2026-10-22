@@ -111,6 +111,7 @@ pub(crate) fn describe_selection(
 }
 
 pub(crate) struct InstallationContext<'a> {
+    pub process: &'a crate::install::OperationContext,
     pub project_root: &'a Path,
     pub tools_root: &'a Path,
     pub workloads_root: &'a Path,
@@ -121,7 +122,7 @@ pub(crate) fn install_registered(
     context: &InstallationContext<'_>,
     output: &mut dyn std::io::Write,
     progress: &mut dyn FnMut(u8, crate::install::ProgressStage),
-) -> Result<bool, crate::Error> {
+) -> crate::install::InstallResult<bool> {
     adapters::find(name).map_or(Ok(false), |adapter| {
         adapter.install(context, output, progress)
     })

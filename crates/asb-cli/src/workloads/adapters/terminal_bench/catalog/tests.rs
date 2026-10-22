@@ -16,8 +16,19 @@ const ADAPTER: TerminalBenchAdapter = TerminalBenchAdapter {
 struct Fixture(PathBuf);
 impl Fixture {
     fn new() -> Self {
-        let root =
-            std::env::temp_dir().join(TaskIdentity::local("catalog-coverage", None).attempt_id);
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/catalog-coverage-fixtures")
+            .join(TaskIdentity::local("catalog-coverage", None).attempt_id);
+        fs::create_dir_all(root.join(".asb")).unwrap();
+        fs::write(
+            root.join(".asb/project.toml"),
+            toml::to_string(&crate::project::ProjectConfig {
+                tools_dir: "tools".into(),
+                ..Default::default()
+            })
+            .unwrap(),
+        )
+        .unwrap();
         for task in ["first", "second"] {
             fs::create_dir_all(root.join(format!("workloads/fixture-suite/source/tasks/{task}")))
                 .unwrap();
@@ -27,7 +38,7 @@ impl Fixture {
             "{}",
         )
         .unwrap();
-        let fixture = Self(root);
+        let fixture = Self(root.canonicalize().unwrap());
         fixture.write(&fixture.catalog());
         fixture
     }
@@ -182,6 +193,11 @@ fn local_install_verifies_runtime_and_catalog_without_fetching_or_replacing_subs
     let fixture = Fixture::new();
     let tool = fixture.mock_runtime("#!/bin/sh\nexit 0\n");
     let context = InstallationContext {
+        process: &crate::install::OperationContext::new(
+            &fixture.0,
+            &crate::project::ProjectConfig::default(),
+        )
+        .unwrap(),
         project_root: &fixture.0,
         tools_root: &fixture.0.join("tools"),
         workloads_root: &fixture.directory(),
@@ -217,11 +233,57 @@ fn local_install_verifies_runtime_and_catalog_without_fetching_or_replacing_subs
         !fixture.0.join(".asb-cache").exists(),
         "verified local catalogs must not download"
     );
+    assert_eq!(
+        crate::install::OperationContext::load(&tool)
+            .unwrap()
+            .root(),
+        fixture.0,
+        "legacy runtime lookup must resolve this initialized private project"
+    );
+    #[cfg(target_os = "linux")]
+    let diagnostic_count = || {
+        fs::read_dir(&fixture.0)
+            .unwrap()
+            .filter(|entry| {
+                let entry = entry.as_ref().unwrap();
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".asb-install-step-")
+                    && entry.path().join("output.log").is_file()
+            })
+            .count()
+    };
+    #[cfg(target_os = "linux")]
+    let before = diagnostic_count();
     assert!(runtime_available(&ADAPTER, &tool).unwrap());
     fs::write(tool.join("venv/bin/python"), "#!/bin/sh\nexit 7\n").unwrap();
     assert!(!runtime_available(&ADAPTER, &tool).unwrap());
+    fs::write(
+        tool.join("venv/bin/python"),
+        "#!/bin/sh\nprintf started > \"$0.started\"\nexit 127\n",
+    )
+    .unwrap();
+    assert!(!runtime_available(&ADAPTER, &tool).unwrap());
+    assert_eq!(
+        fs::read(tool.join("venv/bin/python.started")).unwrap(),
+        b"started"
+    );
     fs::remove_file(tool.join("venv/bin/python")).unwrap();
-    assert!(runtime_available(&ADAPTER, &tool).is_err());
+    let missing = runtime_available(&ADAPTER, &tool).unwrap_err().to_string();
+    #[cfg(target_os = "linux")]
+    {
+        assert!(missing.contains("cannot inspect installed evaluator runtime"));
+        assert!(missing.contains(&tool.join("venv/bin/python").display().to_string()));
+    }
+    #[cfg(not(target_os = "linux"))]
+    assert!(!missing.is_empty()); // Keep native direct-exec error semantics.
+    #[cfg(target_os = "linux")]
+    assert_eq!(
+        diagnostic_count() - before,
+        3,
+        "all three legacy probe diagnostics remain fixture-owned; the missing executable never launches"
+    );
 }
 
 #[cfg(unix)]
@@ -234,6 +296,11 @@ fn rejected_cached_catalog_validation_is_actionable_without_network() {
     let archive = cache.join("fixture-suite-pinned.tar.gz");
     fs::write(&archive, "fixture cached archive validated by mock runtime").unwrap();
     let context = InstallationContext {
+        process: &crate::install::OperationContext::new(
+            &fixture.0,
+            &crate::project::ProjectConfig::default(),
+        )
+        .unwrap(),
         project_root: &fixture.0,
         tools_root: &fixture.0.join("tools"),
         workloads_root: &fixture.directory(),

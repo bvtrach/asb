@@ -698,8 +698,19 @@ impl<'a> ReadyAttempt<'a> {
                     },
                 }
                 .prepare(prepared.measurements.as_mut())?;
-                let (evidence, native_issues) =
-                    native.execute(prepared.measurements.as_mut(), show_output, output, launch)?;
+                let progress = progress::Context::new(
+                    options.interactive,
+                    &config.agent,
+                    &config.provider,
+                    options.replay_statistics(),
+                );
+                let (evidence, native_issues) = native.execute(
+                    prepared.measurements.as_mut(),
+                    show_output,
+                    output,
+                    launch,
+                    progress,
+                )?;
                 issues = native_issues;
                 (
                     evidence.output,

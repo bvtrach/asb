@@ -71,11 +71,12 @@ done
     };
     let root = PathBuf::from(std::env::var_os("HOME").unwrap()).join("tool");
     fs::create_dir_all(&root).unwrap();
+    let context = OperationContext::new(&root, &crate::project::ProjectConfig::default()).unwrap();
     if case == "bin-error" {
         fs::write(root.join("bin"), "blocked").unwrap();
     }
     let mut progress = Vec::new();
-    let error = install_perfetto(&root, &mut |percent, _| progress.push(percent))
+    let error = install_perfetto(&context, &root, &mut |percent, _| progress.push(percent))
         .unwrap_err()
         .to_string();
     let expected = match case.as_str() {
