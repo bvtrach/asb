@@ -241,9 +241,20 @@ def library_paths(text):
     if text.strip() == "statically linked":
         return {}
     result = {}
+    first = True
+    anonymous_main = False
     for line in text.splitlines():
         line = line.strip()
-        if not line or line.startswith("linux-vdso") or line.startswith("linux-gate"):
+        if not line:
+            continue
+        # A loader may list the already inspected main object with no name.
+        # Its address is metadata, never a library identity or inferred path.
+        if first and re.fullmatch(r"\(0x[0-9a-fA-F]{1,16}\)",line):
+            anonymous_main = True
+            first = False
+            continue
+        first = False
+        if line.startswith("linux-vdso") or line.startswith("linux-gate"):
             continue
         mapped = re.fullmatch(r"([A-Za-z0-9+_.-]+) => (/[^\n]+?) \(0x[0-9a-fA-F]+\)",line)
         direct = re.fullmatch(r"(/[^\n]+?) \(0x[0-9a-fA-F]+\)",line)
@@ -261,6 +272,8 @@ def library_paths(text):
         result[name] = path
         if len(result) > 64:
             raise ExecutionError("ASB runtime exceeds its dependency limit")
+    if anonymous_main and not result:
+        raise ExecutionError("ASB loader returned an anonymous main mapping without resolved dependencies")
     return result
 
 

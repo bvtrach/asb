@@ -5,6 +5,9 @@ mod fixture_namespace;
 #[cfg(unix)]
 #[path = "support/fixture_writer.rs"]
 mod fixture_writer;
+#[cfg(unix)]
+#[path = "support/python_prerequisite.rs"]
+mod python_prerequisite;
 mod support;
 use std::path::PathBuf;
 use std::process::{Command, Output};
@@ -12,12 +15,29 @@ use std::process::{Command, Output};
 use std::sync::atomic::Ordering;
 use support::IsolatedEnvironment;
 
-struct Project(PathBuf);
+#[derive(Clone, Copy)]
+#[cfg(unix)]
+enum PythonPreparation {
+    Ordinary,
+    IntentionalBootstrap,
+}
+
+struct Project(PathBuf, #[cfg(unix)] PythonPreparation);
 
 impl Project {
     fn new() -> Self {
         let root = fixture_namespace::allocate(&std::env::temp_dir(), "asb-offline-cli-").unwrap();
+        #[cfg(unix)]
+        return Self(root, PythonPreparation::Ordinary);
+        #[cfg(not(unix))]
         Self(root)
+    }
+
+    #[cfg(unix)]
+    fn intentional_python_bootstrap() -> Self {
+        let mut project = Self::new();
+        project.1 = PythonPreparation::IntentionalBootstrap;
+        project
     }
 
     fn command(&self, args: &[&str]) -> Output {
@@ -49,6 +69,15 @@ impl Project {
             .env("PATH", std::env::var_os("PATH").unwrap_or_default());
         // Preserve instrumentation for coverage runs, without inheriting keys.
         command.envs(extra.iter().copied());
+        #[cfg(unix)]
+        if args.first() == Some(&"init") && matches!(self.1, PythonPreparation::Ordinary) {
+            let search = command
+                .get_envs()
+                .find(|(name, _)| *name == "PATH")
+                .and_then(|(_, value)| value)
+                .unwrap_or_default();
+            python_prerequisite::require(dir, search).unwrap_or_else(|error| panic!("{error}"));
+        }
         command
     }
 
@@ -131,6 +160,41 @@ fn stdout(output: &Output) -> String {
 }
 fn stderr(output: &Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
+}
+
+#[cfg(unix)]
+#[test]
+fn ordinary_init_missing_python_fails_before_asb_or_bootstrap_admission() {
+    use std::os::unix::fs::PermissionsExt;
+    let project = Project::new();
+    project.write("fake-bin/python3.12", "#!/bin/sh\nprintf '3.14\\n'\n");
+    project.write(
+        "fake-bin/curl",
+        "#!/bin/sh\nprintf admitted > curl-admitted\nexit 55\n",
+    );
+    for name in ["python3.12", "curl"] {
+        std::fs::set_permissions(
+            project.0.join("fake-bin").join(name),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+    }
+    let path = project.0.join("fake-bin");
+    let rejected = std::panic::catch_unwind(|| {
+        project.command_with_env(&["init"], &[("PATH", path.to_str().unwrap())])
+    });
+    let panic = rejected.expect_err("ordinary init must reject unsupported test prerequisite");
+    let message = panic
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| panic.downcast_ref::<&str>().copied())
+        .unwrap_or_default();
+    assert!(message.contains("offline test prerequisite"), "{message}");
+    assert!(message.contains("Python 3.12 or 3.13"), "{message}");
+    assert!(message.contains("ASB init was not invoked"), "{message}");
+    assert!(!project.0.join(".asb").exists());
+    assert!(!project.0.join(".asb-tools").exists());
+    assert!(!project.0.join("curl-admitted").exists());
 }
 fn expect_success(output: &Output) {
     assert!(
@@ -349,7 +413,7 @@ fn init_uses_uv_when_host_python_is_incompatible() {
     base.init();
     let compatible = base.0.join(".asb/python/venv/bin/python");
     assert!(compatible.is_file(), "test host needs a compatible Python");
-    let project = Project::new();
+    let project = Project::intentional_python_bootstrap();
     for name in ["python3", "python3.12", "python3.13"] {
         project.write(&format!("fake-bin/{name}"), "#!/bin/sh\nprintf '3.14\\n'\n");
         std::fs::set_permissions(
@@ -394,7 +458,7 @@ fn init_uses_uv_when_host_python_is_incompatible() {
 fn init_downloads_real_project_local_python_with_uv() {
     use std::os::unix::fs::{PermissionsExt, symlink};
     let uv = std::env::var_os("ASB_TEST_UV").expect("set ASB_TEST_UV to an absolute uv path");
-    let project = Project::new();
+    let project = Project::intentional_python_bootstrap();
     for name in ["python3", "python3.12", "python3.13"] {
         project.write(&format!("fake-bin/{name}"), "#!/bin/sh\nprintf '3.14\\n'\n");
         std::fs::set_permissions(
@@ -435,7 +499,7 @@ fn init_downloads_real_project_local_python_with_uv() {
 #[test]
 fn init_warns_when_no_compatible_python_or_uv_is_available() {
     use std::os::unix::fs::PermissionsExt;
-    let project = Project::new();
+    let project = Project::intentional_python_bootstrap();
     for name in ["python3", "python3.12", "python3.13"] {
         project.write(&format!("fake-bin/{name}"), "#!/bin/sh\nprintf '3.14\\n'\n");
         std::fs::set_permissions(
@@ -4202,7 +4266,10 @@ fn cli2key_compatibility_hop_owns_its_listener_without_a_rebind_window() {
         std::fs::create_dir_all(&root).unwrap();
         std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
         // Retain exact owned evidence, including on assertion failure.
-        let project = std::mem::ManuallyDrop::new(Project(root.canonicalize().unwrap()));
+        let project = std::mem::ManuallyDrop::new(Project(
+            root.canonicalize().unwrap(),
+            PythonPreparation::Ordinary,
+        ));
         project.init();
         install_fake_bridge(
             &project,
