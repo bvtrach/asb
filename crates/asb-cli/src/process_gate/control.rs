@@ -450,7 +450,21 @@ mod tests {
         let (mut parent, mut peer) = Parent::pair().unwrap();
         peer.write_all(&frame(READY, 0, 42)[..8]).unwrap();
         drop(peer);
-        assert!(parent.poll(42).is_err());
+        // As in the neighboring owner-loss fixture, a parallel fork can retain
+        // the CLOEXEC peer briefly. Require observed EOF, never immediate EOF.
+        let deadline = Instant::now() + Duration::from_secs(1);
+        loop {
+            let result = parent.poll(42);
+            assert!(!parent.ready, "a truncated reply must never become READY");
+            if result.is_err() {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "truncated reply did not reach EOF"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
         assert!(!parent.ready);
     }
 }

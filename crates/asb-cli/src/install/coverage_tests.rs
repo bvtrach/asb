@@ -24,7 +24,8 @@ impl Fixture {
 
     fn script(&self, name: &str, contents: &str) -> PathBuf {
         let path = self.0.join("bin").join(name);
-        fs::write(&path, format!("#!/bin/sh\nset -eu\n{contents}\n")).unwrap();
+        crate::write_test_file(&self.0, &path, format!("#!/bin/sh\nset -eu\n{contents}\n"))
+            .unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
         path
     }
@@ -59,7 +60,7 @@ impl Fixture {
 
 impl Drop for Fixture {
     fn drop(&mut self) {
-        fs::remove_dir_all(&self.0).unwrap();
+        crate::fixture_writer::cleanup(&self.0).unwrap();
     }
 }
 

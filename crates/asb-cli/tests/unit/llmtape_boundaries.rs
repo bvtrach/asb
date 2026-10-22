@@ -15,7 +15,7 @@ impl Fixture {
 }
 impl Drop for Fixture {
     fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
+        let _ = crate::fixture_writer::cleanup(&self.0);
     }
 }
 
@@ -84,7 +84,7 @@ fn external_override_never_receives_private_capture_capability_or_invents_eviden
     let script = fixture.0.join("override");
     let marker = fixture.0.join("clean-env");
     let proxy = Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/scripts/llmtape.mjs");
-    fs::write(&script, format!("#!/bin/sh\nif [ \"${{ASB_TAPE_CAPTURE_NONCE+x}}\" = x ] || [ \"${{ASB_TAPE_CAPTURE_RECEIPT+x}}\" = x ]; then exit 67; fi\nprintf clean > {}\nexec node {} \"$@\"\n", shell_quote(&marker), shell_quote(&proxy))).unwrap();
+    crate::write_test_file(&fixture.0, &script, format!("#!/bin/sh\nif [ \"${{ASB_TAPE_CAPTURE_NONCE+x}}\" = x ] || [ \"${{ASB_TAPE_CAPTURE_RECEIPT+x}}\" = x ]; then exit 67; fi\nprintf clean > {}\nexec node {} \"$@\"\n", shell_quote(&marker), shell_quote(&proxy))).unwrap();
     fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
     let mut child = Command::new(std::env::current_exe().unwrap());
     child.args(["--exact", "proxy::adapters::llmtape::boundary_tests::external_override_never_receives_private_capture_capability_or_invents_evidence", "--nocapture"])

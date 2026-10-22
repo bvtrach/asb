@@ -135,7 +135,7 @@ fn installed_offline_decoder_runs_once_with_closed_environment_and_retains_faile
             "#!/bin/sh\n[ \"$#\" = 3 ] && [ \"$1\" = script ] && [ \"$2\" = -i ] && [ \"$3\" = {artifact:?} ] || exit 81\n[ \"${{DEBUGINFOD_URLS-unset}}\" = '' ] && [ \"$PERF_CONFIG_NOSYSTEM\" = 1 ] && [ \"$PERF_CONFIG_NOGLOBAL\" = 1 ] || exit 82\n[ -z \"${{HOME-}}${{LD_PRELOAD-}}\" ] || exit 83\nprintf 'once\\n' >> {count:?}\n{action}\n"
         );
         let executable = bin.join("perf");
-        fs::write(&executable, script).unwrap();
+        crate::write_test_file(&fixture.0, &executable, script).unwrap();
         fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
         let mut session = fixture.session();
         session.tool_dir = Some(tools);

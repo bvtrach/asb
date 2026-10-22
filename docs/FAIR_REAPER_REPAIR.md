@@ -128,3 +128,18 @@ Strict offline/locked workspace/all-target/all-feature Clippy -Dwarnings passed
 files and separately named readonly frozen executables. The source tree is clean
 and this focused checkpoint awaits independent proof review. No full suite,
 current-main integration, release version, push or PR is claimed or authorized.
+
+## Reviewed functional-stack integration, awaiting new qualification
+
+Normal immutable merge of reviewed runner45 ece0b2f6 retains all incoming
+runner phases, optional termination, owned-listener and executable-fixture
+contracts. No semantic conflict resolution was needed. This separate next patch
+is coordinated as staged0.2.46, changing only the workspace/asb-cli package
+version pair. The fair production helper and all seven owning tests remain
+byte-identical to focused source0bb3c480. Outside process_cleanup.rs, its owning
+test file, this document and the two version fields, the tree is byte-identical
+to ece0b2f6. Historical RED/fixed source, logs and frozen executables remain
+separate and immutable. No build/runtime has been performed on this integration;
+source review precedes actual-first build and new combined qualification. The
+seven-test old-base proof is not substituted for current-stack qualification.
+No PR/push/release or ancestry reconciliation with future actual main is claimed.

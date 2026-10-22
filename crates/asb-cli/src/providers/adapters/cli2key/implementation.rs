@@ -13,6 +13,9 @@ mod custody;
 #[cfg(not(unix))]
 #[path = "custody_unsupported.rs"]
 mod custody;
+#[cfg(unix)]
+#[path = "proxy.rs"]
+mod proxy;
 
 #[cfg(unix)]
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(5);
@@ -140,7 +143,7 @@ impl Bridge {
             .stderr(Stdio::null());
         let mut owner = custody::Local::new().map_err(Error::Run)?;
         let result: Result<(String, String), Error> = (|| {
-            let discovered_key = owner.spawn(&mut command, true).map_err(Error::Run)?;
+            let discovered_key = owner.spawn_bridge(&mut command).map_err(Error::Run)?;
             let api_key = std::env::var("CLI2KEY_API_KEY")
                 .ok()
                 .filter(|value| !value.trim().is_empty())
@@ -168,18 +171,17 @@ impl Bridge {
                     proxy_script.display()
                 ))
             })?;
-            let proxy_port = free_port()?;
             let upstream = base_url.clone();
             let mut command = Command::new("node");
             crate::project::apply_network_proxy(&mut command, std::path::Path::new("."))?;
             command
                 .arg(&proxy_script)
-                .args(["--port", &proxy_port.to_string(), "--upstream", &upstream])
+                .args(["--upstream", &upstream])
                 .stdin(Stdio::piped())
                 .stderr(Stdio::null());
-            owner.spawn(&mut command, false).map_err(Error::Run)?;
+            let address = owner.spawn_proxy(command).map_err(Error::Run)?;
             owner.confirm_ready().map_err(Error::Run)?;
-            Ok((api_key, format!("http://127.0.0.1:{proxy_port}/v1")))
+            Ok((api_key, format!("http://{address}/v1")))
         })();
         match result {
             Ok((api_key, base_url)) => Ok(Self {
