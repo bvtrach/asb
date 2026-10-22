@@ -1182,6 +1182,19 @@ mod tests {
     use std::collections::{BTreeMap, BTreeSet};
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    fn test_root(prefix: &str) -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "asb-{prefix}-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        root
+    }
+
     #[test]
     fn perfetto_ui_url_keeps_a_local_trace_local_and_encodes_its_path() {
         let root = std::env::temp_dir().join(format!(
@@ -1290,15 +1303,7 @@ mod tests {
 
     #[test]
     fn agent_process_graphs_include_all_agents_but_not_unavailable_measurements() {
-        let root = std::env::temp_dir().join(format!(
-            "asb-agent-compare-{}-{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&root).unwrap();
+        let root = test_root("agent-compare");
         std::fs::write(
             root.join("sweep.toml"),
             "configs=['one.toml','two.toml','missing.toml']\n",
@@ -1362,13 +1367,7 @@ mod tests {
 
     #[test]
     fn compares_measurements_and_writes_svg() {
-        let root = std::env::temp_dir().join(format!(
-            "asb-compare-{}",
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let root = test_root("compare");
         std::fs::create_dir_all(root.join("sweep-results/000-one/measurements")).unwrap();
         std::fs::create_dir_all(root.join("sweep-results/000-one/workspace")).unwrap();
         for index in 0..300 {
@@ -1582,14 +1581,7 @@ mod tests {
 
     #[test]
     fn line_graph_labels_token_axis_unit_and_ticks() {
-        let root = std::env::temp_dir().join(format!(
-            "asb-compare-svg-{}",
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&root).unwrap();
+        let root = test_root("compare-svg");
         super::write_line_svg(
             &root.join("tokens.svg"),
             "token_usage.total_tokens",
@@ -1621,14 +1613,7 @@ mod tests {
 
     #[test]
     fn line_graph_labels_sample_axis_and_gives_long_legends_room() {
-        let root = std::env::temp_dir().join(format!(
-            "asb-compare-sample-axis-{}",
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&root).unwrap();
+        let root = test_root("compare-sample-axis");
         let series = (0..8)
             .map(|index| {
                 (
@@ -1661,14 +1646,7 @@ mod tests {
 
     #[test]
     fn bar_graph_labels_values_inside_or_above_each_bar() {
-        let root = std::env::temp_dir().join(format!(
-            "asb-compare-bars-{}",
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&root).unwrap();
+        let root = test_root("compare-bars");
         super::write_bar_svg(
             &root.join("values.svg"),
             "elapsed_ms",
@@ -1689,14 +1667,7 @@ mod tests {
 
     #[test]
     fn records_missing_measurements_without_discarding_sweep_results() {
-        let root = std::env::temp_dir().join(format!(
-            "asb-compare-missing-{}",
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&root).unwrap();
+        let root = test_root("compare-missing");
         std::fs::write(
             root.join("one.toml"),
             "agent=\"codex\"\nworkload=\"bug-fix\"\nprovider=\"local\"\nmodel=\"m\"\n",
@@ -1723,15 +1694,7 @@ mod tests {
 
     #[test]
     fn official_resolution_uses_typed_baseline_and_evaluator_not_client_exit() {
-        let root = std::env::temp_dir().join(format!(
-            "asb-official-resolution-{}-{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&root).unwrap();
+        let root = test_root("official-resolution");
         std::fs::write(
             root.join("sweep.toml"),
             "configs=['resolved.toml','unresolved.toml','missing.toml','invalid.toml']\n",
@@ -1799,15 +1762,7 @@ mod tests {
 
     #[test]
     fn legacy_smoke_and_unknown_scores_cannot_become_task_resolution() {
-        let root = std::env::temp_dir().join(format!(
-            "asb-compare-scope-{}-{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&root).unwrap();
+        let root = test_root("compare-scope");
         std::fs::write(
             root.join("sweep.toml"),
             "configs=['smoke.toml','unknown.toml','task.toml']\n",
@@ -1876,15 +1831,7 @@ mod tests {
     }
     #[test]
     fn report_preserves_colliding_metric_names_paths_and_repeated_config_stems() {
-        let root = std::env::temp_dir().join(format!(
-            "asb-metric-identities-{}-{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&root).unwrap();
+        let root = test_root("metric-identities");
         std::fs::write(
             root.join("sweep.toml"),
             "configs=['left/same.toml','right/same.toml']",
