@@ -41,6 +41,9 @@ fn isolated_case(test: &str, case: &str) {
         .env(EXACT_CASE, case)
         .stdin(Stdio::null());
     step.capture(Capture::inspection());
+    if let Some(profile) = std::env::var_os("LLVM_PROFILE_FILE") {
+        step.command_mut().env("LLVM_PROFILE_FILE", profile);
+    }
     let result = scope.run(step).unwrap();
     // The exact child (including its nested CLI and sentinel) must actually
     // settle before interpreting any status or captured assertion text.
@@ -170,6 +173,9 @@ exit 99
             .stderr(Stdio::from(
                 fs::File::create(fixture.root.join("stderr")).unwrap(),
             ));
+        if let Some(profile) = std::env::var_os("LLVM_PROFILE_FILE") {
+            command.env("LLVM_PROFILE_FILE", profile);
+        }
         let mut gate = Admission::new(route.validate_gate(&mut command).unwrap())
             .unwrap()
             .spawn()
