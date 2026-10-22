@@ -1,9 +1,10 @@
 # Owned compatibility listener: staged44 design and focused source proof
 
 Current status: revised same-PID sanitation source and focused proof below are
-green; the first full FAILED and remains invalid. Actual main43 has now been
-integrated and version44 staged. Fresh combined focused qualification and root
-review are required before a new full; no PR, push or release is authorized.
+green; earlier failed full runs remain preserved and invalid. Actual main43 is
+integrated and version44 staged. Root-reviewed source `662a5ede` now passed a
+fresh combined full and local gates below. Final independent proof review and
+hosted/merge/release gates remain pending; no PR or push is authorized here.
 
 Actual main42 base `32329d76` (PR307), not runner-phase43. Version staged43.
 The initial design checkpoint `e4e82879` contained only signed diagnostic
@@ -471,3 +472,58 @@ paths and symlinks to the initially absent target. All22 cases, exit assertions,
 actual pidfd/reaping and unrelated sentinel checks remain unchanged. This is an
 owning fixture isolation repair, with no retry, skip or production change; fresh
 owning and strict evidence is required before any next full attempt.
+
+## Fresh complete combined qualification of staged0.2.44
+
+Exact source `662a5ede0ee9f3dceff445ff5c228dddcdecb557` includes the two
+independently reviewed TEST-ONLY fixture repairs above; all production and Cargo
+bytes remain identical to approved integration `6082ae8d`. Actual build FIRST
+completed0.03s from the unchanged production cache, then the executable was
+frozen at `target/qualification/cli2key44-662a5ede-asb`. Its SHA256 is
+`5da915d52add286d9cac2b8a6218ce4fbcc77bebb3809b00537bca87304dbf9a`.
+Owning flamegraph outer1/0 covers all22 original real cases (10.05s), listener
+focus28/0 (5.24s), strict Clippy9.13s, formatting and whitespace check passed;
+actual/frozen before/after hashes agree. Root read the complete signed diff and
+approved the new full. These are not blind retries of unchanged failing source.
+
+`target/cli2key44-full-v3.log` is the fresh locked/offline workspace/all-target/
+all-feature suite:1435passed/0failed/21existing opt-in ignored across24 outer
+Cargo targets. Library1198/0/13ignored in21.40s; other outer targets237/0/
+8ignored. `cli2key44-full-v3-outer-summaries.log` retains the last summary per
+Cargo Running marker, excluding nested subprocess summaries. The main binary
+unit harness legitimately contains0 tests. Protocol35/0 (44.20s), offlineCLI
+95/0/5ignored, repeated30/0, replay/parallel/partial/unmeasured sweeps and actual
+PTY targets passed. Actual/frozen full-after hashes agree; source and executable
+were not edited/relinked while this runtime handle was active.
+
+Separate doctests0, strict workspace/all-target/all-feature Clippy, fmt and
+diff-check passed. Sequential `make build` passed actual build, private Rustdoc,
+pinned AutoUML0.7.2, data/control flows, interactive pages and Bash/Zsh completion
+generation; both shell syntax checks passed. Graphviz reported touching-node
+warnings and used straight edges, exiting0. Checkout-update tests7/0 passed.
+The make-after executable hashes still match the frozen qualified image.
+
+After all handles were terminal, the exact verified empty tool-hook install log
+was moved recoverably to `target/fixture-preservation/empty-tools-hook-install-662a.log`.
+The verified-idle622MiB generated crate fixture directory was moved intact to
+`target/fixture-preservation/cli2key44-full-v3-crate-target` before packaging.
+No evidence, source or user data was deleted and the tracked tree stayed clean.
+
+`cargo package --locked --offline` passed packaging507files/6.0MiB and actual
+archive verification compilation (16.50s). The archive contains the native
+owned-FD helper, proxy module and all eight hosted runtime assets. Its compiled
+executable passed `--help`; it is preserved separately at
+`target/qualification/cli2key44-662a5ede-packaged-asb`, SHA256
+`c90393bf224ef2f26c8cfe84fa3b0f90e5cbbc27e9addbf29c9cfd110be7eed3`.
+Package verification temporarily replaced the ordinary debug image AFTER runtime
+qualification; a final source build restored it in0.06s. The final actual and
+qualified frozen hashes again equal5da915d5 above. This is archive compilation,
+asset-presence and help-smoke evidence, not another extracted-archive full suite
+or an installation smoke test; exact-head hosted packaged tests remain required.
+
+All handles are terminal. Original failed full/RED logs and executable/libtest
+copies remain preserved. Only this owned HOME cache was used. No provider, SDK,
+credentials, privileged collector, host settings or foreign process was used;
+Linux synthetic/offline scope does not qualify native Windows/nonLinux or a
+bundled loader environment. Historical PR308 CI cause remains unknown. This
+proof does not claim a PR, merge or release, and does not restore the90% gate.
