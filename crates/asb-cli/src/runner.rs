@@ -1410,6 +1410,22 @@ mod tests {
     use crate::benchmark::BenchmarkConfig;
     use crate::measurements::TokenUsage;
 
+    fn config(agent: &str, provider: &str, model: &str) -> BenchmarkConfig {
+        BenchmarkConfig {
+            planning: None,
+            agent: agent.into(),
+            workload: "bug-fix".into(),
+            provider: provider.into(),
+            model: model.into(),
+            concurrency: 1,
+            trial_set: None,
+            trial: None,
+            workspace: "workspace".into(),
+            log_file: "run.log".into(),
+            measurements: None,
+        }
+    }
+
     #[test]
     fn direct_runs_allocate_fresh_benchmark_scoped_result_directories() {
         let root = std::env::temp_dir()
@@ -2313,19 +2329,7 @@ mod tests {
 
     #[test]
     fn cli2key_command_mappings_place_workload_once() {
-        let config = BenchmarkConfig {
-            planning: None,
-            agent: "openhands".into(),
-            workload: "bug-fix".into(),
-            provider: "cli2key".into(),
-            model: "gpt-test".into(),
-            concurrency: 1,
-            trial_set: None,
-            trial: None,
-            workspace: "workspace".into(),
-            log_file: "run.log".into(),
-            measurements: None,
-        };
+        let config = config("openhands", "cli2key", "gpt-test");
         let command = command_for(&config, Some("http://127.0.0.1:3456/v1"), "prompt")
             .expect("known agent has a command");
         assert_eq!(command.program, "openhands");
@@ -2336,19 +2340,7 @@ mod tests {
 
     #[test]
     fn token_reporting_commands_request_machine_readable_agent_output() {
-        let base = BenchmarkConfig {
-            planning: None,
-            agent: "mini-swe".into(),
-            workload: "bug-fix".into(),
-            provider: "cli2key".into(),
-            model: "gpt-test".into(),
-            concurrency: 1,
-            trial_set: None,
-            trial: None,
-            workspace: "workspace".into(),
-            log_file: "run.log".into(),
-            measurements: None,
-        };
+        let base = config("mini-swe", "cli2key", "gpt-test");
         let mini = command_for(&base, Some("http://127.0.0.1:3456/v1"), "prompt").unwrap();
         assert!(!mini.args.iter().any(|argument| argument == "--output"));
         let mut prepared = std::process::Command::new(&mini.program);
@@ -2396,19 +2388,7 @@ mod tests {
             ("cline", "cline", "--json"),
             ("continue", "cn", "--auto"),
         ] {
-            let config = BenchmarkConfig {
-                planning: None,
-                agent: agent.into(),
-                workload: "bug-fix".into(),
-                provider: "cli2key".into(),
-                model: "gpt-test".into(),
-                concurrency: 1,
-                trial_set: None,
-                trial: None,
-                workspace: "workspace".into(),
-                log_file: "run.log".into(),
-                measurements: None,
-            };
+            let config = config(agent, "cli2key", "gpt-test");
             let command = command_for(&config, Some("http://127.0.0.1:3456/v1"), "prompt")
                 .expect("new agent command");
             assert_eq!(command.program, program, "{agent} program");
@@ -2422,19 +2402,7 @@ mod tests {
 
     #[test]
     fn pi_cli2key_uses_openai_bridge_and_print_mode() {
-        let config = BenchmarkConfig {
-            planning: None,
-            agent: "pi".into(),
-            workload: "bug-fix".into(),
-            provider: "cli2key".into(),
-            model: "gpt-6.1-sol".into(),
-            concurrency: 1,
-            trial_set: None,
-            trial: None,
-            workspace: "workspace".into(),
-            log_file: "run.log".into(),
-            measurements: None,
-        };
+        let config = config("pi", "cli2key", "gpt-6.1-sol");
         let command = command_for(&config, Some("http://127.0.0.1:3456/v1"), "prompt")
             .expect("pi has a command");
         assert_eq!(command.program, "pi");
@@ -2569,19 +2537,7 @@ mod tests {
 
     #[test]
     fn opencode_command_uses_generic_provider_model_namespace() {
-        let config = BenchmarkConfig {
-            planning: None,
-            agent: "opencode".into(),
-            workload: "bug-fix".into(),
-            provider: "opencode-zen".into(),
-            model: "mimo-v2.6-flash-free".into(),
-            concurrency: 1,
-            trial_set: None,
-            trial: None,
-            workspace: "workspace".into(),
-            log_file: "run.log".into(),
-            measurements: None,
-        };
+        let config = config("opencode", "opencode-zen", "mimo-v2.6-flash-free");
         let command = command_for(&config, None, "prompt").expect("known agent");
         assert!(
             command.args.windows(2).any(|pair| {
@@ -2598,19 +2554,7 @@ mod tests {
 
     #[test]
     fn unknown_agent_suggests_a_close_match() {
-        let config = BenchmarkConfig {
-            planning: None,
-            agent: "opencod".into(),
-            workload: "bug-fix".into(),
-            provider: "local".into(),
-            model: "test-model".into(),
-            concurrency: 1,
-            trial_set: None,
-            trial: None,
-            workspace: "workspace".into(),
-            log_file: "run.log".into(),
-            measurements: None,
-        };
+        let config = config("opencod", "local", "test-model");
         let error = match command_for(&config, None, "prompt") {
             Ok(_) => panic!("typo rejected"),
             Err(error) => error,
