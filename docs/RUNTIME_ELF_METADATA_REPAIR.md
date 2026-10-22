@@ -31,6 +31,11 @@ Duplicate, malformed, relative or unterminated interpreters are rejected.
 Same-descriptor size/device/inode/mtime/ctime observations must remain stable.
 Target programs are never executed to discover their identity.
 
+Metadata uses unbuffered FileIO so a sparse header stride does not amplify
+userspace reads through BufferedReader readahead; complete payload buffering is
+unchanged. The byte bound describes userspace read requests, not physical disk
+I/O or kernel/filesystem readahead.
+
 The complete `elf` reader retains its payload cap, full-byte return value and
 pre-parse mutation check. It uses the same header parser on the already-open
 descriptor and checks stability again afterward, without allocating another

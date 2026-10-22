@@ -51,6 +51,7 @@ class RuntimeTests(unittest.TestCase):
             # Demand-sized header reads, not a full-file read or a higher cap.
             real_open = subject.os.fdopen
             reads = []
+            modes = []
             class Observed:
                 def __init__(self, source): self.source = source
                 def __enter__(self): return self
@@ -64,12 +65,18 @@ class RuntimeTests(unittest.TestCase):
                 @staticmethod
                 def assert_bounded(size):
                     if not 0 <= size <= 4096: raise AssertionError("unbounded metadata read")
-            with patch.object(subject.os, "fdopen", side_effect=lambda *args, **kwargs: Observed(real_open(*args, **kwargs))):
+            def opened(*args, **kwargs):
+                mode = kwargs.get("buffering", -1)
+                modes.append(mode)
+                source = real_open(*args, **kwargs)
+                return Observed(source) if mode == 0 else source
+            with patch.object(subject.os, "fdopen", side_effect=opened):
                 self.assertEqual(subject.elf_identity(path), (62, None))
-            self.assertEqual(reads, [64, 56, 56])
-            for operation in [subject.elf, subject.bundle]:
-                with self.assertRaisesRegex(ExecutionError, "exceeds 256 MiB"):
-                    operation(path)
+                self.assertEqual(reads, [64, 56, 56])
+                for operation in [subject.elf, subject.bundle]:
+                    with self.assertRaisesRegex(ExecutionError, "exceeds 256 MiB"):
+                        operation(path)
+            self.assertEqual(modes, [0, -1, -1])
 
     def test_elf_metadata_wide_sparse_headers_have_a_fixed_read_budget(self):
         header = elf_fixture()[:64]
