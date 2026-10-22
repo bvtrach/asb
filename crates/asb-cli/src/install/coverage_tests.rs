@@ -476,12 +476,13 @@ fn download_contract(root: &Path) {
         "fixture",
     )
     .unwrap_err();
+    assert_eq!(fs::read(&destination).unwrap(), b"fixture data");
     assert!(
         error
             .to_string()
-            .contains("could not download fixture from https://fixture.invalid/failure")
+            .contains("could not download fixture from https://fixture.invalid/failure"),
+        "actual download failure: {error}"
     );
-    assert_eq!(fs::read(&destination).unwrap(), b"fixture data");
     let error = install_source_with_limit(
         root,
         "https://fixture.invalid/oversize",
@@ -622,14 +623,20 @@ fn npm_contract(root: &Path) {
         &mut |_, _| {},
     )
     .unwrap_err();
-    assert!(missing.to_string().contains("npm"));
-    assert!(missing.to_string().contains("fnm install --lts"));
     assert_eq!(
         fs::read_to_string(root.join("npm-invocations"))
             .unwrap()
             .lines()
             .count(),
         3
+    );
+    assert!(
+        missing.to_string().contains("npm"),
+        "actual missing npm failure: {missing}"
+    );
+    assert!(
+        missing.to_string().contains("fnm install --lts"),
+        "actual missing npm repair: {missing}"
     );
 }
 
