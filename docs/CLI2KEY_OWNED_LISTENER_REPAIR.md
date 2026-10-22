@@ -448,3 +448,26 @@ conflict assertion is deliberately WHILE the four real reservations are live;
 their post-finish assertions already inspect exact identity. Other bind calls
 only allocate owned fixtures or deliberately challenge the still-live inherited
 reservation. No production behavior changed and no full rerun is claimed yet.
+
+## Second combined full: isolated executable-fixture write window
+
+Root reviewed test-only `69424b38`, whose actual-first cached build and31/0
+targeted tests plus strict Clippy9.31s, formatting and stable5da915d5 hashes
+passed. Authorized full `target/cli2key44-full-v2.log` stopped1197/1failed/
+13ignored in21.37s in the library target; no later outer target ran. The new
+socket-identity assertion passed. The single failure was flamegraph cleanup
+case `preflight-success`: executing its generated Python fixture through the
+stackcollapse symlink returned ETXTBSY(os26). Frozen failed libtest
+`cli2key44-69424b38-failed-libtests` SHA256
+`ba140fdce06d90e803d497e98782fda2ad67dcc321faff26711f85d71629ace9`
+is post-run evidence only; actual/frozen5da915d5 remain unchanged.
+
+The parallel parent wrote the executable fixture before launching its exact
+isolated case process. An unrelated concurrent fork temporarily inheriting that
+writable FD is a plausible mechanism, not an identified historical FD holder.
+Root approved moving the exact same script bytes and mode0700 creation into the
+already-isolated case process before any tool admission. The parent only creates
+paths and symlinks to the initially absent target. All22 cases, exit assertions,
+actual pidfd/reaping and unrelated sentinel checks remain unchanged. This is an
+owning fixture isolation repair, with no retry, skip or production change; fresh
+owning and strict evidence is required before any next full attempt.
