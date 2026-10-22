@@ -114,7 +114,7 @@ fn assert_original_socket_released(identity: (u64, u64)) {
     let end = Instant::now() + Duration::from_secs(3);
     let inode = identity.1.to_string();
     loop {
-        let present = std::fs::read_to_string("/proc/net/tcp")
+        let present = std::fs::read_to_string("/proc/self/net/tcp")
             .unwrap()
             .lines()
             .any(|line| line.split_whitespace().nth(9) == Some(inode.as_str()));
@@ -230,15 +230,44 @@ fn ready_marker_cannot_admit_an_already_exited_child() {
             false,
         ),
     ] {
+        let scope = crate::process_cleanup::test_support::Scope::new();
         let mut local = Local::new().unwrap();
         AFTER_SPAWN.set(3);
         let error = local.spawn(&mut command(script), key).unwrap_err();
         AFTER_SPAWN.set(0);
-        assert!(error.contains("exited at readiness"), "{error}");
-        assert!(!error.contains("fixture-secret"));
+        let cleanup = local.cleanup();
         drop(local);
+        scope.wait_finished();
         readers_finished();
-        IDENTITIES.with_borrow_mut(Vec::clear);
+        IDENTITIES.with_borrow_mut(|identities| {
+            assert_eq!(identities.len(), 1);
+            for (_, identity) in identities.drain(..) {
+                let mut exited = libc::pollfd {
+                    fd: identity.as_raw_fd(),
+                    events: libc::POLLIN,
+                    revents: 0,
+                };
+                // SAFETY: observe only the pinned original child's identity.
+                assert_eq!(unsafe { libc::poll(&mut exited, 1, 0) }, 1);
+            }
+        });
+        assert!(cleanup.is_ok(), "{cleanup:?}");
+        let label = if key {
+            "cli2key bridge"
+        } else {
+            "cli2key compatibility proxy"
+        };
+        // AFTER_SPAWN3 already proved exit. Reader-ready versus exit polling
+        // may win first, but both exact paths must reject the dead producer.
+        assert!(
+            error == format!("{label} exited at readiness with exit status: 0")
+                || error
+                    == format!(
+                        "{label} closed its startup output with exit status: 0; {label} did not become ready"
+                    ),
+            "{error}"
+        );
+        assert!(!error.contains("fixture-secret"));
     }
 }
 
@@ -513,7 +542,7 @@ http.createServer=function(...args){
         .collect::<Vec<_>>();
     assert_eq!(pids.len(), 1, "expected the hop's one directly owned curl");
     let curl_pid = pids[0];
-    let listener_inode = std::fs::read_to_string("/proc/net/tcp")
+    let listener_inode = std::fs::read_to_string("/proc/self/net/tcp")
         .unwrap()
         .lines()
         .find_map(|line| {
