@@ -1,6 +1,7 @@
 """Only owned local fixtures. No network, package manager, agent or provider."""
 import fcntl
 import json
+from itertools import islice
 import os
 from pathlib import Path
 import pty
@@ -200,7 +201,7 @@ def tui(binary, root, action):
             assert b"agent package installation failed (exit status: 7)" in summary
             assert b"verify the prerequisite tool and rerun `asb tool install`" in summary
             assert b"credential-looking-value" not in summary
-            captures = list(root.glob(".asb-install-step-*/output.log"))
+            captures = list(islice(root.glob(".asb-install-step-*/output.log"), 9))
             assert 0 < len(captures) <= 8, captures
             failures = 0
             for capture in captures:
