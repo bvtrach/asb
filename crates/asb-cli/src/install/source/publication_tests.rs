@@ -179,7 +179,7 @@ fn source_symlinks_and_rename_failure_never_mutate_foreign_destinations() {
 }
 
 #[test]
-fn timeout_reaps_the_owned_downloader_and_removes_private_scratch() {
+fn timeout_reaps_the_owned_downloader_and_retains_incomplete_raw() {
     Fixture::new().run("timeout");
 }
 
@@ -257,14 +257,16 @@ fn successful_probe_cannot_publish_bytes_changed_after_checksum_validation() {
     let fixture = Fixture::new();
     let destination = fixture.0.join("tools/perf/bin/perf");
     let checksum = format!("{:x}", Sha256::digest(NEW));
-    let result = install(
+    let result = install_fixture(
+        &fixture.0,
         fixture.0.join("new-source").to_str().unwrap(),
         &destination,
         options("fixture", Some(&checksum), 1024),
-        |staged| {
+        |staged, _| {
             // A successful external version probe can modify its own image.
             // Its success cannot authorize different, unchecked bytes.
-            fs::write(staged, b"changed after checksum").map_err(crate::io_error)
+            fs::write(staged, b"changed after checksum")
+                .map_err(|error| crate::io_error(error).into())
         },
     );
     assert!(result.is_err(), "changed staged bytes were published");
@@ -277,13 +279,14 @@ fn successful_probe_cannot_publish_a_replacement_symlink() {
     let destination = fixture.0.join("tools/perf/bin/perf");
     let foreign = fixture.0.join("foreign");
     fs::write(&foreign, b"foreign bytes").unwrap();
-    let result = install(
+    let result = install_fixture(
+        &fixture.0,
         fixture.0.join("new-source").to_str().unwrap(),
         &destination,
         options("fixture", None, 1024),
-        |staged| {
+        |staged, _| {
             fs::remove_file(staged).map_err(crate::io_error)?;
-            symlink(&foreign, staged).map_err(crate::io_error)
+            symlink(&foreign, staged).map_err(|error| crate::io_error(error).into())
         },
     );
     assert!(result.is_err(), "replacement symlink was published");
@@ -300,6 +303,39 @@ fn options<'a>(kind: &'a str, checksum: Option<&'a str>, limit: u64) -> Options<
     }
 }
 
+fn install_fixture(
+    root: &Path,
+    source: &str,
+    destination: &Path,
+    options: Options<'_>,
+    validate: impl FnOnce(&Path, &mut ProcessScope) -> InstallResult<()>,
+) -> InstallResult<()> {
+    install_fixture_with_budget(root, source, destination, options, validate, None)
+}
+
+fn install_fixture_with_budget(
+    root: &Path,
+    source: &str,
+    destination: &Path,
+    options: Options<'_>,
+    validate: impl FnOnce(&Path, &mut ProcessScope) -> InstallResult<()>,
+    seconds: Option<u64>,
+) -> InstallResult<()> {
+    let (_, mut config) = project::load(root)?;
+    if let Some(seconds) = seconds {
+        config.installation.operation_timeout_seconds = seconds;
+    }
+    let context = OperationContext::new(root, &config)?;
+    install_input_in(
+        &context,
+        &Input::from_os(source.as_ref()),
+        destination,
+        options,
+        validate,
+        Publication::Replace,
+    )
+}
+
 pub(super) fn assert_old_ready(root: &Path, destination: &Path) {
     assert_eq!(fs::read(destination).unwrap(), OLD);
     assert_eq!(
@@ -313,15 +349,20 @@ pub(super) fn assert_old_ready(root: &Path, destination: &Path) {
 }
 
 pub(super) fn no_scratch(destination: &Path) {
-    assert!(
-        fs::read_dir(destination.parent().unwrap())
-            .unwrap()
-            .all(|entry| !entry
+    assert!(scratch(destination).is_empty());
+}
+
+fn scratch(destination: &Path) -> std::collections::BTreeSet<PathBuf> {
+    fs::read_dir(destination.parent().unwrap())
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            path.file_name()
                 .unwrap()
-                .file_name()
                 .to_string_lossy()
-                .starts_with(".asb-install-"))
-    );
+                .starts_with(".asb-install-")
+        })
+        .collect()
 }
 
 #[test]
@@ -348,23 +389,39 @@ fn publication_fixture_child() {
                 ("empty", 1024, None, "is empty"),
                 ("success", 1024, Some("wrong"), "checksum mismatch"),
             ] {
-                let error = install(
+                let before = scratch(&destination);
+                let error = install_fixture(
+                    &root,
                     &format!("https://fixture.invalid/{source}"),
                     &destination,
                     options("fixture", checksum, limit),
-                    |_| Ok(()),
+                    |_, _| Ok(()),
                 )
                 .unwrap_err();
                 assert!(error.to_string().contains(expected), "{error}");
                 assert_old_ready(&root, &destination);
-                no_scratch(&destination);
+                if source == "oversize" {
+                    assert!(matches!(error, InstallFailure::Abort(_)));
+                    assert!(
+                        Path::new(
+                            fs::read_to_string(root.join("download-path"))
+                                .unwrap()
+                                .trim()
+                        )
+                        .is_file()
+                    );
+                } else {
+                    assert_eq!(scratch(&destination), before);
+                }
             }
+            let retained = scratch(&destination);
             let digest = format!("{:x}", Sha256::digest(NEW));
-            let error = install(
+            let error = install_fixture(
+                &root,
                 "https://fixture.invalid/success",
                 &destination,
                 options("fixture", Some(&digest), 1024),
-                |path| {
+                |path, _| {
                     assert_eq!(path.file_name(), destination.file_name());
                     assert_eq!(fs::read(path).unwrap(), NEW);
                     assert_eq!(
@@ -372,32 +429,35 @@ fn publication_fixture_child() {
                         0o755
                     );
                     assert_old_ready(&root, &destination);
-                    Err(Error::Io("fixture version probe failed".into()))
+                    Err(Error::Io("fixture version probe failed".into()).into())
                 },
             )
             .unwrap_err();
             assert!(error.to_string().contains("version probe failed"));
             assert_old_ready(&root, &destination);
-            no_scratch(&destination);
+            assert_eq!(scratch(&destination), retained);
             fs::remove_file(root.join("bin/curl")).unwrap();
-            let error = super::super::install_executable_source(
+            let error = install_fixture(
+                &root,
                 "https://fixture.invalid/success",
                 &destination,
-                "fixture",
+                options("fixture", None, MAX_SOURCE_BYTES),
+                |_, _| Ok(()),
             )
             .unwrap_err();
             assert!(error.to_string().contains("needs `curl`"));
             assert_old_ready(&root, &destination);
-            no_scratch(&destination);
+            assert_eq!(scratch(&destination), retained);
         }
         "symlinks" => {
             let foreign = root.join("foreign");
             fs::write(&foreign, "do not change").unwrap();
-            let error = install(
+            let error = install_fixture(
+                &root,
                 "https://fixture.invalid/symlink",
                 &destination,
                 options("fixture", None, 1024),
-                |_| Ok(()),
+                |_, _| Ok(()),
             )
             .unwrap_err();
             assert!(error.to_string().contains("not a regular file"), "{error}");
@@ -420,20 +480,23 @@ fn publication_fixture_child() {
             assert_eq!(fs::read_link(retained.join("perf")).unwrap(), foreign);
             fs::remove_file(&destination).unwrap();
             symlink(&foreign, &destination).unwrap();
-            let error = install(
+            let error = install_fixture(
+                &root,
                 "https://fixture.invalid/failure",
                 &destination,
                 options("fixture", None, 1024),
-                |_| Ok(()),
+                |_, _| Ok(()),
             )
             .unwrap_err();
             assert!(error.to_string().contains("curl exited"));
             assert!(destination.is_symlink());
             assert_eq!(fs::read(&foreign).unwrap(), b"do not change");
-            super::super::install_executable_source(
+            install_fixture(
+                &root,
                 "https://fixture.invalid/success",
                 &destination,
-                "fixture",
+                options("fixture", None, MAX_SOURCE_BYTES),
+                |_, _| Ok(()),
             )
             .unwrap();
             assert!(!destination.is_symlink());
@@ -443,11 +506,12 @@ fn publication_fixture_child() {
             fs::create_dir(&blocked).unwrap();
             fs::write(blocked.join("keep"), "untouched").unwrap();
             assert!(
-                install(
+                install_fixture(
+                    &root,
                     "https://fixture.invalid/success",
                     &blocked,
                     options("fixture", None, 1024),
-                    |_| Ok(())
+                    |_, _| Ok(())
                 )
                 .unwrap_err()
                 .to_string()
@@ -457,22 +521,28 @@ fn publication_fixture_child() {
             no_scratch(&blocked);
         }
         "timeout" => {
-            let error = install_with_timeout(
+            let error = install_fixture_with_budget(
+                &root,
                 "https://fixture.invalid/timeout",
                 &destination,
                 options("fixture", None, 1024),
-                |_| Ok(()),
-                Duration::from_millis(200),
+                |_, _| Ok(()),
+                Some(1),
             )
             .unwrap_err();
-            assert!(error.to_string().contains("timed out"));
+            let InstallFailure::Abort(abort) = error else {
+                panic!("download deadline was reduced to an ordinary error");
+            };
+            assert_eq!(abort.cause, super::super::process::AbortCause::Deadline);
+            assert!(abort.cleanup_confirmed);
             let pid = fs::read_to_string(root.join("curl-pid")).unwrap();
             assert!(
                 !Path::new("/proc").join(pid.trim()).exists(),
                 "owned downloader was not reaped"
             );
             assert_old_ready(&root, &destination);
-            no_scratch(&destination);
+            let raw = fs::read_to_string(root.join("download-path")).unwrap();
+            assert!(Path::new(raw.trim()).is_file());
         }
         "probe" => {
             let source = root.join("version-source");
@@ -480,62 +550,91 @@ fn publication_fixture_child() {
                 "#!/bin/sh\nexit 7\n",
                 "#!/bin/sh\nprintf '%s\\n' \"$$\" > \"$ASB_FIXTURE_ROOT/probe-pid\"\nexec /bin/sleep 60\n",
             ] {
-                fs::write(&source, body).unwrap();
-                let error = install(
+                crate::write_test_file(&root, &source, body).unwrap();
+                let mut raw = None;
+                let error = install_fixture_with_budget(
+                    &root,
                     source.to_str().unwrap(),
                     &destination,
                     options("fixture", None, 1024),
-                    |path| check_version_with_timeout(path, "fixture", Duration::from_millis(200)),
+                    |path, scope| {
+                        raw = Some(path.to_owned());
+                        check_version_in(scope, path, "fixture version")
+                    },
+                    Some(1),
                 )
                 .unwrap_err();
                 assert!(error.to_string().contains("version"), "{error}");
                 assert_old_ready(&root, &destination);
-                no_scratch(&destination);
+                if let InstallFailure::Abort(abort) = &error {
+                    assert_eq!(abort.cause, super::super::process::AbortCause::Deadline);
+                    assert!(abort.cleanup_confirmed);
+                    assert!(raw.unwrap().is_file());
+                } else {
+                    no_scratch(&destination);
+                }
             }
             let pid = fs::read_to_string(root.join("probe-pid")).unwrap();
             assert!(!Path::new("/proc").join(pid.trim()).exists());
-            assert!(
-                check_executable_version(&root.join("absent"), "fixture")
-                    .unwrap_err()
-                    .to_string()
-                    .contains("cannot start staged fixture")
-            );
+            let context = OperationContext::load(&root).unwrap();
+            let owner = ProducerDirectory::open(&root).unwrap();
+            let mut scope = owner.scope(&context);
+            let error = check_version_in(&mut scope, &root.join("absent"), "fixture").unwrap_err();
+            owner.consume(scope.finish().unwrap()).unwrap();
+            assert!(error.to_string().contains("cannot start staged fixture"));
         }
         "blocked" => {
-            super::super::install_executable_source(
+            install_fixture(
+                &root,
                 "https://fixture.invalid/blocked",
                 &root.join("tools/fixture/bin/fixture"),
-                "fixture",
+                options("fixture", None, MAX_SOURCE_BYTES),
+                |_, _| Ok(()),
             )
             .unwrap();
         }
         "local" => {
             let pipe = root.join("not-a-file");
-            assert!(
-                Command::new("/usr/bin/mkfifo")
-                    .arg(&pipe)
-                    .status()
-                    .unwrap()
-                    .success()
-            );
-            let error =
-                super::super::install_source(pipe.to_str().unwrap(), &destination, "fixture")
-                    .unwrap_err();
+            let context = OperationContext::load(&root).unwrap();
+            let owner = ProducerDirectory::open(&root).unwrap();
+            let mut scope = owner.scope(&context);
+            let status = scope
+                .status(
+                    "/usr/bin/mkfifo",
+                    Purpose::Probe,
+                    "fixture FIFO",
+                    |command| {
+                        command.arg(&pipe);
+                    },
+                )
+                .unwrap();
+            owner.consume(scope.finish().unwrap()).unwrap();
+            assert!(status.success());
+            let error = install_fixture(
+                &root,
+                pipe.to_str().unwrap(),
+                &destination,
+                Options {
+                    executable: false,
+                    ..options("fixture", None, MAX_SOURCE_BYTES)
+                },
+                |_, _| Ok(()),
+            )
+            .unwrap_err();
             assert!(error.to_string().contains("source is not a file"));
             assert_old_ready(&root, &destination);
             let local = root.join("local-source");
             fs::write(&local, NEW).unwrap();
             let digest = format!("{:x}", Sha256::digest(NEW));
-            super::super::install_verified_source(
+            install_fixture(
+                &root,
                 local.to_str().unwrap(),
                 &destination,
-                "fixture",
-                &digest,
-                true,
-                |path| {
+                options("fixture", Some(&digest), MAX_SOURCE_BYTES),
+                |path, scope| {
                     assert_eq!(fs::read(path).unwrap(), NEW);
                     assert_old_ready(&root, &destination);
-                    check_executable_version(path, "fixture")
+                    check_version_in(scope, path, "fixture")
                 },
             )
             .unwrap();
