@@ -217,6 +217,8 @@ mod tests {
             .join("../../target/material50-fixtures")
             .join(crate::workloads::TaskIdentity::local(kind, None).attempt_id);
         std::fs::create_dir_all(&root).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
         let receipts = crate::process_cleanup::test_support::Scope::new();
         // Outlives both the owned guardian and the controlled unwind closure.
         let release = Release(root.clone());

@@ -601,3 +601,14 @@ existing wait-only owner and namespace are retained, never killed for a test
 deadline. These new fixtures have NOT been built or run; source review is
 required before qualification. The fair multi-child reaper follow-up remains
 separate and unimplemented.
+
+The first new-three run at c1cca0c3 failed all three during fixture preparation,
+before any intended guardian error branch: unlike the existing whole_path helper,
+the new attempt root used default mode0755, which the actual ResourceJournal
+correctly refused. The raw inner traceback, outer settlement/sentinel receipts
+and full transcript remain in `target/material50-errorpaths-new3.log` and its
+logged namespaces. This is not a production regression or passing error-path
+proof. A test-only correction sets mode0700 before spawn, matching the existing
+fixture contract. No tests have been rerun on that correction; source review
+precedes another actual-first/frozen attempt. The four Python owning families
+passed53/0/0 separately; their success does not qualify the three new branches.
