@@ -1003,3 +1003,27 @@ that reservation. No uncertain accepted bytes are refunded. This policy adds no
 public configuration/authentication requirement; required capture budgets stay
 independent. Tiny-budget/held-writer and healthy-product tests are SOURCE ONLY
 until the new combined actual is built and focused cases are observed.
+
+The new combined bc5d8ad2 actual built FIRST in13.35s and was frozen through
+all following focused tests. `installer44-aggregate-budget-focus.log` records
+37PASS/0FAIL/0ignored,32.86s, including the actual held-writer/accepted-byte
+quota cases and successful required capture/publication with no diagnostic
+admission capacity. Four pending snapshots retain all four slots; the fifth
+request creates no namespace; slots return only after actual write/flush/close
+settlement. Accepted bytes remain charged across steps after worker exit.
+
+Combined prerequisite filters are disjoint: reaper5PASS/0.04s,
+checkpoint transport7PASS/2.42s, runtime inputs8PASS/2.12s, actual managed
+gate14PASS/6.48s. Logs are target/installer44-combined-{process_cleanup-tests,
+sweep-checkpoint-transport_tests,runtime_inputs-tests,managed-gate}.log.
+The initial process_gate::tests filter matched ZERO tests and is preserved in
+installer44-combined-process_gate-tests.log; it is NOT qualification evidence.
+The corrected managed::tests filter above executed all14 actual cases.
+Total71 disjoint top-level focused passes; no full suite was run.
+
+Strict workspace/alltargets/allfeatures Clippy -Dwarnings passed22.67s
+(installer44-aggregate-budget-clippy.log), fmt/diffcheck passed. Before/final/
+frozen actual SHA256 all equal
+`f9886a273216f4f28c5d2faac2282b8b7c4ff9f48aa9d6b5659968f6967a616f`.
+All handles terminal. This proves the stated combined focused seam, not final
+adapter/CLI fault coverage, legacy-wrapper removal or full class completion.
