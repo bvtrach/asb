@@ -82,9 +82,19 @@ impl OneSlotKeeper {
                 let child = state.child.take();
                 drop(state);
                 if let Some(mut child) = child {
-                    // Worker-only custody, never a caller-thread wait or Drop join.
-                    let _ = child.kill();
-                    let _ = child.wait();
+                    // Worker-only custody. Neither a signal result nor a wait
+                    // error proves exit: retain this actual Child until confirmed.
+                    let mut signaled = false;
+                    loop {
+                        match child.try_wait() {
+                            Ok(Some(_)) => break,
+                            Ok(None) if !signaled => {
+                                signaled = child.kill().is_ok();
+                            }
+                            Ok(None) | Err(_) => {}
+                        }
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
                 }
             })?;
         Ok(Self(state))
@@ -187,16 +197,49 @@ pub fn cleanup(root: &Path) -> io::Result<bool> {
     {
         return Ok(false);
     }
-    let entries = match fs::read_dir(root) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(true),
-        Err(_) => return Ok(false),
-    };
-    for entry in entries {
-        let Ok(entry) = entry else { return Ok(false) };
-        let name = entry.file_name();
-        if name == PENDING || name.as_bytes().starts_with(CUSTODY.as_bytes()) {
+    // A different process may own a failed nested writer. Bounded conservative
+    // traversal, never symlink following, protects enclosing fixture cleanup.
+    let mut directories = vec![(root.to_path_buf(), 0)];
+    let mut entries_seen = 0;
+    let mut path_bytes = root.as_os_str().as_bytes().len();
+    while let Some((directory, depth)) = directories.pop() {
+        let metadata = match fs::symlink_metadata(&directory) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == io::ErrorKind::NotFound && directory == root => {
+                return Ok(true);
+            }
+            Err(_) => return Ok(false),
+        };
+        if !metadata.is_dir() || metadata.file_type().is_symlink() {
             return Ok(false);
+        }
+        let Ok(entries) = fs::read_dir(&directory) else {
+            return Ok(false);
+        };
+        for entry in entries {
+            entries_seen += 1;
+            if entries_seen > 16_384 {
+                return Ok(false);
+            }
+            let Ok(entry) = entry else { return Ok(false) };
+            let name = entry.file_name();
+            if name == PENDING || name.as_bytes().starts_with(CUSTODY.as_bytes()) {
+                return Ok(false);
+            }
+            let Ok(kind) = entry.file_type() else {
+                return Ok(false);
+            };
+            if kind.is_dir() {
+                if depth >= 64 {
+                    return Ok(false);
+                }
+                let path = entry.path();
+                path_bytes += path.as_os_str().as_bytes().len();
+                if path_bytes > 4 * 1024 * 1024 {
+                    return Ok(false);
+                }
+                directories.push((path, depth + 1));
+            }
         }
     }
     fs::remove_dir_all(root).map(|()| true)

@@ -166,7 +166,7 @@ fn isolated_writer_closes_all_executable_writers_before_healthy_admission() {
     let status = Command::new(&script).current_dir(&root).status().unwrap();
     assert!(status.success());
     assert_eq!(fs::read(root.join("executed")).unwrap(), b"executed");
-    assert!(crate::test_support::fixture_writer::cleanup(&root).unwrap());
+    assert!(crate::fixture_writer::cleanup(&root).unwrap());
 }
 
 #[test]
@@ -190,7 +190,7 @@ fn writer_preflight_and_keeper_refusal_never_admit_or_change_files() {
 
 #[test]
 fn standalone_keeper_uses_the_same_writer_and_retains_failed_or_unknown_namespaces() {
-    use crate::test_support::fixture_writer::{self, Fault};
+    use crate::fixture_writer::{self, Fault};
     let healthy = root();
     let script = healthy.join("script");
     fixture_writer::write(&healthy, &script, b"#!/bin/sh\nexit 0\n", Some(0o700)).unwrap();
@@ -231,8 +231,59 @@ fn standalone_keeper_uses_the_same_writer_and_retains_failed_or_unknown_namespac
 }
 
 #[test]
+fn enclosing_cleanup_detects_a_nested_pending_writer_from_another_process() {
+    const ROOT: &str = "ASB_NESTED_WRITER_FIXTURE";
+    if let Some(root) = std::env::var_os(ROOT) {
+        use crate::fixture_writer::{self, Fault};
+        let root = std::path::PathBuf::from(root).join("nested/owner");
+        fs::create_dir_all(&root).unwrap();
+        assert!(
+            fixture_writer::with_fault(Fault::ChildFailure, || {
+                fixture_writer::write(
+                    &root,
+                    &root.join("must-not-admit"),
+                    b"not written",
+                    Some(0o700),
+                )
+            })
+            .is_err()
+        );
+        return;
+    }
+    let root = root();
+    let mut command = Command::new(std::env::current_exe().unwrap());
+    command.env_clear().env(ROOT, &root).args([
+        "--exact", "executable_fixture_writer_tests::enclosing_cleanup_detects_a_nested_pending_writer_from_another_process",
+    ]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    if let Some(profile) = std::env::var_os("LLVM_PROFILE_FILE") {
+        command.env("LLVM_PROFILE_FILE", profile);
+    }
+    let mut owned = Owned::spawn(&mut command).unwrap();
+    let end = Instant::now() + Duration::from_secs(5);
+    let status = loop {
+        if let Some(status) = owned.child.as_mut().unwrap().try_wait().unwrap() {
+            owned.child = None;
+            break status;
+        }
+        if Instant::now() >= end {
+            owned.stop().unwrap();
+            panic!("nested writer fixture exceeded its deadline")
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    assert!(status.success());
+    assert!(
+        root.join("nested/owner/.asb-test-executable-writer.pending")
+            .is_file()
+    );
+    // Parent has no in-process retention registration for the child's owner.
+    assert!(!crate::fixture_writer::cleanup(&root).unwrap());
+    assert!(root.join("nested/owner").is_dir());
+}
+
+#[test]
 fn failed_or_unwound_writers_retain_namespaces_and_actual_child_custody() {
-    use crate::test_support::fixture_writer::{self, Fault};
+    use crate::fixture_writer::{self, Fault};
     for fault in [
         Fault::ChildFailure,
         Fault::Timeout,
