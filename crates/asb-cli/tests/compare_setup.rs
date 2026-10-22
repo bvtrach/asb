@@ -1,5 +1,10 @@
 //! Offline public CLI coverage for setup matrices and standalone reports.
 use serde_json::{Value, json};
+#[path = "support/fixture_namespace.rs"]
+mod fixture_namespace;
+#[cfg(unix)]
+#[path = "support/fixture_writer.rs"]
+mod fixture_writer;
 mod support;
 use std::path::PathBuf;
 use std::process::{Command, Output};
@@ -8,13 +13,8 @@ use support::IsolatedEnvironment;
 struct Project(PathBuf);
 impl Project {
     fn new() -> Self {
-        let stamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let project = Self(
-            std::env::temp_dir().join(format!("asb compare setup {}-{stamp}", std::process::id())),
-        );
+        let project =
+            Self(fixture_namespace::allocate(&std::env::temp_dir(), "asb compare setup ").unwrap());
         project.write(
             ".asb/project.toml",
             "tools_dir='tools'\nworkloads_dir='catalogs'\nworkspace_dir='workspaces'\n",
@@ -24,6 +24,11 @@ impl Project {
     fn write(&self, path: &str, text: &str) {
         let path = self.0.join(path);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        #[cfg(unix)]
+        if text.starts_with("#!") {
+            fixture_writer::write_file(&self.0, &path, text).unwrap();
+            return;
+        }
         std::fs::write(path, text).unwrap();
     }
     fn command(&self, args: &[&str]) -> Output {
@@ -59,6 +64,9 @@ impl Project {
 }
 impl Drop for Project {
     fn drop(&mut self) {
+        #[cfg(unix)]
+        let _ = fixture_writer::cleanup(&self.0);
+        #[cfg(not(unix))]
         let _ = std::fs::remove_dir_all(&self.0);
     }
 }

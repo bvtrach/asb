@@ -16,6 +16,9 @@ impl Fixture {
 }
 impl Drop for Fixture {
     fn drop(&mut self) {
+        #[cfg(unix)]
+        let _ = crate::fixture_writer::cleanup(&self.0);
+        #[cfg(not(unix))]
         let _ = std::fs::remove_dir_all(&self.0);
     }
 }
@@ -1224,6 +1227,71 @@ fn full_runner_entry_keeps_grade_and_publication_errors_when_result_writer_also_
 }
 
 #[test]
+fn runner_phase_completion_red_stopped_warning_true_publishes_grade() {
+    isolated_full_entry_cases(&["phase-warning-true"]);
+    #[cfg(target_os = "linux")]
+    isolated_full_entry_cases(&["phase-warning-true-observation-fault"]);
+}
+
+#[test]
+fn runner_phase_completion_red_stopped_warning_false_publishes_grade() {
+    isolated_full_entry_cases(&["phase-warning-false"]);
+    #[cfg(target_os = "linux")]
+    isolated_full_entry_cases(&["phase-warning-false-observation-fault"]);
+}
+
+#[test]
+fn runner_phase_completion_red_stopped_warning_native_publishes_grade() {
+    isolated_full_entry_cases(&["phase-warning-native"]);
+    #[cfg(target_os = "linux")]
+    isolated_full_entry_cases(&["phase-warning-native-observation-fault"]);
+}
+
+#[test]
+fn runner_phase_completion_red_removed_cwd_preserves_anchored_measurements() {
+    isolated_full_entry_cases(&["phase-removed-cwd"]);
+}
+
+#[test]
+fn runner_phase_completion_composes_all_independent_postgrade_failures() {
+    isolated_full_entry_cases(&[
+        "phase-warning-true-provider-blocked-log-measurements",
+        "phase-warning-false-provider-blocked-log-measurements",
+        "phase-warning-native-provider-blocked-log-measurements",
+    ]);
+}
+
+#[test]
+fn runner_phase_completion_owns_prepared_workload_when_end_instrumentation_fails() {
+    isolated_full_entry_cases(&[
+        "phase-prepare-workload-end",
+        "phase-prepare-workload-end-provider",
+    ]);
+}
+
+#[test]
+fn runner_phase_completion_warning_io_stops_repeat_but_confirmed_grades_remain_reusable() {
+    isolated_full_entry_cases(&[
+        "phase-warning-repeat-true",
+        "phase-warning-repeat-false",
+        "phase-warning-repeat-native",
+        "phase-warning-sweep-true",
+        "phase-warning-sweep-false",
+        "phase-warning-sweep-native",
+    ]);
+}
+
+#[test]
+fn runner_phase_completion_retains_workload_owner_through_publication_and_observer() {
+    isolated_full_entry_cases(&["phase-owner-lifetime"]);
+}
+
+#[test]
+fn runner_phase_completion_dispatch_failure_never_uses_prepared_only_cancellation() {
+    isolated_full_entry_cases(&["phase-runtime-error", "phase-runtime-error-provider"]);
+}
+
+#[test]
 fn full_runner_entry_observer_warning_is_redacted_and_broken_warning_writer_keeps_primary() {
     isolated_full_entry_cases(&["observer-failure", "observer-warning-writer"]);
 }
@@ -1351,7 +1419,7 @@ fn actual_guest_termination_reaches_true_false_pending_grade_phases_without_reex
             )
             .unwrap();
             let program = root.join("tools/pi/bin/pi");
-            std::fs::write(&program,format!("#!/bin/sh\nprintf 'called\\n' >> '{}'\nprintf '%s\\n' '{{\"type\":\"result\",\"result\":\"submission\"}}'\n{ending}\n",root.join("client-calls").display())).unwrap();
+            crate::write_test_file(&root, &program,format!("#!/bin/sh\nprintf 'called\\n' >> '{}'\nprintf '%s\\n' '{{\"type\":\"result\",\"result\":\"submission\"}}'\n{ending}\n",root.join("client-calls").display())).unwrap();
             std::fs::set_permissions(program, std::fs::Permissions::from_mode(0o700)).unwrap();
             let request = serde_json::json!({"config":{"agent":"pi","provider":"openrouter","model":"fixture","workload":"fixture","workspace":root.join("workspace")},"connection":{"interface":"open_ai_chat","authentication":"bearer","base_url":"http://127.0.0.1:1/v1","credential":"fixture"},"prompt":"offline","project_root":root,"runtime_dir":root.join("private"),"run_dir":root.join("private/attempt")});
             let mut command = Command::new(&runtime);
@@ -1545,6 +1613,103 @@ fn early_provider_teardown_notifies_material_peers_before_waiting_for_cleanup() 
     });
 }
 
+#[test]
+fn runner_phase_completion_preparation_abort_precedes_owned_workload_cleanup() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    struct PreparedWorkload {
+        invocation: workloads::session::TaskInvocation,
+        peer_aborted: std::sync::mpsc::Receiver<()>,
+        cancellations: Arc<AtomicUsize>,
+    }
+    impl workloads::WorkloadSession for PreparedWorkload {
+        fn invocation(&self) -> &workloads::session::TaskInvocation {
+            &self.invocation
+        }
+        fn evaluation_kind(&self) -> &'static str {
+            "bundled-fixture"
+        }
+        fn baseline_passed(&self) -> Option<bool> {
+            Some(false)
+        }
+        fn evaluate(&mut self, _: &str) -> Result<workloads::Evaluation, String> {
+            panic!("aborted preparation cannot grade");
+        }
+        fn cancel_prepared(&mut self) -> Result<(), String> {
+            self.cancellations.fetch_add(1, Ordering::SeqCst);
+            self.peer_aborted
+                .recv_timeout(Duration::from_secs(2))
+                .expect("peer must observe abort before workload cancellation waits");
+            Err("fixture uncertain preparation cleanup".into())
+        }
+        fn finish(&mut self) -> Result<workloads::session::ResourceSettlement, String> {
+            panic!("aborted preparation cannot authorize normal destructive close");
+        }
+    }
+    for kind in ["input", "io", "run"] {
+        let gate = batch::Gate::new(2, None, Duration::from_secs(10)).unwrap();
+        let (sent, received) = std::sync::mpsc::channel();
+        let count = Arc::new(AtomicUsize::new(0));
+        let mut workload = PreparedWorkload {
+            invocation: workloads::session::TaskInvocation {
+                identity: workloads::TaskIdentity::local("fixture", None),
+                input: "private fixture".into(),
+                workspace: PathBuf::new(),
+            },
+            peer_aborted: received,
+            cancellations: count.clone(),
+        };
+        std::thread::scope(|scope| {
+            let mut arrival = Some(
+                gate.register(replica::Identity { index: 1, total: 2 })
+                    .unwrap(),
+            );
+            let mut peer = gate
+                .register(replica::Identity { index: 2, total: 2 })
+                .unwrap();
+            let peer = scope.spawn(move || {
+                let error = peer
+                    .ready(crate::cassette::Compatibility {
+                        agent: "fixture".into(),
+                        provider: "fixture".into(),
+                        model: "fixture".into(),
+                        workload: "fixture".into(),
+                        task: "fixture".into(),
+                        dataset_sha256: None,
+                        prompt_sha256: "a".repeat(64),
+                        material_sha256: "b".repeat(64),
+                        protocol_sha256: None,
+                    })
+                    .unwrap_err()
+                    .to_string();
+                assert!(error.contains("primary preparation failure"));
+                sent.send(()).unwrap();
+            });
+            let primary = match kind {
+                "input" => Error::Input("primary preparation failure".into()),
+                "io" => Error::Io("primary preparation failure".into()),
+                _ => Error::Run("primary preparation failure".into()),
+            };
+            let error =
+                super::super::attempt::cancel_prepared(primary, &mut arrival, &mut workload);
+            assert!(matches!(
+                (&error, kind),
+                (Error::Input(_), "input") | (Error::Io(_), "io") | (Error::Run(_), "run")
+            ));
+            assert!(error.to_string().starts_with("primary preparation failure"));
+            assert!(
+                error
+                    .to_string()
+                    .contains("fixture uncertain preparation cleanup")
+            );
+            peer.join().unwrap();
+        });
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+    }
+}
+
 fn repeated_provider_finish_child(
     case: &str,
     root: &Path,
@@ -1643,6 +1808,7 @@ fn full_entry_child(case: &str) {
         started: AtomicUsize,
         completed: AtomicUsize,
         fail: bool,
+        lifetime: Option<PathBuf>,
     }
     impl replica::CompletionObserver for Observer {
         fn starting(
@@ -1654,6 +1820,9 @@ fn full_entry_child(case: &str) {
             Ok(())
         }
         fn completed(&self, _: replica::Identity, record: &Path) -> Result<(), Error> {
+            if let Some(root) = &self.lifetime {
+                entry_test_support::assert_workload_owner_live(root);
+            }
             assert!(record.is_file());
             self.completed.fetch_add(1, Ordering::SeqCst);
             if self.fail {
@@ -1666,6 +1835,8 @@ fn full_entry_child(case: &str) {
         }
     }
     let artifact_case = case.starts_with("artifact-loss-");
+    let phase_case = case.starts_with("phase-");
+    let phase_continuation = phase_case && (case.contains("-repeat-") || case.contains("-sweep-"));
     let provider_case = case.starts_with("provider-");
     let disposition_case = case.starts_with("disposition-");
     let publication_case = case.contains("publication-");
@@ -1689,16 +1860,18 @@ fn full_entry_child(case: &str) {
     std::fs::create_dir(root.join("workloads")).unwrap();
     workloads::populate(&root.join("workloads")).unwrap();
     let mini_swe_case = case == "capture-mini-swe-read-failure";
-    let agent_id = if mini_swe_case || artifact_case {
+    let agent_id = if mini_swe_case || artifact_case || (phase_case && !phase_continuation) {
         "mini-swe"
     } else {
         "pi"
     };
-    let agent = root.join(if mini_swe_case || artifact_case {
-        "tools/mini-swe/bin/mini"
-    } else {
-        "tools/pi/bin/pi"
-    });
+    let agent = root.join(
+        if mini_swe_case || artifact_case || (phase_case && !phase_continuation) {
+            "tools/mini-swe/bin/mini"
+        } else {
+            "tools/pi/bin/pi"
+        },
+    );
     std::fs::create_dir_all(agent.parent().unwrap()).unwrap();
     let counter = root.join("agent-executions");
     let quoted_counter = counter.to_string_lossy().replace('\'', "'\\''");
@@ -1714,6 +1887,7 @@ fn full_entry_child(case: &str) {
     let row = serde_json::json!({"request":{"method":"POST","url":"/v1/chat/completions","body":body.to_string()},"response":{"status":200,"headers":{"content-type":"application/json"},"body":response_body}});
     std::fs::write(&cassette, format!("{row}\n")).unwrap();
     if artifact_case
+        || phase_case
         || provider_case
         || capture_case
         || termination_case
@@ -1766,9 +1940,9 @@ fn full_entry_child(case: &str) {
             format!("process.exitCode={exit};")
         };
         std::fs::write(&agent, format!("#!{}\nrequire('node:fs').appendFileSync({counter_js},'called\\n');fetch(process.env.OPENAI_BASE_URL+'/chat/completions',{{method:'POST',headers:{{'content-type':'application/json'}},body:JSON.stringify({body})}}).then(async r=>{{if(!r.ok)throw new Error('fixture request failed');await r.text();{capture_js}console.log(JSON.stringify({response}));{ending}}}).catch(()=>{{process.exitCode=9;}});\n", node.display())).unwrap();
-        if artifact_case {
+        if artifact_case || (phase_case && !phase_continuation) {
             let trajectory = serde_json::json!({"trajectory_format":"mini-swe-agent-1.1", "info":{"model_stats":{"api_calls":4}},
-                "messages":[{"role":"assistant","content":"src/cli.py src/registry.py lookup",
+                "messages":[{"role":"assistant","content":answer,
                 "extra":{"response":{"usage":{"prompt_tokens":13,"completion_tokens":21}}}}]});
             std::fs::write(&agent, format!("#!{}\nconst fs=require('node:fs');fs.appendFileSync({counter_js},'called\\n');const out=process.argv[process.argv.indexOf('--output')+1];fs.writeFileSync(out,JSON.stringify({trajectory}));fetch(process.env.OPENAI_BASE_URL+'/chat/completions',{{method:'POST',headers:{{'content-type':'application/json'}},body:JSON.stringify({body})}}).then(async r=>{{if(!r.ok)throw Error('fixture replay');await r.text();}}).catch(()=>{{process.exitCode=9;}});\n", node.display())).unwrap();
         }
@@ -1862,7 +2036,9 @@ fn full_entry_child(case: &str) {
         repeated_provider_finish_child(case, &root, &config_path, config, &cassette);
         return;
     }
-    let blocked_log = artifact_case || case.starts_with("blocked-log");
+    let blocked_log = artifact_case
+        || case.starts_with("blocked-log")
+        || (phase_case && case.contains("blocked-log"));
     if blocked_log {
         std::fs::create_dir(root.join("run.jsonl")).unwrap();
     }
@@ -1882,7 +2058,9 @@ fn full_entry_child(case: &str) {
     let _capture_scope = case
         .contains("read-failure")
         .then(super::capture::test_support::Scope::read_failure);
-    let _scope = if artifact_case {
+    let _scope = if phase_case {
+        entry_test_support::Scope::phase(&root, calls.clone(), case)
+    } else if artifact_case {
         entry_test_support::Scope::artifact(&root, calls.clone(), !case.ends_with("disabled"))
     } else if disposition_case || capture_case || termination_case {
         entry_test_support::Scope::disposition(&root, calls.clone(), case)
@@ -1904,19 +2082,32 @@ fn full_entry_child(case: &str) {
         started: AtomicUsize::new(0),
         completed: AtomicUsize::new(0),
         fail: case.starts_with("observer-"),
+        lifetime: case.contains("owner-lifetime").then(|| root.clone()),
     };
     struct Presentation {
         bytes: Vec<u8>,
         fail_result: bool,
         fail_warning: bool,
+        fail_stopped_warning: bool,
         summary_done: bool,
         writes: usize,
         failures: usize,
+        lifetime: Option<Rc<RefCell<Vec<&'static str>>>>,
     }
     impl Write for Presentation {
         fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            if let Some(calls) = &self.lifetime {
+                assert!(
+                    !calls.borrow().contains(&"workload-drop"),
+                    "owner must survive final presentation"
+                );
+            }
             self.writes += 1;
-            if self.fail_result || (self.fail_warning && self.summary_done) {
+            if self.fail_result
+                || (self.fail_warning && self.summary_done)
+                || (self.fail_stopped_warning
+                    && bytes.starts_with(b"Warning: workload resources were stopped and preserved"))
+            {
                 self.failures += 1;
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::BrokenPipe,
@@ -1931,15 +2122,39 @@ fn full_entry_child(case: &str) {
             Ok(())
         }
     }
+    impl PhaseOutput for Presentation {
+        fn observed_bytes(&self) -> &[u8] {
+            &self.bytes
+        }
+    }
     let mut output = Presentation {
         bytes: Vec::new(),
         fail_result: case == "blocked-log-broken-output"
             || (disposition_case && case.contains("output")),
         fail_warning: case == "observer-warning-writer",
+        fail_stopped_warning: case.starts_with("phase-warning-"),
         summary_done: false,
         writes: 0,
         failures: 0,
+        lifetime: case.contains("owner-lifetime").then(|| calls.clone()),
     };
+    if phase_case && (case.contains("-repeat-") || case.contains("-sweep-")) {
+        std::mem::forget(fixture);
+        check_phase_continuation(
+            case,
+            &root,
+            config,
+            &cassette,
+            &counter,
+            &calls,
+            &mut output,
+        );
+        assert_eq!(
+            output.failures, 1,
+            "only the post-grade stopped warning fails"
+        );
+        return;
+    }
     let _publication_fault = publication_case.then(|| publication::prepare(case, &root));
     let cohort = measurements::ExecutionCohort {
         id: workloads::TaskIdentity::local("execution-cohort", None).attempt_id,
@@ -1947,15 +2162,23 @@ fn full_entry_child(case: &str) {
         admitted_slots: vec![1],
     };
     let options = RunOptions {
-        json: !(disposition_case && case.contains("output")),
+        json: !(case.starts_with("phase-warning-")
+            || (disposition_case && case.contains("output"))),
         show_output: disposition_case && case.contains("output"),
         mode: Some(tape::Mode::Replay),
         cassette: Some(cassette.to_str().unwrap()),
         on_completion: Some(&observer),
         execution_cohort: (provider_case || disposition_case || capture_case || termination_case)
             .then_some(&cohort),
+        measurement_dir: (case == "phase-removed-cwd").then_some("../measurements"),
         ..Default::default()
     };
+    if case == "phase-removed-cwd" {
+        let cwd = root.join("empty-cwd");
+        std::fs::create_dir(&cwd).unwrap();
+        // This function runs only in the isolated libtest subprocess.
+        std::env::set_current_dir(cwd).unwrap();
+    }
     #[cfg(target_os = "linux")]
     let _observation_fault = case
         .contains("observation-fault")
@@ -1967,6 +2190,21 @@ fn full_entry_child(case: &str) {
         &mut output,
         &Mutex::new(BTreeSet::new()),
     );
+    if phase_case {
+        // Preserve the owned red fixture and raw/frozen artifact evidence even
+        // when the publication assertions fail. No host namespace is touched.
+        std::mem::forget(fixture);
+        check_phase_completion(
+            case,
+            &root,
+            result,
+            &calls,
+            &counter,
+            observer.completed.load(Ordering::SeqCst),
+            output.failures,
+        );
+        return;
+    }
     if termination_case {
         let summary: serde_json::Value = serde_json::from_slice(&output.bytes).unwrap();
         let measured: serde_json::Value =
@@ -2506,6 +2744,326 @@ fn full_entry_child(case: &str) {
             "never replace the blocking user directory"
         );
     }
+}
+
+fn check_phase_completion(
+    case: &str,
+    root: &Path,
+    result: Result<(), Error>,
+    calls: &Rc<RefCell<Vec<&'static str>>>,
+    counter: &Path,
+    completed: usize,
+    output_failures: usize,
+) {
+    if case.contains("runtime-error") {
+        let error = result.unwrap_err().to_string();
+        assert!(
+            error.starts_with("fixture started execution failed"),
+            "{error}"
+        );
+        if case.contains("provider") {
+            assert!(error.contains("provider cleanup failed"), "{error}");
+        }
+        assert_eq!(
+            calls.borrow().as_slice(),
+            ["execute-entered", "workload-drop", "provider-finish"]
+        );
+        assert!(!counter.exists());
+        assert!(!root.join("workspace/phase-grade.json").exists());
+        assert!(!root.join("run.jsonl").exists());
+        assert!(!root.join("measurements/run.json").exists());
+        assert!(!root.join(".asb-completions").exists());
+        assert_eq!(completed, 0);
+        return;
+    }
+    if case.contains("prepare-workload-end") {
+        let error = result.unwrap_err().to_string();
+        assert!(error.contains("PhaseEnd(WorkloadPreparation)"), "{error}");
+        if case.contains("provider") {
+            assert!(error.contains("provider cleanup failed"), "{error}");
+        }
+        assert_eq!(
+            calls.borrow().as_slice(),
+            ["cancel-prepared", "provider-finish"]
+        );
+        assert!(!counter.exists());
+        assert!(!root.join("workspace/phase-grade.json").exists());
+        assert!(!root.join("run.jsonl").exists());
+        assert!(!root.join("measurements/run.json").exists());
+        assert!(!root.join(".asb-completions").exists());
+        assert_eq!(completed, 0);
+        assert_eq!(output_failures, 0);
+        return;
+    }
+    let grade: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(root.join("workspace/phase-grade.json")).unwrap())
+            .unwrap();
+    assert_eq!(grade["status"], "completed");
+    if case.contains("native") {
+        assert!(grade["resolution"].is_null());
+        assert_eq!(grade["rewards"]["accuracy"], 0.5);
+    } else {
+        assert_eq!(grade["resolution"], !case.contains("false"));
+    }
+    let expected: &[&str] = if case.contains("owner-lifetime") {
+        &["evaluate", "finish", "provider-finish", "workload-drop"]
+    } else {
+        &["evaluate", "finish", "provider-finish"]
+    };
+    assert_eq!(calls.borrow().as_slice(), expected);
+    assert_eq!(std::fs::read_to_string(counter).unwrap(), "called\n");
+    assert_eq!(
+        output_failures,
+        usize::from(case.starts_with("phase-warning-"))
+    );
+    let runs = replica::runtime_path(&root.join("workspace")).join("runs");
+    let attempts: Vec<_> = std::fs::read_dir(runs)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    assert_eq!(attempts.len(), 1);
+    let frozen = attempts[0].join("mini-swe/frozen-trajectory.json");
+    let log = root.join("run.jsonl");
+    let measured = root.join("measurements/run.json");
+    eprintln!(
+        "phase completion evidence: case={case} root={} grade={grade} calls={:?} result={result:?} log={} measurements={} handoff={} raw={}",
+        root.display(),
+        calls.borrow(),
+        log.is_file(),
+        measured.is_file(),
+        frozen.is_file(),
+        attempts[0].join("mini-swe/trajectory.json").is_file()
+    );
+    let blocked_log = case.contains("blocked-log");
+    assert!(
+        (log.is_file() || (blocked_log && log.is_dir())) && measured.is_file() && frozen.is_file(),
+        "post-grade failure must not bypass independent log/measurement publication or artifact handoff"
+    );
+    for path in [(!blocked_log).then_some(log), Some(measured)]
+        .into_iter()
+        .flatten()
+    {
+        let record: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        assert_eq!(
+            record["process_termination"],
+            if case.contains("observation-fault") {
+                serde_json::Value::Null
+            } else {
+                serde_json::json!({"kind":"code","code":0})
+            }
+        );
+        assert_eq!(
+            record.get("process_termination_diagnostic").is_some(),
+            case.contains("observation-fault")
+        );
+        assert_eq!(record["benchmark_outcome"]["evaluation"], grade);
+        assert_eq!(record["workload_success"], grade["resolution"]);
+        assert_eq!(record["token_usage"]["total_tokens"], 34);
+        assert_eq!(record["steps"], 4);
+        assert_eq!(
+            record["workload_resource_disposition"],
+            if case.starts_with("phase-warning-") {
+                "stopped-preserved"
+            } else {
+                "not-required"
+            }
+        );
+        if case.starts_with("phase-warning-") {
+            assert!(
+                record["stderr"]
+                    .as_str()
+                    .is_none_or(|stderr| stderr.contains("ASB presentation error"))
+            );
+        }
+    }
+    if case.starts_with("phase-warning-") {
+        assert!(matches!(&result, Err(Error::Io(_))), "{result:?}");
+        let error = result.as_ref().unwrap_err().to_string();
+        assert!(
+            error.contains("combined fixture presentation closed"),
+            "{error}"
+        );
+        if case.contains("false") {
+            assert!(
+                error.starts_with(&format!(
+                    "workload check failed: {}",
+                    grade["reason"].as_str().unwrap()
+                )),
+                "{error}"
+            );
+        }
+        if blocked_log {
+            assert!(error.contains("run log publication failed"), "{error}");
+            assert!(error.contains("measurement finalization failed"), "{error}");
+            assert!(error.contains("provider cleanup failed"), "{error}");
+            assert!(
+                error.find("run log publication failed").unwrap()
+                    < error.find("measurement finalization failed").unwrap()
+            );
+        }
+    } else {
+        assert!(result.is_ok(), "{result:?}");
+    }
+    let expect_private_outcome = !case.contains("provider") && !blocked_log;
+    assert_eq!(completed, usize::from(expect_private_outcome));
+    if !expect_private_outcome {
+        assert!(!root.join(".asb-completions").exists());
+        return;
+    }
+    let outcomes: Vec<_> = std::fs::read_dir(root.join(".asb-completions"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    assert_eq!(outcomes.len(), 1);
+    let outcome: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&outcomes[0]).unwrap()).unwrap();
+    assert_eq!(outcome["scope"], "task-outcome-not-yet-a-resume-receipt");
+    assert_eq!(outcome["summary"]["benchmark_outcome"]["evaluation"], grade);
+    assert_eq!(
+        outcome["summary"]["process_termination"],
+        if case.contains("observation-fault") {
+            serde_json::Value::Null
+        } else {
+            serde_json::json!({"kind":"code","code":0})
+        }
+    );
+    assert_eq!(
+        outcome["summary"]
+            .get("process_termination_diagnostic")
+            .is_some(),
+        case.contains("observation-fault")
+    );
+    // A reporting-only outcome is not a sweep checkpoint/resume receipt. Actual
+    // repeated/sweep validation remains a separate matrix for the repair.
+    assert!(!root.join(".checkpoint").exists());
+}
+
+trait PhaseOutput: Write {
+    fn observed_bytes(&self) -> &[u8];
+}
+
+fn check_phase_continuation(
+    case: &str,
+    root: &Path,
+    config: BenchmarkConfig,
+    cassette: &Path,
+    counter: &Path,
+    calls: &Rc<RefCell<Vec<&'static str>>>,
+    output: &mut dyn PhaseOutput,
+) {
+    let config_path = root.join("benchmark.toml");
+    let log;
+    if case.contains("-repeat-") {
+        let error = super::super::repeated::run(
+            &config_path,
+            config,
+            2,
+            RunOptions {
+                mode: Some(tape::Mode::Replay),
+                cassette: Some(cassette.to_str().unwrap()),
+                ..Default::default()
+            },
+            output,
+            &Mutex::new(BTreeSet::new()),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("stopped further admission"), "{error}");
+        let campaigns: Vec<_> = std::fs::read_dir(root.join("results/asb-executions"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect();
+        assert_eq!(campaigns.len(), 1);
+        let campaign = &campaigns[0];
+        assert!(!campaign.join("batch-2").exists());
+        let finished: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(campaign.join("finished.json")).unwrap())
+                .unwrap();
+        assert_eq!(finished["stopped"], true);
+        log = campaign.join("batch-1/run.jsonl");
+        let private: Vec<_> = std::fs::read_dir(campaign.join("batch-1/.asb-completions"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect();
+        assert_eq!(private.len(), 1, "reporting-only outcome still published");
+        let outcome: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&private[0]).unwrap()).unwrap();
+        assert_eq!(outcome["scope"], "task-outcome-not-yet-a-resume-receipt");
+    } else {
+        let manifest = root.join("sweep.toml");
+        std::fs::write(&manifest, "configs=['benchmark.toml']\n").unwrap();
+        let tapes = root.join("tapes");
+        let directory = tapes.join("000-benchmark/cassettes");
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::copy(
+            cassette,
+            directory.join(default_cassette(&config_path, &config).file_name().unwrap()),
+        )
+        .unwrap();
+        let options = crate::sweep::Options {
+            mode: Some(tape::Mode::Replay),
+            cassette_root: Some(&tapes),
+            ..Default::default()
+        };
+        let error = crate::sweep::run_with_options(manifest.to_str().unwrap(), options, output)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("presentation closed"), "{error}");
+        let results = root.join("sweep-results");
+        log = results.join("000-benchmark/run.log");
+        let before = std::fs::read(&log).unwrap();
+        // Actual existing validation accepts a completed, confirmed grade even
+        // after presentation failure. This is not permission to run another client.
+        assert!(
+            results.join(".checkpoint/completed/000000.json").is_file(),
+            "sweep continuation evidence: {}",
+            String::from_utf8_lossy(output.observed_bytes())
+        );
+        let mut reused_output = Vec::new();
+        let historical_failure = crate::sweep::run_with_options(
+            manifest.to_str().unwrap(),
+            crate::sweep::Options {
+                resume: true,
+                ..options
+            },
+            &mut reused_output,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            historical_failure.contains("reused benchmark outcome"),
+            "{historical_failure}"
+        );
+        assert!(
+            String::from_utf8(reused_output)
+                .unwrap()
+                .contains("Reused completed task")
+        );
+        assert_eq!(std::fs::read(&log).unwrap(), before);
+    }
+    let record: serde_json::Value = serde_json::from_slice(&std::fs::read(&log).unwrap()).unwrap();
+    assert_eq!(record["status"], "failed");
+    assert_eq!(record["workload_resource_disposition"], "stopped-preserved");
+    assert_eq!(record["benchmark_outcome"]["cleanup_confirmed"], true);
+    assert_eq!(
+        record["benchmark_outcome"]["evaluation"]["status"],
+        "completed"
+    );
+    if case.contains("native") {
+        assert!(record["workload_success"].is_null());
+        assert_eq!(
+            record["benchmark_outcome"]["evaluation"]["rewards"]["accuracy"],
+            0.5
+        );
+    } else {
+        assert_eq!(record["workload_success"], !case.contains("false"));
+    }
+    assert_eq!(std::fs::read_to_string(counter).unwrap(), "called\n");
+    assert_eq!(
+        calls.borrow().as_slice(),
+        ["evaluate", "finish", "provider-finish"]
+    );
 }
 
 fn check_unmeasured_capture_sweep(

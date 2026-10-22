@@ -1,6 +1,5 @@
 use super::*;
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -10,23 +9,9 @@ fn gate_command_preserves_explicit_argument_environment_and_removal_contracts() 
         .join("../../target/gate-fixtures")
         .join(crate::workloads::TaskIdentity::local("fixture", None).attempt_id);
     fs::create_dir_all(&root).unwrap();
-    let gate = root.join("mock-gate");
-    fs::write(
-        &gate,
-        r#"#!/bin/sh
-[ "$1" = __asb-gate ] || exit 11
-[ "$2" = --asb-launch-v1 ] || exit 12
-[ "$3" = 0 ] || exit 13
-[ "$4" = fixture-client ] || exit 14
-[ "$5" = 'argument with spaces' ] || exit 15
-[ "$6" = 'literal;$value' ] || exit 16
-[ "$ASB_GATE_FIXTURE" = 'explicit-value' ] || exit 17
-[ -z "${HOME+x}" ] || exit 18
-printf 'fixture gate accepted\n'
-"#,
-    )
-    .unwrap();
-    fs::set_permissions(&gate, fs::Permissions::from_mode(0o700)).unwrap();
+    // Never open an executable fixture for writing alongside parallel forks:
+    // even CLOEXEC writers can briefly survive until another child's exec.
+    let gate = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/mock-process-gate.sh");
     let mut launch = crate::launch::ProcessLaunch::new("fixture-client");
     launch.arg("argument with spaces").arg("literal;$value");
     let (mut command, _) = launch.native(Some(&gate));

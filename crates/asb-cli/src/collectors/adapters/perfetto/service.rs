@@ -575,7 +575,7 @@ else:
     fn fixture(root: &Path) -> PathBuf {
         fs::create_dir_all(root).unwrap();
         let executable = root.join("tracebox-fixture");
-        fs::write(&executable, MOCK).unwrap();
+        crate::write_test_file(root, &executable, MOCK).unwrap();
         fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
         executable
     }

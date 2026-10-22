@@ -640,3 +640,30 @@ are terminal0. All handles are terminal; logs are
 and matching `before/after.sha256` files. Original failed setup/RED/development
 logs and raw namespaces remain intact. Source is frozen for independent final
 review; no full-suite/current-stack/release claim, version bump, push or PR.
+
+## Fair46/runner45 integration, source-only staged47
+
+Normal signed merge of independently qualified91c3eb23 adds the complete
+reviewed runner45/fair46/PR310 fixture stack while preserving this material
+checkpoint's immutable RED/focused117/focused120 history and frozen838 actual.
+Staged version0.2.47 is coordinated provisionally for the next material patch;
+no delivery slot, actual-main ancestry or release is claimed yet.
+
+Two real conflicts were old material-parent copies of the shared reaper source
+and its tests versus the already reviewed fair46 replacement. Each hunk retains
+the incoming fair nonblocking rounds, exact-child targeted observation hook,
+all original five and both fairness tests. These two resolved files are
+byte-identical to91c3eb23; no material-specific reaper edits are lost. lib.rs
+automatically combines the private Linux library-only material guardian with
+incoming fixture-writer/owned-FD wiring, never importing the library owner into
+independent integration harnesses. All other material/controller/gate/Python/
+guardian source and owning tests remain byte-identical to reviewed3ee56b03.
+
+Against91c3eb23, only the reviewed material files, its document, private lib.rs
+guardian declaration and the two47 version fields differ. Incoming runner,
+recording, optional termination, installer, report, fixture and fair-reaper
+contracts outside those intended paths remain byte-identical. No build/runtime
+has run on this combined source; historical120 focused passes are not current-
+stack qualification. Independent integration-source review precedes any new
+actual-first/frozen build/focus/full. All preserved evidence/cache copies are
+unchanged; no other cache, PR, push or tag is touched.
