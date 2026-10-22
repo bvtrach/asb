@@ -24,9 +24,11 @@ tracepoint:sched:sched_process_exit /@socket_operation_start[tid]/ {
 }
 
 interval:s:1 {
+  printf("ASB_BPFTRACE_SNAPSHOT %llu\n", nsecs(monotonic));
   print(@asb_socket_calls);
   print(@asb_socket_elapsed_total_ns);
   print(@asb_socket_elapsed_max_ns);
   print(@asb_socket_failed_calls);
   print(@asb_socket_incomplete_calls);
+  printf("ASB_BPFTRACE_SNAPSHOT_END\n");
 }

@@ -204,11 +204,17 @@ ASB is deliberately split into a small CLI and a file-backed workload directory:
   defaults to 1000 ms; pidstat rounds sub-second requests to whole seconds,
   while perf supports millisecond periods. Comparisons emit line SVGs for
   series with at least two points and expose the same hover, zoom, pan, reset,
-  and enlarge controls as bar charts. Built-in BPFTrace profiles remain
-  bounded cumulative one-second snapshots and final aggregates (custom
-  interval programs may add series). Their legacy arrays have no measured
-  timestamps and are sample-indexed, not qualified aligned clock series;
-  sparse per-CPU maps must not be assumed synchronized by array index.
+  and enlarge controls as bar charts. Built-in BPFTrace profiles emit bounded
+  cumulative one-second map groups, each framed by a kernel
+  `nsecs(monotonic)` timestamp. Per-metric series retain the actual shared-clock
+  offsets from the execution-start event in milliseconds; sparse keys have
+  their own timestamps and are never zero-padded or aligned by array index.
+  Preparation/post-execution groups are excluded from series. Final unframed
+  maps still supply scalar aggregates, not invented final timestamp samples.
+  Legacy/custom output without timestamp frames remains aggregate-only.
+  Timing sidecars disclose missing clocks/observations and asynchronous map
+  printing: a callback timestamp is not an atomic counter snapshot. This
+  follows the [pinned bpftrace clock and print semantics](https://github.com/bpftrace/bpftrace/blob/v0.20.2/docs/reference_guide.md).
   Perfetto retains its timestamped
   trace. Process-attached collector processes stop at the agent-execution
   boundary (also on run failure), before grading. Report processing/export

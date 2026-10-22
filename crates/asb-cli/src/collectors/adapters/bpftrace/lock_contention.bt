@@ -18,7 +18,9 @@ tracepoint:lock:contention_end /@asb_lock_start[tid]/ {
 
 // Emit cumulative interval samples without clearing the final aggregate maps.
 interval:s:1 {
+  printf("ASB_BPFTRACE_SNAPSHOT %llu\n", nsecs(monotonic));
   print(@asb_lock_contention_events);
   print(@asb_lock_contention_total_ns);
   print(@asb_lock_contention_max_ns);
+  printf("ASB_BPFTRACE_SNAPSHOT_END\n");
 }
