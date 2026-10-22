@@ -1,8 +1,9 @@
 # Installer helper-loss fixture ownership
 
 This owning installer49 test-only follow-up starts from4bd17fde. It does not
-include custom-publication source or its changed project-log policy. The old
-failure-action secret-in-install.log assertion is unchanged.
+include custom-publication source or its changed project-log policy. The
+initial helper-targeting checkpoint left the old failure-action assertion
+unchanged; the separately reviewed correction below follows actual49 evidence.
 
 Custom publication focus exposed a later helper-loss assertion failure:
 the fake installer killed its immediate parent with getppid, which is no
@@ -60,7 +61,7 @@ Fresh actual-FIRST and complete fixture qualification remain required.
 The next complete direct fixture stopped safely before signalling: no helper
 matched the exact normalized path spellings (target/helper49-final-ancestry.log).
 One root-authorized persistent own-ancestry diagnostic then demonstrated the
-actual arguments retain root/\. and root/\./.asb-tools. This is equivalent path
+actual arguments retain `root/.` and `root/./.asb-tools`. This is equivalent path
 identity, not a private protocol change. In its five-node chain the real
 installer275030 had inner guardian275028, distinct from helper275017, outer
 guardian275015 and our TUI274996. Exact bounded argv/cwd/image/starttime evidence
@@ -75,3 +76,34 @@ unchanged, together with the existing starttime/parent/cwd/image checks. The
 printed benign evidence includes actual argv and explicitly asserts principal
 parent differs from helper. No production path is rewritten or canonicalized.
 This source correction is not yet a passing runtime claim.
+
+## Final owning49 focused qualification
+
+Source e6cc2a90 was built FIRST from this checkout in its NEW exclusive HOME
+target, seeded only from verified-idle own custom debug. The source custom cache
+was not changed. Copied52 artifacts were not executed as49 qualification.
+Cargo JSON selected actual ASB and both owning test executables. Actual/frozen
+SHA256 before runtime, after both targets and after strict gates is:
+54ccb286616b56ae43b9a6fbf69e035e1c9f3f3a9d877d9b165caf07a01f490d.
+Frozen image: target/qualification/helper49-alias-asb. Manifest -c passed.
+
+The complete direct Python TUI fixture passed with its actual ancestry printed
+in target/helper49-alias-ancestry.log: principal297654 had inner guardian297652,
+distinct from confirmed image-matched helper297637; outer guardian297635 led
+to our TUI297632. Exact argv retained both dot path spellings. The pidfd-targeted
+helper loss produced required missing-final status, and all existing descendant
+quiescence/write-stop, sentinel, termios, selection and secret checks passed.
+
+Sequential exact Cargo JSON executables then ran complete owning targets:
+tui_install2PASS/0FAIL/0ignored5.00s and tui_terminal2/0/0 in1.17s. These counts
+include each target's unchanged isolated-environment support test; they are not
+counts of unique inner Python scenarios. Both complete runs include the earlier
+failure-summary/private0600 capture assertions. No generic failure alternative,
+retry, skipped action or production change was introduced.
+
+Strict locked/offline workspace/all-target/all-feature Clippy(-Dwarnings)
+passed17.23s. Fmt and diff checks passed separately; source tree was clean before
+this proof-only update. Logs/manifests use target/helper49-alias-*; original
+first failures and both persistent diagnostic namespaces remain untouched.
+This is focused Linux owning49 evidence only: no full suite, current-main
+qualification, custom52 qualification, push, PR, release or version claim.
