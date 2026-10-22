@@ -138,14 +138,14 @@ esac
         // Both scope.finish and owner.consume completed before status/output
         // interpretation. No direct-child exit substitutes for tree proof.
         assert!(
-            output.status().success(),
+            output.status.success(),
             "{case}: {}\n{}; retained {}",
-            String::from_utf8_lossy(output.stdout()),
-            String::from_utf8_lossy(output.stderr()),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
             self.0.display()
         );
         assert!(
-            String::from_utf8_lossy(output.stdout())
+            String::from_utf8_lossy(&output.stdout)
                 .lines()
                 .any(|line| {
                     line.starts_with("test result: ok. 1 passed; 0 failed; 0 ignored;")
