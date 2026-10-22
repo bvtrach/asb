@@ -16,25 +16,29 @@ env:
 
 jobs:
   checks:
-    runs-on: [self-hosted, Linux, X64, asb-local-ci]
+    # `asb-main-ci` is assigned only to the provisioned ASB runner, so an
+    # unrelated generic self-hosted runner cannot claim this toolchain gate.
+    runs-on: [self-hosted, Linux, X64, asb-main-ci]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - uses: actions/setup-python@v7
-        with:
-          python-version: '3.12'
+      # The dedicated runner provisions the supported host Python. Do not
+      # prepend Actions' toolcache interpreter: native gate fixtures execute
+      # the host toolchain and must retain its matching runtime libraries.
       - name: Check formatting
         run: cargo fmt --all -- --check
+      - name: Build
+        run: cargo build --locked
       - name: Run tests
-        run: cargo test --locked
+        # The suite owns real process trees and filesystem fixtures. Run every
+        # test, but do not overlap those host-level fixture lifecycles.
+        run: cargo test --locked -- --test-threads=1
       - name: Check Clippy
         run: cargo clippy --locked --all-targets --all-features -- -D warnings
       - name: Test checkout updates
         run: python3 scripts/test_update_checkout.py
-      - name: Build
-        run: cargo build --locked
       - name: Remove test-generated workspace files
         run: rm -f crates/asb-cli/.asb/install.log
       - name: Verify package
@@ -114,12 +118,12 @@ jobs:
         run: cargo clippy --locked --all-targets --all-features -- -D warnings
       - name: Check formatting
         run: cargo fmt --all -- --check
+      - name: Build
+        run: cargo build --locked
       - name: Run tests
         run: cargo test --locked
       - name: Test checkout updates
         run: python3 scripts/test_update_checkout.py
-      - name: Build
-        run: cargo build --locked
       - name: Remove test-generated workspace files
         run: rm -f crates/asb-cli/.asb/install.log
       - name: Verify package
