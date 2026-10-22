@@ -64,38 +64,52 @@ def session(binary, root, arguments, keys, path="/usr/bin:/bin", checkpoints=())
         if "LLVM_PROFILE_FILE" in os.environ:
             environment["LLVM_PROFILE_FILE"] = os.environ["LLVM_PROFILE_FILE"]
         os.execve(binary, [binary, *arguments], environment)
+    return drive_session(master, pid, keys, checkpoints)
+
+
+def drive_session(master, pid, keys, checkpoints=(), *, status=None, read_size=65536):
+    """Own/reap the child and drain its PTY through EOF, not merely exit."""
     transcript = bytearray()
     deadline = time.monotonic() + 15
     sent = False
-    status = None
+    eof = False
     screen = Screen()
     pending = iter(checkpoints)
     checkpoint = next(pending, None)
     try:
         fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
         while time.monotonic() < deadline:
-            if select.select([master], [], [], .05)[0]:
+            if not eof and select.select([master], [], [], .05)[0]:
                 try:
-                    chunk = os.read(master, 65536)
+                    chunk = os.read(master, read_size)
                 except OSError as error:
                     if error.errno != errno.EIO:
                         raise
                     chunk = b""
+                eof = not chunk
                 transcript.extend(chunk)
                 screen.feed(chunk)
                 if not sent and b"ASB" in transcript and b"Space" in transcript:
-                    os.write(master, keys)
+                    if keys:
+                        os.write(master, keys)
                     sent = True
                 elif sent and checkpoint and screen.contains(checkpoint[0]):
                     _, next_keys, inspect = checkpoint
                     inspect()
                     os.write(master, next_keys)
                     checkpoint = next(pending, None)
-            found, value = os.waitpid(pid, os.WNOHANG)
-            if found:
-                status = value
+            if status is None:
+                found, value = os.waitpid(pid, os.WNOHANG)
+                if found:
+                    status = value
+            if status is not None and eof:
                 break
+            if eof:
+                # EOF can precede waitpid readiness. Do not spin on repeated
+                # EIO, and do not extend the original absolute deadline.
+                time.sleep(.005)
         assert status is not None, f"TUI exceeded bounded deadline: {bytes(transcript[-3000:])!r}"
+        assert eof, f"TUI exited without PTY EOF before deadline: {bytes(transcript[-3000:])!r}"
         assert sent, f"TUI did not draw its landing screen: {bytes(transcript)!r}"
         assert checkpoint is None, f"TUI exited before checkpoint: {checkpoint[0]!r}"
         assert b"\x1b[?1049h" in transcript, "must enter alternate screen"
@@ -108,6 +122,34 @@ def session(binary, root, arguments, keys, path="/usr/bin:/bin", checkpoints=())
             os.kill(pid, signal.SIGKILL)
             os.waitpid(pid, 0)
         os.close(master)
+
+
+def reaped_child_tail_regression():
+    """Real PTY: child exit precedes every tiny read of its queued final tail."""
+    payload = b"\x1b[?1049hASB Space " + b"queued tail " * 8 + b"\x1b[?1049l"
+    pid, master = pty.fork()
+    if pid == 0:
+        # Below PTY capacity, so exit never depends on concurrent parent reads.
+        os.write(1, payload)
+        os._exit(0)
+    status = None
+    deadline = time.monotonic() + 5
+    try:
+        while time.monotonic() < deadline:
+            found, value = os.waitpid(pid, os.WNOHANG)
+            if found:
+                status = value
+                break
+            time.sleep(.005)
+        assert status is not None, "queued-tail fixture child did not exit"
+    except BaseException:
+        if status is None:
+            os.kill(pid, signal.SIGKILL)
+            os.waitpid(pid, 0)
+        os.close(master)
+        raise
+    code, transcript = drive_session(master, pid, b"", status=status, read_size=7)
+    assert code == 0 and transcript == payload, transcript
 
 
 def workload_sessions(binary, parent, path):
@@ -190,6 +232,7 @@ def workload_sessions(binary, parent, path):
 
 
 def main():
+    reaped_child_tail_regression()
     binary = str(Path(sys.argv[1]).resolve())
     target = Path(__file__).resolve().parents[3] / "target"
     target.mkdir(exist_ok=True)
