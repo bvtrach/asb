@@ -667,3 +667,58 @@ has run on this combined source; historical120 focused passes are not current-
 stack qualification. Independent integration-source review precedes any new
 actual-first/frozen build/focus/full. All preserved evidence/cache copies are
 unchanged; no other cache, PR, push or tag is touched.
+
+## Complete integrated local qualification at source2432cd48
+
+After independent integration-source approval, actual ASB was built FIRST,
+locked/offline/jobs1/incremental0,13.43s, in the exclusive HOME50 cache. The
+selected readonly `target/qualification/material47-2432cd48-asb` has SHA256
+`8751f316fd58ce8be09800b37b0ebff6aa0144644f8e42893303c04bb1d1c036`.
+Fresh owning focus passed **153/0/0**: controller34, guardian3, gate30, shared
+fair reaper7, remote26, Python Docker9/material8/task-server13/resources23.
+Nested reexecuted child rows are not counted twice. This reruns the actual
+positive preservation, retained guardian, unknown report, timeout, unwind,
+first-sibling fault and real release/reap/sentinel contracts on the combined
+fair worker/runner/fixture stack, not merely the historical120-source binary.
+
+Fresh locked/offline workspace/all-target/all-feature suite exited0:
+**1489passed,0failed,21existing opt-in ignored across24outer targets**.
+Library1234/0/13 took23.00s; final unmeasured target2/0 took13.84s. There are
+27raw summaries including three nested subprocess rows; only the24outer target
+summaries contribute to the total. Actual/frozen8751 hashes matched after
+focus, after full and again after every make/doc/completion gate. No source edit
+or actual-binary relink occurred during runtime; the separate hotfix source was
+not merged while qualification was live.
+
+Separate workspace/all-feature doctests passed0/0. Strict locked/offline
+workspace/all-target/all-feature Clippy -Dwarnings passed15.49s; fmt/diff passed.
+Sequential make build passed private Rustdocs, pinned read-only AutoUML0.7.2,
+type/function-flow SVGs, interactive views and completions. Bash/Zsh syntax
+checks passed. Checkout-update tests passed7/0 (1.911s), not make update or real
+checkout mutation. All handles were terminal before packaging. The generated
+regular/nonsymlink/zero-byte `.asb/install.log` was moved recoverably with its
+metadata to `target/fixture-preservation/material47/`; only its empty parent was
+removed. All raw source-local target diagnostics and historical failures remain.
+
+Locked/offline cargo package verification exited0:516files,6.1MiB/1.3MiB
+compressed,13.29s. Archive SHA256:
+`fe685a3039338438646b1da3c079b393914b47d26f57c1d0239033b275b87d2e`.
+The complete tracked runtime asset list matches the archive; the new controller
+process module, Python guardian fixture, Linux private guardian/test modules,
+fair source and both shared fixture support files are included. No generated
+target tree is packaged. Mock gate mode0755 and unchanged digest
+`d16a2513892ab4503e31e120de3527e6125783a081e4435279da321b0382b7a2`
+are verified. Package verification subsequently relinked ordinary debug ASB;
+its separately frozen `material47-2432cd48-packaged-asb`, SHA256
+`f2765c853ef87dfcf4aedbc2a54a6406c5d1ea99d7af1ec5f061db5795672356`,
+passed help smoke only. It is NOT the full-suite8751 executable, which remains
+frozen with its corresponding qualified libtest and digest manifest.
+
+All handles are terminal; logs/digest files use `target/material47-*`. This is
+local offline Linux x86-64 qualification, not real Docker/sudo/elevated transport,
+SDK/provider, Windows/non-Linux or extracted-package full-suite qualification.
+Manual/raw helper callers and inherited non-Linux legacy paths retain the
+explicit design limits above. Independent final proof review, actual hotfix44/
+runner45/fair46 ancestry and delivery, exact-head hosted/package CI, both
+post-merge jobs and signed release remain required. Staged47 is provisional;
+no PR/push/tag here and the removed90%coverage gate remains removed.
