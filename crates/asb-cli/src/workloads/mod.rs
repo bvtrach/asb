@@ -829,7 +829,7 @@ pub(super) fn evaluate_external_smoke(
     })
 }
 
-fn copy_tree(source: &Path, destination: &Path) -> Result<usize, String> {
+pub(crate) fn copy_tree(source: &Path, destination: &Path) -> Result<usize, String> {
     fs::create_dir_all(destination).map_err(|error| {
         format!(
             "cannot create external workload directory {}: {error}",

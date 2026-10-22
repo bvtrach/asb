@@ -65,6 +65,11 @@ impl BatchRun<'_> {
         }
         selected.workspace = path_text(&self.batch_root.join("workspace"))?;
         selected.log_file = path_text(&self.batch_root.join("run.jsonl"))?;
+        // Campaign preparation owns its private input material. In particular,
+        // a replay bundle binds the material identity recorded before this
+        // invocation: copying the caller's mutable workspace here would make a
+        // later source-tree change alter that identity and invalidate a valid
+        // offline replay. Direct runs seed their fresh workspace separately.
         let measures = self
             .plan
             .measurement_root
@@ -77,6 +82,7 @@ impl BatchRun<'_> {
                     .unwrap_or(&self.batch_root.join("measurements")),
             )?;
         }
+        let batch_log_file = selected.log_file.clone();
         let measurement_override = self
             .options
             .measurement_override
@@ -113,6 +119,12 @@ impl BatchRun<'_> {
             output,
             warnings,
         );
+        publish_configured_logs(
+            self.config_path,
+            &self.plan.configuration.log_file,
+            &batch_log_file,
+            self.plan.concurrency,
+        )?;
         let prepared = dispatch.material().confirmed_identity();
         let completed = observer
             .completed
@@ -150,6 +162,54 @@ impl BatchRun<'_> {
             quiescent: completed == dispatch.count() && cleanup,
         })
     }
+}
+
+/// Campaign records stay under the private batch directory for continuation,
+/// while the configured log remains the stable user-facing result location.
+/// Copy only completed batch records, append rather than replace an existing
+/// configured evidence log, and never treat an absent incomplete record as a
+/// successful outcome.
+fn publish_configured_logs(
+    config_path: &Path,
+    configured: &str,
+    batch: &str,
+    concurrency: usize,
+) -> Result<(), Error> {
+    use std::io::Write;
+
+    for index in 1..=concurrency {
+        let source = if concurrency == 1 {
+            PathBuf::from(batch)
+        } else {
+            PathBuf::from(super::super::parallel_path(batch, index))
+        };
+        let destination = if concurrency == 1 {
+            super::super::resolve_log_path(config_path, configured)
+        } else {
+            super::super::resolve_log_path(
+                config_path,
+                &super::super::parallel_path(configured, index),
+            )
+        };
+        let bytes = match std::fs::read(&source) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(Error::Io(error.to_string())),
+        };
+        if let Some(parent) = destination.parent() {
+            std::fs::create_dir_all(parent).map_err(|error| Error::Io(error.to_string()))?;
+        }
+        let mut output = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&destination)
+            .map_err(|error| Error::Io(error.to_string()))?;
+        output
+            .write_all(&bytes)
+            .and_then(|()| output.sync_all())
+            .map_err(|error| Error::Io(error.to_string()))?;
+    }
+    Ok(())
 }
 
 /// Consumed only from the checkpoint's non-deserializable admitted capability.

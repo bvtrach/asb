@@ -2483,7 +2483,10 @@ fn no_op_zero_exit_cannot_resolve_a_failing_task() {
 #[test]
 fn pre_solved_workspace_is_preserved_but_never_earns_resolution_credit() {
     let project = replay_project(1);
-    expect_success(&replay(&project, "success", &[]));
+    project.write(
+        "workspace/src/parser.py",
+        "def parse_path(value: str) -> list[str]:\n    return [segment for segment in value.split('/') if segment]\n",
+    );
     let before = std::fs::read(project.0.join("workspace/src/parser.py")).unwrap();
     let result = replay(
         &project,
@@ -3217,7 +3220,10 @@ fn flamegraph_only_configuration_installs_and_starts_perf_for_concurrent_replay(
         "{calls}"
     );
     for index in 1..=2 {
-        let dir = project.0.join(format!("measurements-concurrency-{index}"));
+        let dir = project
+            .0
+            .join("results/benchmark-runs/run-001")
+            .join(format!("measurements-concurrency-{index}"));
         assert!(
             dir.join("flamegraph.svg").is_file(),
             "no flamegraph in {}",
@@ -3537,7 +3543,12 @@ fetch(process.env.ASB_PROVIDER_BASE_URL + '/responses', {method:'POST',headers:{
     );
     expect_success(&result);
     assert_eq!(
-        std::fs::read_to_string(project.0.join("workspace/credential-observation")).unwrap(),
+        std::fs::read_to_string(
+            project
+                .0
+                .join("results/benchmark-runs/run-001/workspace/credential-observation"),
+        )
+        .unwrap(),
         "not-exposed"
     );
 }
