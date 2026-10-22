@@ -4,11 +4,13 @@ impl Local {
     pub(super) fn new() -> Result<Self, String> {
         Err("local cli2key bridge requires Unix; configure CLI2KEY_BASE_URL and CLI2KEY_API_KEY for an external endpoint".into())
     }
-    pub(super) fn spawn(
+    pub(super) fn spawn_bridge(&mut self, _: &mut std::process::Command) -> Result<String, String> {
+        Err("local cli2key bridge requires Unix".into())
+    }
+    pub(super) fn spawn_proxy(
         &mut self,
-        _: &mut std::process::Command,
-        _: bool,
-    ) -> Result<String, String> {
+        _: std::process::Command,
+    ) -> Result<std::net::SocketAddrV4, String> {
         Err("local cli2key bridge requires Unix".into())
     }
     pub(super) fn failure(self, reason: String) -> String {

@@ -5,7 +5,6 @@ use std::path::Path;
 use std::process::{ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
-const RESPONSE: usize = 4 * 1024 * 1024;
 const QUANTUM: usize = 64 * 1024;
 #[cfg(not(target_os = "linux"))]
 const CLEANUP: Duration = Duration::from_secs(6);
@@ -20,42 +19,45 @@ enum Process {
     },
 }
 impl Process {
-    fn spawn(python: &Path, source: &str) -> Result<Self, &'static str> {
+    fn spawn(python: &Path, source: &str, deadline: Instant) -> Result<Self, &'static str> {
+        if Instant::now() >= deadline {
+            return Err("local helper operation expired before admission");
+        }
         let mut launch = crate::launch::ProcessLaunch::new(python);
         for arg in ["-I", "-S", "-B", "-c", source] {
             launch.arg(arg);
         }
         #[cfg(target_os = "linux")]
         {
-            let binary = runtime().map_err(|_| "runtime supervisor unavailable")?;
+            let binary = runtime().map_err(|_| "local helper supervisor unavailable")?;
             let (mut command, route) = launch.native(Some(&binary));
             pipes(&mut command);
             let validated = route
                 .validate_gate(&mut command)
-                .map_err(|_| "invalid runtime launch")?;
+                .map_err(|_| "invalid local helper launch")?;
             let admission = crate::process_gate::Admission::new(validated)
-                .map_err(|_| "runtime cleanup custody unavailable before spawn")?;
+                .map_err(|_| "local helper cleanup custody unavailable before spawn")?;
             let mut gate = admission
                 .spawn()
-                .map_err(|_| "runtime helper could not start")?;
-            if gate.resume().is_err() {
+                .map_err(|_| "local helper could not start")?;
+            if !matches!(gate.resume_when(|| Instant::now() < deadline), Ok(true)) {
                 return Err(if gate.stop().is_ok() {
-                    "runtime supervisor did not admit the helper"
+                    "local helper supervisor did not admit the helper"
                 } else {
-                    "runtime admission failed and cleanup remains unconfirmed; pre-established custody retained"
+                    "local helper admission failed and cleanup remains unconfirmed; pre-established custody retained"
                 });
             }
             Ok(Self::Gate(gate))
         }
         #[cfg(not(target_os = "linux"))]
         {
-            let keeper = crate::process_cleanup::OwnedReaper::new("runtime-discovery")
-                .map_err(|_| "runtime cleanup custody unavailable before spawn")?;
+            let keeper = crate::process_cleanup::OwnedReaper::new("local-helper")
+                .map_err(|_| "local helper cleanup custody unavailable before spawn")?;
             let mut command = launch.direct();
             pipes(&mut command);
             let child = command
                 .spawn()
-                .map_err(|_| "runtime helper could not start")?;
+                .map_err(|_| "local helper could not start")?;
             Ok(Self::Direct {
                 child: Some(child),
                 keeper,
@@ -112,7 +114,7 @@ impl Process {
                         _ => {
                             keeper.adopt(owned);
                             return Err(io::Error::other(
-                                "runtime child retained in cleanup custody",
+                                "local helper child retained in cleanup custody",
                             ));
                         }
                     }
@@ -155,48 +157,67 @@ fn nonblocking(pipe: &impl AsRawFd) -> io::Result<()> {
     }
     Ok(())
 }
-pub(super) fn run(
+#[derive(Clone, Copy)]
+pub(crate) struct Policy {
+    pub(crate) request_bytes: usize,
+    pub(crate) response_bytes: usize,
+    pub(crate) timeout: Duration,
+}
+
+pub(crate) fn run(
     python: &Path,
     source: &str,
     request: &[u8],
-    timeout: Duration,
+    policy: Policy,
 ) -> Result<Vec<u8>, String> {
+    if policy.request_bytes == 0
+        || policy.response_bytes == 0
+        || policy.response_bytes == usize::MAX
+        || policy.timeout.is_zero()
+    {
+        return Err("local helper policy has an invalid bound".into());
+    }
+    if request.len() > policy.request_bytes {
+        return Err("local helper request exceeds its byte bound".into());
+    }
     let deadline = Instant::now()
-        .checked_add(timeout)
-        .ok_or("runtime exchange deadline overflows")?;
-    let mut process = Process::spawn(python, source)?;
+        .checked_add(policy.timeout)
+        .ok_or("local helper exchange deadline overflows")?;
+    let mut process = Process::spawn(python, source, deadline)?;
     #[cfg(test)]
     faults::after_spawn(&mut process);
-    let result = communicate(&mut process, request, deadline);
+    let result = communicate(&mut process, request, policy.response_bytes, deadline);
     match (result, process.stop()) {
         (result, Ok(())) => result.map_err(str::to_owned),
         (result, Err(_)) => Err(format!(
             "{}; cleanup remains unconfirmed; pre-established custody retained",
-            result.err().unwrap_or("runtime exchange completed")
+            result.err().unwrap_or("local helper exchange completed")
         )),
     }
 }
 fn communicate(
     process: &mut Process,
     request: &[u8],
+    response_bound: usize,
     deadline: Instant,
 ) -> Result<Vec<u8>, &'static str> {
-    let mut input = Some(process.input().ok_or("runtime stdin unavailable")?);
-    let mut output = Some(process.output().ok_or("runtime stdout unavailable")?);
-    nonblocking(input.as_ref().unwrap()).map_err(|_| "runtime stdin configuration failed")?;
-    nonblocking(output.as_ref().unwrap()).map_err(|_| "runtime stdout configuration failed")?;
+    let mut input = Some(process.input().ok_or("local helper stdin unavailable")?);
+    let mut output = Some(process.output().ok_or("local helper stdout unavailable")?);
+    nonblocking(input.as_ref().unwrap()).map_err(|_| "local helper stdin configuration failed")?;
+    nonblocking(output.as_ref().unwrap())
+        .map_err(|_| "local helper stdout configuration failed")?;
     let mut sent = 0;
     let mut bytes = Vec::new();
     let mut status = None;
     loop {
         if Instant::now() >= deadline {
-            return Err("runtime exchange deadline exceeded");
+            return Err("local helper exchange deadline exceeded");
         }
         if let Some(writer) = input.as_mut() {
             let end = request.len().min(sent + QUANTUM);
             match writer.write(&request[sent..end]) {
                 Ok(0) if sent < request.len() => {
-                    return Err("runtime request write made no progress");
+                    return Err("local helper request write made no progress");
                 }
                 Ok(count) => sent += count,
                 Err(error)
@@ -204,7 +225,7 @@ fn communicate(
                         error.kind(),
                         io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
                     ) => {}
-                Err(_) => return Err("runtime request delivery failed"),
+                Err(_) => return Err("local helper request delivery failed"),
             }
             if sent == request.len() {
                 input = None;
@@ -216,17 +237,17 @@ fn communicate(
             while consumed < QUANTUM && Instant::now() < deadline {
                 #[cfg(test)]
                 if faults::read_failure() {
-                    return Err("runtime response read failed");
+                    return Err("local helper response read failed");
                 }
-                let remaining = (RESPONSE + 1 - bytes.len()).min(buffer.len());
+                let remaining = (response_bound + 1 - bytes.len()).min(buffer.len());
                 match reader.read(&mut buffer[..remaining]) {
                     Ok(0) => {
                         output = None;
                         break;
                     }
                     Ok(count) => {
-                        if count > RESPONSE - bytes.len() {
-                            return Err("runtime response exceeds its byte bound");
+                        if count > response_bound - bytes.len() {
+                            return Err("local helper response exceeds its byte bound");
                         }
                         bytes.reserve_exact(count);
                         bytes.extend_from_slice(&buffer[..count]);
@@ -234,21 +255,21 @@ fn communicate(
                     }
                     Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
                     Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
-                    Err(_) => return Err("runtime response read failed"),
+                    Err(_) => return Err("local helper response read failed"),
                 }
             }
         }
         if status.is_none() {
             status = process
                 .poll()
-                .map_err(|_| "runtime exit or quiescence was not confirmed")?;
+                .map_err(|_| "local helper exit or quiescence was not confirmed")?;
         }
         if let Some(status) = status {
             if !status.success() {
-                return Err("runtime helper failed");
+                return Err("local helper helper failed");
             }
             if sent != request.len() {
-                return Err("runtime helper exited before request delivery completed");
+                return Err("local helper helper exited before request delivery completed");
             }
             if output.is_none() {
                 return Ok(bytes);
@@ -261,10 +282,10 @@ fn communicate(
 }
 
 #[cfg(test)]
-pub(super) mod faults {
+pub(crate) mod faults {
     use super::*;
     std::thread_local! { static FAULT: std::cell::Cell<u8> = const { std::cell::Cell::new(0) }; }
-    pub(in crate::runtime_inputs) fn set(value: u8) {
+    pub(crate) fn set(value: u8) {
         FAULT.set(value);
     }
     pub(super) fn read_failure() -> bool {
