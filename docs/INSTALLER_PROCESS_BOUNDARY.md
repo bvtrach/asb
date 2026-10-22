@@ -1072,7 +1072,10 @@ Actual rebuilt FIRST13.41s, then installer44-isolated-cli-focus.log records
 Both original six-case assertions and nested CLI/sentinel cleanup survive;
 outer exact-child tree settlement has its own retained marker. Strict
 workspace/alltargets/allfeatures Clippy -Dwarnings passed9.12s, fmt/diffcheck
-passed. Before/final/frozen actual SHA remains
-`f9886a273216f4f28c5d2faac2282b8b7c4ff9f48aa9d6b5659968f6967a616f`.
+passed. Before/final/frozen actual SHA is
+`179fa45a7e855e29c07d9612eea22a94f7014788641cc65ad63a427da1c99565`.
+The first docs-only07d38236 accidentally repeated the older f988 checksum;
+the preserved isolated-cli before/final hash transcripts both show179fa45a,
+matching the frozen isolated-cli copy. No binary mutation occurred during tests.
 All handles terminal. Other existing historical parent-generated fixtures
 remain separate migration/shared-writer work; no full-suite clearance is claimed.
