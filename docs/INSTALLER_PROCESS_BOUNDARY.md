@@ -1332,3 +1332,40 @@ New inert controls cover marker127, project-local-only npm, raw nonUTF8 and
 relative/empty PATH plus explicit cwd/direct relative program, and no-local-bin
 environment preservation. This source candidate has not yet been compiled or
 executed; root review is required before runtime. No broad full claim is made.
+
+### Effective npm path and functional fixture qualification
+
+Root reviewed the complete509ab00f source, requesting only a narrow platform
+guard for explicit-cwd lookup to avoid unused production code on other hosts.
+Signed source0d21b892578eae2d7bebb2b0281ae213d32cb85c adds exactly that guard;
+no non-Linux execution/qualification is claimed. The actual ASB was built FIRST
+offline/locked/jobs1/incremental0 in13.69s, then copied unchanged to
+target/qualification/installer44-effective-npm-path-asb. SHA256:
+`8977b5055ec137cc66179f41bf709ce75549913a0872e982ad3fd8cb6354745e`.
+
+Sequential target/installer44-effective-npm-path-*.log results:
+
+| Log suffix | Passed | Failed/ignored | Runtime |
+| --- | ---: | --- | ---: |
+| coverage | 12 | 0/0 | 0.43s |
+| tools | 4 | 0/0 | 0.00s |
+| source | 25 | 0/0 | 18.61s |
+| process | 32 | 0/0 | 6.56s |
+| native | 7 | 0/0 | 0.02s |
+| original | 4 | 0/0 | 1.09s |
+| cli | 2 | 0/0 | 2.68s |
+
+These are86 distinct top-level focused tests, including the explicit fixture
+child's ordinary no-selector return, not a count of unique inner case executions.
+Both prior diagnostic failures are resolved under root's reviewed policy:
+download's safe factual message and private-URL secrecy, npm's real effective
+runtime availability with local-only and started127 controls. Other functional
+assertions, required capture/actual settlement/raw retention and public CLI
+checks passed. All families were executed separately with source frozen.
+Strict workspace/all-target/all-feature Clippy(-Dwarnings) passed in16.92s;
+fmt and diff checks passed. Before/after-focus/final actual and frozen binary
+hashes match. All earlier failures/logs/frozen binaries remain preserved.
+
+This is focused Linux evidence only. Broad full suite, final actual-main/queued
+stack integration, public PR/push/release and non-Linux qualification are NOT
+claimed. Version44 remains inherited/provisional pending root's release order.
