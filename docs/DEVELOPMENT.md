@@ -805,6 +805,13 @@ cleanup. Existing checkpoint invariants continue to reject pending/error or
 uncertain cleanup for sealing. No JSONL status field or public async evaluator
 is added. `unknown_historical_run_categories_remain_display_only_and_unscored`
 checks real report generation without rejecting extension strings.
+`cargo test --locked --offline --lib evaluation_kind_contract_tests` checks
+literal known-producer labels, borrowed unknown extensions, baseline/eligibility
+separation and unchanged selection JSON. Run the existing
+`workloads::contracts::baselines` tests alongside it: their five official
+descriptor/protocol-fingerprint literal goldens must not be regenerated for a
+type extraction. Native null-reward, historical-report, disposition, selection,
+planning and checkpoint cases remain independent required regression families.
 Build the actual binary first, as for the phase tests below.
 
 Runner phase regressions use `cargo test --locked --offline --lib runner::phases`

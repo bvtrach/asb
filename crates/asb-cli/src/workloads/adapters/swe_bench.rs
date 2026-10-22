@@ -147,7 +147,7 @@ impl WorkloadAdapter for SweBenchAdapter {
                 .collect(),
             dataset: catalog.dataset,
             task_ids: catalog.tasks.into_iter().map(|task| task.id).collect(),
-            evaluation_kind: "upstream-harness",
+            evaluation_kind: crate::workloads::KnownEvaluationKind::UpstreamHarness,
         }))
     }
 

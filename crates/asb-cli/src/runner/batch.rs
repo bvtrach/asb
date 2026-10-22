@@ -480,8 +480,8 @@ mod tests {
             fn invocation(&self) -> &crate::workloads::session::TaskInvocation {
                 unreachable!()
             }
-            fn evaluation_kind(&self) -> &'static str {
-                "fixture"
+            fn evaluation_kind(&self) -> crate::workloads::KnownEvaluationKind {
+                crate::workloads::KnownEvaluationKind::Ungraded
             }
             fn baseline_passed(&self) -> Option<bool> {
                 None

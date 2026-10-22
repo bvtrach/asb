@@ -4,8 +4,8 @@
 //! or result collection can be added without putting a branch in the runner.
 
 use super::{
-    Trial, populate_builtin_fixtures, populate_builtin_prompts, prepare_builtin_fixture,
-    prepare_external_source,
+    KnownEvaluationKind, Trial, populate_builtin_fixtures, populate_builtin_prompts,
+    prepare_builtin_fixture, prepare_external_source,
 };
 use std::path::Path;
 
@@ -116,8 +116,8 @@ pub(super) trait WorkloadAdapter: Sync {
         Ok(None)
     }
     /// Smoke fixtures are not instances from the named upstream benchmark.
-    fn evaluation_kind(&self, _name: &str) -> &'static str {
-        "adapter-smoke"
+    fn evaluation_kind(&self, _name: &str) -> KnownEvaluationKind {
+        KnownEvaluationKind::AdapterSmoke
     }
     fn evaluator(&self) -> super::session::Evaluator {
         super::evaluate_external_smoke
@@ -212,16 +212,16 @@ impl WorkloadAdapter for PromptAdapter {
     fn descriptor(&self, name: &str) -> super::contracts::ModuleDescriptor {
         let mut descriptor =
             super::contracts::ModuleDescriptor::local(name, self.evaluation_kind(name));
-        if self.evaluation_kind(name) == "response-review" {
+        if self.evaluation_kind(name) == KnownEvaluationKind::ResponseReview {
             descriptor.protocol.submission = super::contracts::SubmissionKind::ResponseText;
         }
         descriptor
     }
-    fn evaluation_kind(&self, name: &str) -> &'static str {
+    fn evaluation_kind(&self, name: &str) -> KnownEvaluationKind {
         if name == "repository-navigation" {
-            "response-review"
+            KnownEvaluationKind::ResponseReview
         } else {
-            "bundled-fixture"
+            KnownEvaluationKind::BundledFixture
         }
     }
     fn evaluator(&self) -> super::session::Evaluator {
