@@ -102,8 +102,6 @@ def kill_owned_install_helper(process, binary, root):
         return int(fields[1]), int(fields[19])  # parent PID, start time
 
     principal = int((root / "principal.pid").read_text())
-    expected = [b"__asb-install", b"ASBINSTALL1", b"tool", os.fsencode(root),
-                os.fsencode(root / ".asb-tools"), b"pi"]
     chain = []
     candidates = []
     pid = principal
@@ -111,22 +109,26 @@ def kill_owned_install_helper(process, binary, root):
         parent, started = identity(pid)
         chain.append((pid, parent, started))
         args = bounded(Path(f"/proc/{pid}/cmdline"), 8192).rstrip(b"\0").split(b"\0")
-        if args[1:] == expected:
-            candidates.append((pid, parent, started))
+        if (len(args) == 7 and args[1:4] == [b"__asb-install", b"ASBINSTALL1", b"tool"]
+                and args[6] == b"pi" and os.path.samefile(args[4], root)
+                and os.path.samefile(args[5], root / ".asb-tools")):
+            candidates.append((pid, parent, started, args))
         if pid == process.pid:
             break
         pid = parent
     assert chain[-1][0] == process.pid, ("not our TUI ancestry", chain)
     assert len(candidates) == 1, ("expected exactly one owned install helper", chain, candidates)
-    helper, parent, started = candidates[0]
+    helper, parent, started, observed_args = candidates[0]
+    assert chain[0][1] != helper, "installer must have its independent inner guardian"
     descriptor = os.pidfd_open(helper)
     try:
         assert identity(helper) == (parent, started), "helper identity changed"
-        assert bounded(Path(f"/proc/{helper}/cmdline"), 8192).rstrip(b"\0").split(b"\0")[1:] == expected
+        assert bounded(Path(f"/proc/{helper}/cmdline"), 8192).rstrip(b"\0").split(b"\0") == observed_args
         assert os.path.samefile(f"/proc/{helper}/cwd", root)
         assert os.path.samefile(f"/proc/{helper}/exe", binary)
         print(json.dumps({"helper_loss_owned_ancestry": chain, "helper": helper,
-                          "principal_parent": chain[0][1], "image_matched": True}), flush=True)
+                          "principal_parent": chain[0][1], "image_matched": True,
+                          "helper_args": [os.fsdecode(arg) for arg in observed_args]}), flush=True)
         signal.pidfd_send_signal(descriptor, signal.SIGKILL)
     finally:
         os.close(descriptor)

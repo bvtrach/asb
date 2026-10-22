@@ -54,3 +54,24 @@ This is owning49's unchanged logging policy, intentionally different from the
 custom-publication helper's explicit unavailable-detail/no-project-log policy.
 No production error retention is weakened or resurrected for an obsolete test.
 Fresh actual-FIRST and complete fixture qualification remain required.
+
+## Exact argv diagnostic and alias-aware owning match
+
+The next complete direct fixture stopped safely before signalling: no helper
+matched the exact normalized path spellings (target/helper49-final-ancestry.log).
+One root-authorized persistent own-ancestry diagnostic then demonstrated the
+actual arguments retain root/\. and root/\./.asb-tools. This is equivalent path
+identity, not a private protocol change. In its five-node chain the real
+installer275030 had inner guardian275028, distinct from helper275017, outer
+guardian275015 and our TUI274996. Exact bounded argv/cwd/image/starttime evidence
+is target/helper49-helper-argv-diagnosis.log. The selector sent no signal;
+actual owned descendant quiescence and sentinel survival were confirmed before
+return, and the frozen image remained unchanged.
+
+The owning selector now preserves exact argc/dispatch/version/mode/tool checks
+and requires both path arguments to identify the expected owned directories.
+After opening the helper pidfd it requires the complete observed argv bytes
+unchanged, together with the existing starttime/parent/cwd/image checks. The
+printed benign evidence includes actual argv and explicitly asserts principal
+parent differs from helper. No production path is rewritten or canonicalized.
+This source correction is not yet a passing runtime claim.
