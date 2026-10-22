@@ -48,6 +48,12 @@ pub(crate) struct Options<'a> {
     pub seed: Option<u64>,
     pub json: bool,
     pub show_output: bool,
+    /// The process has both presentation streams attached to a terminal.
+    ///
+    /// Parallel configurations deliberately do not use a shared live line:
+    /// their worker output is spooled independently and concurrent writes would
+    /// make the terminal unreadable.
+    pub interactive: bool,
     pub mode: Option<crate::tape::Mode>,
     pub respect_record_timings: bool,
     pub cassette_root: Option<&'a Path>,
@@ -68,6 +74,7 @@ impl Default for Options<'_> {
             seed: None,
             json: false,
             show_output: false,
+            interactive: false,
             mode: None,
             respect_record_timings: false,
             cassette_root: None,
@@ -79,6 +86,12 @@ impl Default for Options<'_> {
             recover_recording: false,
             recover_continuation: false,
         }
+    }
+}
+
+impl Options<'_> {
+    fn live_progress(self) -> bool {
+        self.interactive && !self.json && self.jobs == 1
     }
 }
 
@@ -434,7 +447,7 @@ mod boundary_tests;
 
 #[cfg(test)]
 mod tests {
-    use super::{run, write_progress};
+    use super::{Options, run, write_progress};
     use std::io::Write;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -587,6 +600,40 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.to_string().contains("cannot write sweep progress"));
+    }
+
+    #[test]
+    fn live_progress_requires_an_interactive_serial_human_sweep() {
+        assert!(
+            Options {
+                interactive: true,
+                ..Default::default()
+            }
+            .live_progress()
+        );
+        assert!(
+            !Options {
+                interactive: false,
+                ..Default::default()
+            }
+            .live_progress()
+        );
+        assert!(
+            !Options {
+                interactive: true,
+                json: true,
+                ..Default::default()
+            }
+            .live_progress()
+        );
+        assert!(
+            !Options {
+                interactive: true,
+                jobs: 2,
+                ..Default::default()
+            }
+            .live_progress()
+        );
     }
 
     #[test]
