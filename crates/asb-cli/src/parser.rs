@@ -8,18 +8,85 @@ use std::ffi::OsString;
 use std::io::{self, Write};
 use std::path::PathBuf;
 
-/// Use the parser's schema for completions. Tool suggestions come from their
-/// registry without restricting actual parsing of explicit custom tools.
+/// Use the parser's schema for completions.  The real parser deliberately
+/// accepts custom tool and workload sources; this completion-only command adds
+/// the registered choices without changing that runtime contract.
 pub(crate) fn completion_command() -> clap::Command {
-    Cli::command().mut_subcommand("tool", |tool| {
-        tool.mut_subcommand("install", |install| {
-            install.mut_arg("name", |name| {
-                name.value_parser(clap::builder::PossibleValuesParser::new(
-                    install::tool_names(),
-                ))
+    let providers = crate::providers::names();
+    let workloads = registered_workload_names();
+    let models = registered_model_names();
+    Cli::command()
+        .mut_subcommand("setup", |setup| {
+            setup
+                .mut_arg("agent", |arg| possible(arg, crate::agents::names()))
+                .mut_arg("workload", |arg| possible(arg, workloads.clone()))
+                .mut_arg("provider", |arg| possible(arg, providers.iter().copied()))
+                .mut_arg("model", |arg| possible_owned(arg, models.clone()))
+                .mut_arg("measure", |arg| {
+                    possible_owned(arg, crate::measurements::available_collectors())
+                })
+        })
+        .mut_subcommand("provider", |provider| {
+            provider.mut_subcommand("models", |models| {
+                models.mut_arg("provider", |arg| possible(arg, providers.iter().copied()))
             })
         })
-    })
+        .mut_subcommand("tool", |tool| {
+            tool.mut_subcommand("install", |install| {
+                install.mut_arg("name", |arg| possible(arg, crate::install::tool_names()))
+            })
+        })
+        .mut_subcommand("workload", |workload| {
+            workload
+                .mut_subcommand("describe", |describe| {
+                    describe.mut_arg("name", |arg| possible(arg, workloads.clone()))
+                })
+                .mut_subcommand("install", |install| {
+                    install.mut_arg("source", |arg| possible(arg, workloads))
+                })
+        })
+}
+
+fn possible<I, T>(argument: clap::Arg, values: I) -> clap::Arg
+where
+    I: IntoIterator<Item = T>,
+    T: Into<clap::builder::PossibleValue>,
+{
+    argument.value_parser(clap::builder::PossibleValuesParser::new(values))
+}
+
+fn possible_owned(argument: clap::Arg, values: Vec<String>) -> clap::Arg {
+    // Clap's generated completion schema owns no dynamic values. These strings
+    // live only for the brief, one-shot generator invocation.
+    possible(
+        argument,
+        values
+            .into_iter()
+            .map(|value| Box::leak(value.into_boxed_str()) as &'static str),
+    )
+}
+
+fn registered_workload_names() -> Vec<&'static str> {
+    let mut values = crate::workloads::builtin_names()
+        .chain(crate::install::external_workload_names())
+        .collect::<Vec<_>>();
+    values.sort_unstable();
+    values.dedup();
+    values
+}
+
+fn registered_model_names() -> Vec<String> {
+    let mut values = Vec::new();
+    for provider in crate::providers::names() {
+        if let Some(models) = crate::providers::known_models(provider) {
+            for model in models {
+                values.push((*model).to_owned());
+            }
+        }
+    }
+    values.sort();
+    values.dedup();
+    values
 }
 
 pub(crate) fn run(args: &[OsString], stdout: &mut dyn Write, stderr: &mut dyn Write) -> u8 {
@@ -37,6 +104,7 @@ pub(crate) fn run_with_interactive(
     // Like the native gate helpers, completion generation is an internal entry
     // point, not a public option to duplicate in generated shell candidates.
     const COMPLETION_FLAG: &str = "--__generate-completion";
+    const VALUES_FLAG: &str = "--__complete-values";
     let separate = args.first().is_some_and(|arg| arg == COMPLETION_FLAG);
     let joined = args
         .first()
@@ -57,6 +125,10 @@ pub(crate) fn run_with_interactive(
             _ => Err(Error::Input("completion shell must be bash or zsh".into())),
         };
         return result.map_or_else(|error| fail(stderr, &error.to_string()), |_| 0);
+    }
+    if args.first().is_some_and(|arg| arg == VALUES_FLAG) {
+        return completion::values(&args[1..], stdout)
+            .map_or_else(|error| fail(stderr, &error.to_string()), |_| 0);
     }
     let mut argv = Vec::with_capacity(args.len() + 1);
     argv.push(OsString::from("asb"));
