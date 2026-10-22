@@ -914,3 +914,42 @@ native filter sets are disjoint52 top-level passes, not an exhaustive class or
 full-stack claim. All handles are terminal. Diagnostic consolidation and the
 remaining production-callback/fault matrix remain open. No full suite, PR,
 push, merge or release is claimed or authorized by this focused evidence.
+
+### First migrated callback fault matrix and consolidated boundary diagnostics
+
+Source c08d7353 built actual ASB FIRST in16.03s, frozen unchanged through the
+following focused executions and strict lint. Migrated install_input_in tests
+now invoke the REAL callback's same-owner ProcessScope: synthetic pipe EIO,
+caught pump panic, actual capture overflow and actual source-name replacement
+all return typed Abort, never run the callback continuation/publish, positively
+settle the guardian tree and preserve the named evidence/foreign replacement
+through completed Stage Drop. The unrelated sentinel survives each case.
+The owner-loss case preserves the arriving foreign bytes; it does NOT claim to
+reconstruct the original file the fixture deliberately unlinked.
+
+The separate worker-start fault exercises the shared spawn-error path before
+any process admission. It remains an Ordinary known-negative and supports quiet
+scratch settlement only with the intrinsic never-admitted permission. No
+fabricated exit is used. Private cfg(test)-only factories inject failures;
+there is no production fault environment variable or caller-supplied PID/signal.
+
+`installer44-migrated-source-faults.log`:2PASS/0FAIL/0ignored,0.21s after24.77s
+libtest compilation; the deliberately caught pump panic prints its static test
+message but its owning test PASSes after cleanup. `installer44-duplex-binary.log`:
+1PASS,0.05s; actual Python copies131072 binary stdin bytes, with262144 extra
+stdout bytes and262144 stderr bytes, preserving invalid UTF8, env_remove and
+configured cwd without pipe deadlock. No provider/network/SDK is involved.
+
+`installer44-diagnostic-summary.log`:1PASS,0.00s;130 synthetic anomalous log
+snapshots emit ONE warning heading,128 bounded per-path details and truthful
+two-omitted count; a second report is empty and pending is not called complete.
+`installer44-migrated-fault-clippy.log`: strict workspace/alltargets/allfeatures
+-Dwarnings PASS16.02s; fmt/diffcheck PASS. Actual/frozen before/final SHA256:
+`5a81608f194e4cc5b4ac08b8fb2bb9b795e28c9ffb2a51b6abcb0e927528f052`.
+
+This is four additional focused tests (one covers four real callback failures),
+not a full or live-host qualification. Log fault phase/kind classification is
+still pending: the generic previous write-failed wording cannot distinguish
+namespace/open, writer-start, queue, write and flush failures. Real adapter
+fallback/CLI paths, remaining fault/budget coverage and legacy test-API removal
+also remain open. All handles terminal; no full suite/PR/push/release claim.
