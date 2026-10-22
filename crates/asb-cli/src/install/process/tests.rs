@@ -1294,6 +1294,54 @@ fn local_validation_abort_and_cancel_must_retain_raw_after_actual_stage_drop() {
 }
 
 #[test]
+fn prior_ordinary_detail_composition_preserves_typed_failure_facts() {
+    let root = root();
+    let context = context(&root);
+    let prior = crate::Error::Input("specific prior reason".into());
+    for detail in [None, Some("existing custody detail".to_owned())] {
+        for include_prior in [false, true] {
+            let original = AbortInstallation {
+                cause: AbortCause::Custody,
+                cleanup_confirmed: false,
+                capture_complete: true,
+                label: "unchanged step".into(),
+                config_path: context.config_path.clone(),
+                limit_key: "operation_timeout_seconds",
+                evidence: Some(root.join("raw")),
+                detail: detail.clone(),
+            };
+            let failure = InstallFailure::Abort(original.clone())
+                .with_prior_ordinary(include_prior.then_some(&prior));
+            let InstallFailure::Abort(actual) = failure else {
+                panic!("composition erased typed Abort");
+            };
+            assert_eq!(actual.cause, original.cause);
+            assert_eq!(actual.cleanup_confirmed, original.cleanup_confirmed);
+            assert_eq!(actual.capture_complete, original.capture_complete);
+            assert_eq!(actual.label, original.label);
+            assert_eq!(actual.config_path, original.config_path);
+            assert_eq!(actual.limit_key, original.limit_key);
+            assert_eq!(actual.evidence, original.evidence);
+            if include_prior {
+                let text = actual.detail.unwrap();
+                assert_eq!(text.matches("specific prior reason").count(), 1);
+                if let Some(detail) = &detail {
+                    assert!(text.starts_with(detail));
+                }
+            } else {
+                assert_eq!(actual.detail, original.detail);
+            }
+        }
+    }
+    for include_prior in [false, true] {
+        let failure = InstallFailure::Ordinary(crate::Error::Input("unchanged ordinary".into()))
+            .with_prior_ordinary(include_prior.then_some(&prior));
+        assert!(matches!(&failure, InstallFailure::Ordinary(_)));
+        assert_eq!(failure.to_string(), "unchanged ordinary");
+    }
+}
+
+#[test]
 fn ordinary_validation_reason_survives_later_operation_abort() {
     let root = root();
     let context = context(&root);
