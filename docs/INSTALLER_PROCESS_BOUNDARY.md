@@ -1144,3 +1144,57 @@ passed17.97s; fmt/diffcheck passed. Every handle is terminal; actual binary was
 unchanged during all runtime tests. Source/DownloadChild test-shadow retirement
 remains the next explicit unfinished task; all original failure transcripts
 and frozen binaries remain intact.
+
+### Source-shadow retirement candidate (source only; not yet executed)
+
+After approved main merge986360d6, repair fixtures319783fc and publication
+fixtures8bb21aea call actual install_input_in with explicit project-root
+configuration and the SAME validation ProcessScope. Bounded harness5b8a4667
+and b5e0e560 require matching consumed directory proof and an exact one-test
+libtest footer before status acceptance. Script writes/namespace cleanup use
+the reviewed upstream shared fixture writer, not a second writer implementation.
+
+The next source candidate removes test-only DownloadChild, raw logged_spawn,
+duplicate source copy/download/publication implementations, and unused old
+verified/executable conveniences. Remaining coverage-only conveniences now
+load the explicit root and delegate to actual install_input_in; they contain
+no alternate subprocess or publication algorithm. The oversized-copy test
+creates valid project configuration and checks the actual size reason, not
+merely any error. Full original red/old lifecycle sources remain immutable in
+Git; removal does not erase historical failed evidence.
+
+The Linux lifecycle replacement has five actual Source cases, not twelve
+invented raw-poll simulations: remote known-never-admitted Download worker
+failure, caught Abort returned as Ok, caught Abort returned as a specific
+Ordinary error, unwind after uncertain return, and normal validated success.
+The operation-local test-only one-shot fault matches typed Purpose::Download,
+records actual Stage destructor completion and reuses the existing native
+worker-start fault; it cannot affect another operation/outer helper. It is
+neither an environment switch nor production policy. Unknown cases keep the
+actual observation/lease held until AFTER bounded Source return, release it,
+then require the Stage LAST-field completion receipt before examining retained
+raw. A separate real guardian sentinel survives until explicitly settled.
+
+Historical obligation mapping (new actual Source cases complement, not replace,
+the independently owned generic gate/reaper tests):
+
+| Historical raw case | Current obligation / owning evidence |
+| --- | --- |
+| download-worker-creation | actual remote Source Download fault, zero downloader/validator marker, Ordinary, completed Stage Drop and legitimate quiet cleanup |
+| probe-worker-creation | migrated_source_worker_start_failure_is_known_never_admitted_not_unknown_success, actual Source callback and Stage completion |
+| spawn-failure | ordinary_preexec_failure_must_retain_actual_stage_after_observer_release; real pre_exec failure plus blocked observer custody |
+| download-pending | actual remote configured timeout plus generic pending-custody tests and Source late-settlement cases; not a claim of every cross-product fault/purpose combination |
+| download-poll-error | owned reaper controlled_poll_error/controlled_wait_error real identity tests plus actual Source fault/unknown settlement propagation; old raw Child polling branch no longer exists |
+| probe-pending | actual Source caught-abort-ok with held matching observation and late actual Stage completion |
+| probe-poll-error | generic real observation-error custody, migrated Source capture/pump/owner fault matrix and sticky-Abort composition; no invented ExitStatus |
+| drop-pending | actual Source unwind-after-abort retains the Stage until real matching worker release, then retains raw after its destructor |
+| unwind-poll-error | same actual unwind case plus owned reaper observation-error custody; no fake permanent poll result |
+| finish-success-pending | actual Source caught-abort-ok cannot publish despite validator returning Ok |
+| finish-error-poll-error | actual Source caught-abort-ordinary preserves specific primary reason exactly once while retaining Abort and raw |
+| normal-success | actual Source normal-success validates through same scope, publishes complete bytes and completes quiet Stage cleanup |
+
+Current c725 ancestry contains the original five owned-reaper tests. The two
+separately reviewed fairness cases are not claimed integrated/qualified here;
+later combined ancestry must retain them when delivered. No production change,
+new runtime evidence, full-suite clearance or final release allocation is
+claimed by this source-only migration candidate.

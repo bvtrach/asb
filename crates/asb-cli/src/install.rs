@@ -47,31 +47,6 @@ const NPM_INSTALL_MANIFEST: &str = r#"{
 }
 "#;
 
-#[cfg(test)]
-pub(crate) trait LoggedStatus {
-    fn logged_spawn(&mut self) -> io::Result<std::process::Child>;
-}
-
-#[cfg(test)]
-impl LoggedStatus for Command {
-    fn logged_spawn(&mut self) -> io::Result<std::process::Child> {
-        project::apply_network_proxy(self, Path::new("."))
-            .map_err(|error| io::Error::other(error.to_string()))?;
-        let log_path = Path::new(".asb/install.log");
-        if let Some(parent) = log_path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        let stdout = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(log_path)?;
-        let stderr = stdout.try_clone()?;
-        self.stdout(Stdio::from(stdout))
-            .stderr(Stdio::from(stderr))
-            .spawn()
-    }
-}
-
 type CustomInstall = fn(
     &OperationContext,
     &Path,
@@ -1424,80 +1399,27 @@ fn resolve_path(root: &Path, value: &Path) -> PathBuf {
 }
 
 #[cfg(test)]
-fn missing_dependency(tool: &str, operation: &str, error: std::io::Error) -> Error {
-    let command = match tool {
-        "npm" => {
-            "curl -fsSL https://fnm.vercel.app/install | bash && eval \"$(fnm env --shell bash)\" && fnm install --lts && fnm use --lts"
-        }
-        "python3" => {
-            "curl -LsSf https://astral.sh/uv/install.sh | sh && ~/.local/bin/uv python install 3.12"
-        }
-        "curl" => "sudo apt-get update && sudo apt-get install -y curl",
-        "tar" => "sudo apt-get update && sudo apt-get install -y tar",
-        _ => "install the missing prerequisite and rerun the command",
-    };
-    Error::Io(format!(
-        "{operation} needs `{tool}`, but it could not be started: {error}. Install it, then rerun the command. Suggested command:\n  {command}"
-    ))
-}
-
-#[cfg(test)]
-pub(crate) fn install_source(source: &str, destination: &Path, kind: &str) -> Result<(), Error> {
-    install_source_with_limit(source, destination, kind, None)
-}
-
-/// Publish an unsigned executable only after its complete source is available.
-#[cfg(test)]
-pub(crate) fn install_executable_source(
+pub(crate) fn install_source(
+    root: &Path,
     source: &str,
     destination: &Path,
     kind: &str,
-) -> Result<(), Error> {
-    source::install(
-        source,
-        destination,
-        source::Options {
-            kind,
-            limit: source::MAX_SOURCE_BYTES,
-            checksum: None,
-            executable: true,
-        },
-        |_| Ok(()),
-    )
-}
-
-/// Verify pinned bytes and any executable-specific probe before publication.
-#[cfg(test)]
-pub(crate) fn install_verified_source(
-    source: &str,
-    destination: &Path,
-    kind: &str,
-    checksum: &str,
-    executable: bool,
-    validate: impl FnOnce(&Path) -> Result<(), Error>,
-) -> Result<(), Error> {
-    source::install(
-        source,
-        destination,
-        source::Options {
-            kind,
-            limit: source::MAX_SOURCE_BYTES,
-            checksum: Some(checksum),
-            executable,
-        },
-        validate,
-    )
+) -> InstallResult<()> {
+    install_source_with_limit(root, source, destination, kind, None)
 }
 
 #[cfg(test)]
 fn install_source_with_limit(
+    root: &Path,
     source: &str,
     destination: &Path,
     kind: &str,
     limit: Option<u64>,
-) -> Result<(), Error> {
-    source::install(
-        source,
+) -> InstallResult<()> {
+    let context = OperationContext::load(root)?;
+    source::install_input_in(
+        &context,
+        &source::Input::from_os(source.as_ref()),
         destination,
         source::Options {
             kind,
@@ -1505,7 +1427,8 @@ fn install_source_with_limit(
             checksum: None,
             executable: false,
         },
-        |_| Ok(()),
+        |_, _| Ok(()),
+        source::Publication::Replace,
     )
 }
 
@@ -1570,14 +1493,25 @@ mod tests {
         let root =
             std::env::temp_dir().join(format!("asb-copy-bound-{}", tools::runtime::unique_id()));
         fs::create_dir(&root).unwrap();
+        fs::create_dir(root.join(".asb")).unwrap();
+        fs::write(
+            root.join(".asb/project.toml"),
+            "tools_dir='tools'\nworkloads_dir='workloads'\nworkspace_dir='workspace'\n",
+        )
+        .unwrap();
         let source = root.join("source");
         let destination = root.join("destination");
         fs::write(&source, b"four").unwrap();
         fs::write(&destination, b"preserved").unwrap();
-        assert!(
-            install_source_with_limit(source.to_str().unwrap(), &destination, "fixture", Some(3))
-                .is_err()
-        );
+        let error = install_source_with_limit(
+            &root,
+            source.to_str().unwrap(),
+            &destination,
+            "fixture",
+            Some(3),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("size limit"), "{error}");
         assert_eq!(fs::read(&destination).unwrap(), b"preserved");
         fs::remove_dir_all(root).unwrap();
     }

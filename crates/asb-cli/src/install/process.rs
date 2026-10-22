@@ -56,7 +56,7 @@ impl std::fmt::Display for InstallFailure {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Purpose {
     Probe,
     Version,
@@ -83,6 +83,12 @@ impl Purpose {
     }
 }
 
+#[cfg(all(test, target_os = "linux"))]
+struct WorkerStartFault {
+    purpose: Purpose,
+    observed: std::sync::mpsc::SyncSender<(PathBuf, Arc<AtomicBool>)>,
+}
+
 #[derive(Clone)]
 pub(crate) struct OperationContext {
     root: PathBuf,
@@ -95,6 +101,8 @@ pub(crate) struct OperationContext {
     log_budget: Arc<native::LogBudget>,
     deadline: Instant,
     cancel: Arc<AtomicBool>,
+    #[cfg(all(test, target_os = "linux"))]
+    worker_start_fault: Arc<std::sync::Mutex<Option<WorkerStartFault>>>,
 }
 impl OperationContext {
     /// Explicit outer entry only; nested install steps reuse this snapshot.
@@ -159,7 +167,20 @@ impl OperationContext {
             log_budget: Arc::new(native::LogBudget::default()),
             deadline,
             cancel: Arc::new(AtomicBool::new(false)),
+            #[cfg(all(test, target_os = "linux"))]
+            worker_start_fault: Arc::new(std::sync::Mutex::new(None)),
         })
+    }
+    #[cfg(all(test, target_os = "linux"))]
+    pub(in crate::install) fn fail_next_worker_for_test(
+        &self,
+        purpose: Purpose,
+    ) -> std::sync::mpsc::Receiver<(PathBuf, Arc<AtomicBool>)> {
+        let (observed, receive) = std::sync::mpsc::sync_channel(1);
+        let mut slot = self.worker_start_fault.lock().unwrap();
+        assert!(slot.is_none(), "one scoped worker-start fault at a time");
+        *slot = Some(WorkerStartFault { purpose, observed });
+        receive
     }
     #[cfg(test)]
     pub(crate) fn cancel(&self) {
@@ -741,7 +762,33 @@ impl ProcessScope {
         purpose: Purpose,
         label: &str,
     ) -> InstallResult<PreparedStep> {
-        PreparedStep::new(&self.context, program, purpose, label)
+        let step = PreparedStep::new(&self.context, program, purpose, label)?;
+        #[cfg(all(test, target_os = "linux"))]
+        let mut step = step;
+        #[cfg(all(test, target_os = "linux"))]
+        {
+            let fault = {
+                let mut slot = self.context.worker_start_fault.lock().unwrap();
+                if slot.as_ref().is_some_and(|fault| fault.purpose == purpose) {
+                    slot.take()
+                } else {
+                    None
+                }
+            };
+            if let Some(fault) = fault {
+                step.fail_worker_start = Some(std::io::ErrorKind::Other);
+                let _ = fault.observed.send((
+                    self.lease.evidence.clone().expect("fixture evidence owner"),
+                    self.fixture_drop_completion()
+                        .expect("fixture owner completion receipt"),
+                ));
+            }
+        }
+        Ok(step)
+    }
+    #[cfg(all(test, target_os = "linux"))]
+    pub(in crate::install) fn fixture_drop_completion(&self) -> Option<Arc<AtomicBool>> {
+        self.lease._owner.as_ref()?.drop_completion()
     }
     pub(crate) fn status(
         &mut self,
@@ -873,6 +920,11 @@ pub(crate) struct PreparedStep {
     fail_worker_start: Option<std::io::ErrorKind>,
 }
 impl PreparedStep {
+    #[cfg(all(test, target_os = "linux"))]
+    pub(in crate::install) fn hold_observation_for_test(&mut self, held: Arc<AtomicBool>) {
+        self.hold_observation = Some(held);
+    }
+
     pub(crate) fn new(
         context: &OperationContext,
         program: impl AsRef<std::ffi::OsStr>,

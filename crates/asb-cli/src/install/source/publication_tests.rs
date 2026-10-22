@@ -2,6 +2,7 @@
 use super::*;
 use sha2::{Digest, Sha256};
 use std::os::unix::fs::{PermissionsExt, symlink};
+use std::time::{Duration, Instant};
 
 const CHILD: &str = "ASB_SOURCE_PUBLICATION_CHILD";
 const OLD: &[u8] = b"#!/bin/sh\nprintf 'old tool\\n'\n";

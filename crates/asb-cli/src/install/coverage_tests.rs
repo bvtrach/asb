@@ -397,10 +397,21 @@ fn guest_bootstrap_contract(root: &Path) {
 
 fn download_contract(root: &Path) {
     let destination = root.join("downloaded");
-    install_source("https://fixture.invalid/success", &destination, "fixture").unwrap();
+    install_source(
+        root,
+        "https://fixture.invalid/success",
+        &destination,
+        "fixture",
+    )
+    .unwrap();
     assert_eq!(fs::read(&destination).unwrap(), b"fixture data");
-    let error =
-        install_source("https://fixture.invalid/failure", &destination, "fixture").unwrap_err();
+    let error = install_source(
+        root,
+        "https://fixture.invalid/failure",
+        &destination,
+        "fixture",
+    )
+    .unwrap_err();
     assert!(
         error
             .to_string()
@@ -408,6 +419,7 @@ fn download_contract(root: &Path) {
     );
     assert_eq!(fs::read(&destination).unwrap(), b"fixture data");
     let error = install_source_with_limit(
+        root,
         "https://fixture.invalid/oversize",
         &root.join("oversize"),
         "fixture",
@@ -420,8 +432,13 @@ fn download_contract(root: &Path) {
         "1 https://fixture.invalid/success\n1 https://fixture.invalid/failure\n1 https://fixture.invalid/oversize\n"
     );
     fs::remove_file(root.join("bin/curl")).unwrap();
-    let error =
-        install_source("https://fixture.invalid/success", &destination, "fixture").unwrap_err();
+    let error = install_source(
+        root,
+        "https://fixture.invalid/success",
+        &destination,
+        "fixture",
+    )
+    .unwrap_err();
     assert!(error.to_string().contains("needs `curl`"));
     assert!(error.to_string().contains("sudo apt-get install -y curl"));
 }
@@ -768,11 +785,12 @@ fn diagnostics_contract(root: &Path) {
     }
     owner.consume(scope.finish().unwrap()).unwrap();
     let destination = root.join("destination");
-    let error = install_source(root.to_str().unwrap(), &destination, "fixture").unwrap_err();
+    let error = install_source(root, root.to_str().unwrap(), &destination, "fixture").unwrap_err();
     assert!(error.to_string().contains("source is not a file"));
     fs::write(&source, "fixture").unwrap();
     fs::create_dir(&destination).unwrap();
-    let error = install_source(source.to_str().unwrap(), &destination, "fixture").unwrap_err();
+    let error =
+        install_source(root, source.to_str().unwrap(), &destination, "fixture").unwrap_err();
     assert!(error.to_string().contains("cannot install fixture at"));
     assert!(make_executable(&root.join("missing")).is_err());
     assert_eq!(json_string("quoted\"\nvalue"), "\"quoted\\\"\\nvalue\"");
