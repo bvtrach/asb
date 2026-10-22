@@ -620,6 +620,11 @@ fn run_measured_agent_with_launch_progress(
     progress: progress::Context,
     control: NativeLaunch<'_>,
 ) -> Result<MeasuredOutput, Error> {
+    let interactive_progress = progress.enabled();
+    progress::status(
+        interactive_progress,
+        "starting agent and attaching execution collectors",
+    );
     let NativeLaunch {
         readiness: launch,
         runtime,
@@ -757,6 +762,7 @@ fn run_measured_agent_with_launch_progress(
             Ok(())
         },
     );
+    progress::status(interactive_progress, "tearing down execution collectors");
     // Freeze execution before collector/proxy teardown, even if that teardown
     // fails. A completed client output is evidence for official grading.
     let elapsed_ms = execution_finished
