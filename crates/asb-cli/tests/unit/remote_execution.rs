@@ -201,6 +201,21 @@ fn completed() -> Value {
 
 #[test]
 fn actual_python_producer_and_rust_session_keep_both_grades_and_consume_close_permission() {
+    #[derive(Default)]
+    struct ProgressSpy {
+        updates: usize,
+        stdout: Vec<u8>,
+        finished: bool,
+    }
+    impl crate::workloads::session::ExecutionProgress for ProgressSpy {
+        fn update(&mut self, stdout: &[u8], _: &[u8]) {
+            self.updates += 1;
+            self.stdout = stdout.into();
+        }
+        fn finish(&mut self) {
+            self.finished = true;
+        }
+    }
     for resolved in [true, false] {
         let fixture = Fixture::new();
         let grade = json!({"workload":"fixture","task_id":"task","dataset":null,
@@ -209,6 +224,7 @@ fn actual_python_producer_and_rust_session_keep_both_grades_and_consume_close_pe
         let config = configuration();
         let project = crate::project::ProjectConfig::default();
         let connection = connection();
+        let mut progress = ProgressSpy::default();
         let mut context = ExecutionContext {
             config: &config,
             connection: Some(&connection),
@@ -217,6 +233,7 @@ fn actual_python_producer_and_rust_session_keep_both_grades_and_consume_close_pe
             replay: true,
             measurements: None,
             show_output: true,
+            progress: Some(&mut progress),
             launch: None,
         };
         let mut output = Vec::new();
@@ -224,6 +241,9 @@ fn actual_python_producer_and_rust_session_keep_both_grades_and_consume_close_pe
             session.run_prepared(&mut context, &mut output, &connection, fixture.prepared());
         let result = session.settle_execution(&mut context, result).unwrap();
         assert_eq!(output, b"live\x00output");
+        assert!(progress.updates > 0);
+        assert_eq!(progress.stdout, b"live\x00output");
+        assert!(!progress.finished);
         assert_eq!(result.output.stdout, b"complete\x00output");
         assert_eq!(result.output.status.code(), Some(7));
         assert_eq!(result.elapsed_ms, Some(125));
@@ -287,6 +307,7 @@ fn actual_python_task_loop_forwards_declared_termination_without_changing_grade_
                 replay: true,
                 measurements: None,
                 show_output: false,
+                progress: None,
                 launch: None,
             };
             let result = session.run_prepared(
@@ -447,6 +468,7 @@ fn unmeasured_shared_launch_requires_valid_target_and_aborts_before_cancellation
             replay: true,
             measurements: None,
             show_output: false,
+            progress: None,
         };
         let result = session.run_prepared(
             &mut context,
@@ -523,6 +545,7 @@ fn completed_guest_survives_capture_end_errors_and_still_grades_then_closes() {
             replay: true,
             measurements: Some(&mut measurements),
             show_output: false,
+            progress: None,
         };
         let result = session.run_prepared(
             &mut context,
@@ -574,6 +597,7 @@ fn prepared_protocol_preserves_output_exit_time_and_grades_only_after_completion
             replay: true,
             measurements: None,
             show_output,
+            progress: None,
         };
         let mut output = Vec::new();
         session.begin_agent_preparation(&mut context).unwrap();
@@ -618,6 +642,7 @@ fn unknown_grade_settlement_never_repeats_evaluation_or_cancellation() {
         replay: true,
         measurements: None,
         show_output: false,
+        progress: None,
     };
     session.begin_agent_preparation(&mut context).unwrap();
     let result = session.run_prepared(
@@ -669,6 +694,7 @@ fn protocol_errors_preserve_original_reason_and_cancel_instead_of_grading() {
             replay: false,
             measurements: None,
             show_output: false,
+            progress: None,
         };
         let result = session.run_prepared(
             &mut context,
@@ -727,6 +753,7 @@ fn broken_human_output_does_not_cancel_a_completed_guest_submission_or_grader() 
         replay: true,
         measurements: None,
         show_output: true,
+        progress: None,
     };
     let result = session.run_prepared(
         &mut context,
@@ -772,6 +799,7 @@ fn broken_output_and_deadline_use_same_preserving_error_envelope() {
             replay: false,
             measurements: None,
             show_output: true,
+            progress: None,
         };
         session
             .dispatch_agent(
@@ -818,6 +846,7 @@ fn production_preparation_still_rejects_unregistered_agent_without_protocol_disp
         replay: false,
         measurements: None,
         show_output: false,
+        progress: None,
     };
     let result = session.execute(&mut context, &mut Vec::new()).unwrap();
     let Err(error) = result else {
@@ -862,6 +891,7 @@ fn measured_protocol_rejects_unverified_target_and_execution_end_before_start() 
             replay: true,
             measurements: Some(&mut measurements),
             show_output: false,
+            progress: None,
         };
         session.begin_agent_preparation(&mut context).unwrap();
         let result = session.run_prepared(
@@ -918,6 +948,7 @@ fn completed_metadata_retains_unknown_timing_and_requires_valid_service_handoff(
             replay: true,
             measurements: None,
             show_output: false,
+            progress: None,
         };
         let result = session
             .run_prepared(
@@ -969,6 +1000,7 @@ fn completed_metadata_retains_unknown_timing_and_requires_valid_service_handoff(
             replay: true,
             measurements: None,
             show_output: false,
+            progress: None,
         };
         let result = session.run_prepared(
             &mut context,

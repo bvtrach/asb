@@ -278,6 +278,16 @@ pub(crate) struct ExecutionContext<'a> {
     pub replay: bool,
     pub measurements: Option<&'a mut crate::measurements::Session>,
     pub show_output: bool,
+    /// Presentation is best-effort and deliberately cannot influence workload
+    /// ownership, transport, or result custody.
+    pub progress: Option<&'a mut dyn ExecutionProgress>,
+}
+
+/// A live, presentation-only view of an agent transcript. Both native child
+/// capture and isolated workload transports use this same narrow contract.
+pub(crate) trait ExecutionProgress {
+    fn update(&mut self, stdout: &[u8], stderr: &[u8]);
+    fn finish(&mut self);
 }
 
 pub(crate) struct ExecutionResult {

@@ -24,6 +24,13 @@ const RECOVERY_TIMEOUT: Duration = Duration::from_secs(180);
 const INITIAL_MATERIAL_TIMEOUT: Duration = Duration::from_secs(600);
 const WORKLOAD_READY_TIMEOUT: Duration =
     Duration::from_secs(crate::planning::DEFAULT_ENVIRONMENT_PREPARATION_SECONDS);
+const PROGRESS_POLL: Duration = Duration::from_millis(250);
+const PROGRESS_TRANSCRIPT_LIMIT: usize = 8 * 1024 * 1024;
+
+fn append_progress_transcript(transcript: &mut Vec<u8>, bytes: &[u8]) {
+    let remaining = PROGRESS_TRANSCRIPT_LIMIT.saturating_sub(transcript.len());
+    transcript.extend_from_slice(&bytes[..bytes.len().min(remaining)]);
+}
 
 /// Project paths/proxies cross the workload boundary, host capabilities do not.
 fn guest_project_configuration(project: &crate::project::ProjectConfig) -> Result<String, String> {
@@ -767,13 +774,31 @@ impl Session {
         let mut output_error = None;
         let mut launched = false;
         let mut preparation_failed = false;
+        let mut progress_stdout = Vec::new();
         loop {
-            let event = self.controller.receive(deadline).map_err(|error| {
-                output_error.as_ref().map_or_else(
-                    || error.clone(),
-                    |presentation| format!("{error}; {presentation}"),
-                )
-            })?;
+            let poll_deadline = deadline.min(Instant::now() + PROGRESS_POLL);
+            let event = self
+                .controller
+                .receive_until(poll_deadline)
+                .map_err(|error| {
+                    output_error.as_ref().map_or_else(
+                        || error.clone(),
+                        |presentation| format!("{error}; {presentation}"),
+                    )
+                })?;
+            let Some(event) = event else {
+                if Instant::now() >= deadline {
+                    let error = "workload controller exceeded its response deadline";
+                    return Err(output_error.as_ref().map_or_else(
+                        || error.into(),
+                        |presentation| format!("{error}; {presentation}"),
+                    ));
+                }
+                if launched && let Some(progress) = context.progress.as_deref_mut() {
+                    progress.update(&progress_stdout, &[]);
+                }
+                continue;
+            };
             match EventKind::of(&event) {
                 Some(EventKind::Paused) => {
                     if launched {
@@ -794,6 +819,10 @@ impl Session {
                 }
                 Some(EventKind::Output) => {
                     let bytes = decode_base64(&event["data"])?;
+                    append_progress_transcript(&mut progress_stdout, &bytes);
+                    if launched && let Some(progress) = context.progress.as_deref_mut() {
+                        progress.update(&progress_stdout, &[]);
+                    }
                     if context.show_output
                         && output_error.is_none()
                         && let Err(error) = output.write_all(&bytes).and_then(|()| output.flush())
