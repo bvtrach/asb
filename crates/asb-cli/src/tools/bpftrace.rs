@@ -95,8 +95,8 @@ fn build_bpftrace(
     let archive = root.join(".bpftrace-source.tar.gz");
     if !source_dir.is_dir() {
         progress(10, crate::install::ProgressStage::Downloading);
-        let mut step =
-            scope.prepare("curl", Purpose::Download, "pinned bpftrace source download")?;
+        let curl = bpftrace_prerequisite(context, root, "curl")?;
+        let mut step = scope.prepare(curl, Purpose::Download, "pinned bpftrace source download")?;
         step.command_mut()
             .args([
                 "--disable",
@@ -113,8 +113,14 @@ fn build_bpftrace(
             return Err(Error::Io(format!("could not download pinned bpftrace source from {BPFTRACE_SOURCE}; verify network access and retry\n\n{}", bpftrace_source_commands())).into());
         }
         progress(25, crate::install::ProgressStage::Extracting);
-        fs::create_dir_all(&source_dir).map_err(crate::io_error)?;
-        let mut step = scope.prepare("tar", Purpose::Extract, "bpftrace source extraction")?;
+        fs::create_dir_all(&source_dir).map_err(|error| {
+            Error::Io(format!(
+                "cannot create bpftrace source directory {}: {error}",
+                source_dir.display()
+            ))
+        })?;
+        let tar = bpftrace_prerequisite(context, root, "tar")?;
+        let mut step = scope.prepare(tar, Purpose::Extract, "bpftrace source extraction")?;
         step.command_mut()
             .arg("-xzf")
             .arg(&archive)
@@ -131,7 +137,8 @@ fn build_bpftrace(
         }
     }
     progress(40, crate::install::ProgressStage::Configuring);
-    let mut step = scope.prepare("cmake", Purpose::Configure, "bpftrace configuration")?;
+    let cmake = bpftrace_prerequisite(context, root, "cmake")?;
+    let mut step = scope.prepare(cmake, Purpose::Configure, "bpftrace configuration")?;
     step.command_mut()
         .arg("-S")
         .arg(&source_dir)
@@ -143,7 +150,8 @@ fn build_bpftrace(
         return Err(Error::Io(format!("cmake could not configure bpftrace; the BCC, libbpf, libclang, compiler, or CMake development packages are missing. Install them and rerun `asb tool install bpftrace`:\n\n{}", bpftrace_source_commands())).into());
     }
     progress(60, crate::install::ProgressStage::Building);
-    let mut step = scope.prepare("cmake", Purpose::Build, "bpftrace compilation")?;
+    let cmake = bpftrace_prerequisite(context, root, "cmake")?;
+    let mut step = scope.prepare(cmake, Purpose::Build, "bpftrace compilation")?;
     step.command_mut()
         .arg("--build")
         .arg(&build_dir)
@@ -203,7 +211,37 @@ fn bpftrace_dependency_commands(dependency: &str) -> &'static str {
     }
 }
 
-#[cfg(test)]
+/// Linux native gates report the admitted target's status, not Command::spawn's
+/// missing-program error. Check factual availability at this stage and prepare
+/// that same resolved program; a later nonzero exit (including127) is NOT a
+/// missing-tool diagnosis. Other hosts retain their native Command/PATHEXT path.
+fn bpftrace_prerequisite(
+    context: &OperationContext,
+    root: &Path,
+    dependency: &str,
+) -> InstallResult<PathBuf> {
+    let label = format!("bpftrace {dependency} prerequisite");
+    context.check_before_admission(&label, root)?;
+    #[cfg(target_os = "linux")]
+    {
+        let executable = super::host_executable(Path::new(dependency));
+        context.check_before_admission(&label, root)?;
+        executable.ok_or_else(|| {
+            bpftrace_missing_dependency(
+                dependency,
+                std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "no executable found on the inherited PATH at the current directory",
+                ),
+            )
+            .into()
+        })
+    }
+    #[cfg(not(target_os = "linux"))]
+    Ok(PathBuf::from(dependency))
+}
+
+#[cfg(any(target_os = "linux", test))]
 pub(crate) fn bpftrace_missing_dependency(dependency: &str, error: std::io::Error) -> Error {
     Error::Io(format!(
         "bpftrace source build needs `{dependency}`, but it could not be started: {error}. Install it, then rerun `asb tool install bpftrace`:\n\n{}",

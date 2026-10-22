@@ -20,12 +20,19 @@ fn isolated_bpftrace_build_and_install_contracts() {
             "build",
             "held",
             "cached",
+            "cached-no-download-tools",
+            "relative-path",
             "curl-fails",
+            "curl-127",
             "tar-fails",
+            "tar-127",
             "configure-fails",
+            "configure-127",
             "compile-fails",
+            "compile-127",
             "no-output",
             "missing-curl",
+            "cancelled-missing-curl",
             "missing-tar",
             "missing-cmake",
             "source-blocked",
@@ -103,7 +110,14 @@ fn isolated_bpftrace_build_and_install_contracts() {
                 .current_dir(&path)
                 .env(CASE, case)
                 .env("ASB_INSTALL_FIXTURE_ROOT", &path)
-                .env("PATH", path.join("commands"))
+                .env(
+                    "PATH",
+                    if case == "relative-path" {
+                        PathBuf::from("commands")
+                    } else {
+                        path.join("commands")
+                    },
+                )
                 .output()
                 .unwrap();
             assert!(
@@ -129,11 +143,13 @@ fn isolated_bpftrace_build_and_install_contracts() {
     executable(
         "curl",
         r#"printf 'curl %s\n' "$*" >> "$ASB_INSTALL_FIXTURE_ROOT/calls"
+printf '%s\n' "$0" >> "$ASB_INSTALL_FIXTURE_ROOT/programs"
 if [ "$ASB_BPFTRACE_INSTALL_CASE" = held ]; then
  printf ready > "$ASB_INSTALL_FIXTURE_ROOT/download-held"
  while [ ! -f "$ASB_INSTALL_FIXTURE_ROOT/download-release" ]; do /bin/sleep .005; done
 fi
 [ "$ASB_BPFTRACE_INSTALL_CASE" != curl-fails ] || exit 2
+[ "$ASB_BPFTRACE_INSTALL_CASE" != curl-127 ] || exit 127
 while [ "$#" -gt 0 ]; do
  if [ "$1" = --output ]; then shift; printf 'archive fixture' > "$1"; fi
  shift
@@ -142,21 +158,26 @@ done"#,
     executable(
         "tar",
         r#"printf 'tar %s\n' "$*" >> "$ASB_INSTALL_FIXTURE_ROOT/calls"
+printf '%s\n' "$0" >> "$ASB_INSTALL_FIXTURE_ROOT/programs"
+[ "$ASB_BPFTRACE_INSTALL_CASE" != tar-127 ] || exit 127
 [ "$ASB_BPFTRACE_INSTALL_CASE" != tar-fails ]"#,
     );
     executable(
         "cmake",
         r#"printf 'cmake %s\n' "$*" >> "$ASB_INSTALL_FIXTURE_ROOT/calls"
+printf '%s\n' "$0" >> "$ASB_INSTALL_FIXTURE_ROOT/programs"
 if [ "$1" = --build ]; then
  if [ "$ASB_BPFTRACE_INSTALL_CASE" = held ]; then
   printf ready > "$ASB_INSTALL_FIXTURE_ROOT/build-held"
   while [ ! -f "$ASB_INSTALL_FIXTURE_ROOT/build-release" ]; do /bin/sleep .005; done
  fi
  [ "$ASB_BPFTRACE_INSTALL_CASE" != compile-fails ] || exit 2
+ [ "$ASB_BPFTRACE_INSTALL_CASE" != compile-127 ] || exit 127
  [ "$ASB_BPFTRACE_INSTALL_CASE" != no-output ] || exit 0
  /bin/mkdir -p "$2/src"
  printf 'fixture binary' > "$2/src/bpftrace"
 else
+ [ "$ASB_BPFTRACE_INSTALL_CASE" != configure-127 ] || exit 127
  [ "$ASB_BPFTRACE_INSTALL_CASE" != configure-fails ] || exit 2
 fi"#,
     );
@@ -232,8 +253,12 @@ esac"#,
         }
         return;
     }
-    if case == "cached" {
+    if case == "cached" || case == "cached-no-download-tools" {
         fs::create_dir_all(tool.join("source")).unwrap();
+    }
+    if case == "cached-no-download-tools" {
+        fs::remove_file(commands.join("curl")).unwrap();
+        fs::remove_file(commands.join("tar")).unwrap();
     }
     if case == "source-blocked" {
         fs::create_dir_all(&tool).unwrap();
@@ -248,17 +273,31 @@ esac"#,
             fs::remove_file(commands.join(command)).unwrap();
         }
     }
+    if case == "cancelled-missing-curl" {
+        fs::remove_file(commands.join("curl")).unwrap();
+        context.cancel();
+    }
     let result = build_bpftrace(&context, &tool, &mut |percent, stage| {
         progress.push(percent);
         if case == "held" {
             fs::write(root.join("phase"), format!("{percent} {}", stage.label())).unwrap();
         }
     });
-    if case == "build" || case == "cached" || case == "held" {
+    if case == "cancelled-missing-curl" {
+        assert!(matches!(result, Err(InstallFailure::Abort(_))));
+        assert_eq!(progress, [10]);
+        assert!(!root.join("calls").exists());
+        assert!(!tool.join("build/src/bpftrace").exists());
+        return;
+    }
+    if matches!(
+        case.as_str(),
+        "build" | "cached" | "cached-no-download-tools" | "relative-path" | "held"
+    ) {
         assert_eq!(result.unwrap(), tool.join("build/src/bpftrace"));
         assert_eq!(
             progress,
-            if case != "cached" {
+            if case != "cached" && case != "cached-no-download-tools" {
                 vec![10, 25, 40, 60, 90]
             } else {
                 vec![40, 60, 90]
@@ -267,25 +306,59 @@ esac"#,
         let log = fs::read_to_string(root.join("calls")).unwrap();
         assert!(log.contains("-DBUILD_TESTING=OFF -DBPFTRACE_BUILD_TESTING=OFF"));
         assert!(log.contains("--target bpftrace --parallel"));
-        if case != "cached" {
+        if case != "cached" && case != "cached-no-download-tools" {
             assert!(log.contains(BPFTRACE_SOURCE));
             assert!(log.contains("--strip-components=1"));
         } else {
             assert!(!log.lines().any(|line| line.starts_with("curl ")));
             assert!(!log.lines().any(|line| line.starts_with("tar ")));
         }
+        #[cfg(target_os = "linux")]
+        for selected in fs::read_to_string(root.join("programs")).unwrap().lines() {
+            let selected = Path::new(selected);
+            assert!(selected.is_absolute(), "{selected:?}");
+            assert_eq!(selected.parent(), Some(commands.as_path()));
+        }
     } else {
         let error = result.unwrap_err().to_string();
         let expected = match case.as_str() {
-            "curl-fails" => "could not download pinned bpftrace source",
-            "tar-fails" => "could not extract",
-            "configure-fails" => "cmake could not configure",
-            "compile-fails" => "source compilation failed",
+            "curl-fails" | "curl-127" => "could not download pinned bpftrace source",
+            "tar-fails" | "tar-127" => "could not extract",
+            "configure-fails" | "configure-127" => "cmake could not configure",
+            "compile-fails" | "compile-127" => "source compilation failed",
             "no-output" => "without a discoverable executable",
             "missing-curl" | "missing-tar" | "missing-cmake" => "source build needs",
             "source-blocked" => "cannot create bpftrace source directory",
             _ => unreachable!(),
         };
         assert!(error.contains(expected), "{error}");
+        if let Some(dependency) = case.strip_prefix("missing-") {
+            assert!(error.contains(&format!("`{dependency}`")), "{error}");
+            assert!(error.contains(bpftrace_dependency_commands(dependency)));
+        }
+        if case == "source-blocked" {
+            assert!(error.contains(&tool.join("source").display().to_string()));
+        }
+        let expected_steps = match case.as_str() {
+            "missing-curl" => Some((vec![10], 0)),
+            "curl-127" => Some((vec![10], 1)),
+            "missing-tar" => Some((vec![10, 25], 1)),
+            "tar-127" => Some((vec![10, 25], 2)),
+            "missing-cmake" => Some((vec![10, 25, 40], 2)),
+            "configure-127" => Some((vec![10, 25, 40], 3)),
+            "compile-127" => Some((vec![10, 25, 40, 60], 4)),
+            _ => None,
+        };
+        if let Some((expected_progress, expected_calls)) = expected_steps {
+            assert_eq!(progress, expected_progress);
+            let calls = fs::read_to_string(root.join("calls")).unwrap_or_default();
+            assert_eq!(calls.lines().count(), expected_calls, "{calls}");
+            assert!(!tool.join("build/src/bpftrace").exists());
+            assert!(!tool.join("bin/bpftrace").exists());
+            assert!(!tool.join("bpftrace-compatibility.json").exists());
+            if case.ends_with("-127") {
+                assert!(!error.contains("source build needs"), "{error}");
+            }
+        }
     }
 }
