@@ -385,6 +385,7 @@ fn launch_validates_preparation_before_exposing_a_session_and_preserves_on_failu
         replay: true,
         measurements: Some(&mut measurements),
         show_output: false,
+        progress: None,
     };
     let error = session
         .execute(&mut execution, &mut Vec::new())

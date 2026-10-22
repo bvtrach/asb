@@ -19,6 +19,27 @@ fn ready_child(script: &str) -> Controller {
 }
 
 #[cfg(unix)]
+#[test]
+fn receive_until_returns_none_for_a_presentation_poll_then_delivers_event() {
+    let mut controller = ready_child(
+        "import json,sys,time\nprint(json.dumps(dict(event='ready')),flush=True)\ntime.sleep(.08)\nprint(json.dumps(dict(event='output',data='progress')),flush=True)\nsys.stdin.read()\n",
+    );
+    assert_eq!(
+        controller
+            .receive_until(Instant::now() + Duration::from_millis(10))
+            .unwrap(),
+        None
+    );
+    assert_eq!(
+        controller
+            .receive_until(Instant::now() + Duration::from_secs(1))
+            .unwrap()
+            .unwrap()["event"],
+        "output"
+    );
+}
+
+#[cfg(unix)]
 fn grade() -> CompletedGrade {
     CompletedGrade::decode(
         &json!({"event":"evaluated","result":{"workload":"fixture","task_id":"task",

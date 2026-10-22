@@ -663,6 +663,13 @@ impl<'a> ReadyAttempt<'a> {
             // cancellation/Drop contract may settle an execution error. The
             // prepared-only cancellation API cannot authorize started teardown.
             runtime_entered = true;
+            let mut isolated_progress = progress::Context::new(
+                options.interactive,
+                &config.agent,
+                &config.provider,
+                options.replay_statistics(),
+            )
+            .display();
             let isolated = prepared.workload.execute(
                 &mut workloads::ExecutionContext {
                     launch,
@@ -673,9 +680,15 @@ impl<'a> ReadyAttempt<'a> {
                     replay: tape_mode == Some(tape::Mode::Replay),
                     measurements: prepared.measurements.as_mut(),
                     show_output,
+                    progress: isolated_progress
+                        .as_mut()
+                        .map(|display| display as &mut dyn workloads::session::ExecutionProgress),
                 },
                 output,
             );
+            if let Some(progress) = isolated_progress.as_mut() {
+                crate::workloads::session::ExecutionProgress::finish(progress);
+            }
             let mut issues = AttemptIssues::default();
             let (
                 child,

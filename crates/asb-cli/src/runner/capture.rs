@@ -206,10 +206,7 @@ pub(super) struct CapturedOutput {
 
 /// Best-effort terminal presentation is independent from capture custody.
 /// It must never delay, cancel, or alter the agent execution.
-pub(super) trait Progress {
-    fn update(&mut self, stdout: &[u8], stderr: &[u8]);
-    fn finish(&mut self);
-}
+pub(super) use crate::workloads::session::ExecutionProgress as Progress;
 
 trait Pipe: Read {
     fn prepare(&self) -> io::Result<()>;

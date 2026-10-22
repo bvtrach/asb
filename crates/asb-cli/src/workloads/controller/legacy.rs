@@ -82,7 +82,18 @@ impl Controller {
     }
 
     pub(crate) fn receive(&mut self, deadline: Instant) -> Result<Value, String> {
-        let event = self.receive_raw(deadline)?;
+        self.receive_until(deadline)?
+            .ok_or_else(|| "workload controller exceeded its response deadline".to_owned())
+    }
+
+    pub(crate) fn receive_until(&mut self, deadline: Instant) -> Result<Option<Value>, String> {
+        let event = match self.receive_raw(deadline) {
+            Ok(event) => event,
+            Err(error) if error == "workload controller exceeded its response deadline" => {
+                return Ok(None);
+            }
+            Err(error) => return Err(error),
+        };
         if EventKind::of(&event) == Some(EventKind::Error) {
             // ExecutionError reasons are fixed local diagnostics from our
             // engine, not arbitrary SDK HTTP bodies or request dumps.
@@ -95,7 +106,7 @@ impl Controller {
             }
             return Err("workload controller could not complete the operation; inspect the private task artifacts".into());
         }
-        Ok(event)
+        Ok(Some(event))
     }
 
     fn receive_raw(&mut self, deadline: Instant) -> Result<Value, String> {
