@@ -2,7 +2,10 @@
 
 use crate::{Error, io_error};
 use clap_complete::Shell;
+use std::ffi::OsString;
+use std::fs;
 use std::io::Write;
+use std::path::Path;
 
 /// Write Bash completions without starting project discovery or any providers.
 pub(crate) fn bash(output: &mut dyn Write) -> Result<(), Error> {
@@ -23,6 +26,11 @@ fn generate(shell: Shell, mut command: clap::Command) -> Vec<u8> {
     // Upstream expects an infallible writer. Buffer locally, then propagate
     // user output failures instead of panicking on a broken pipe.
     clap_complete::generate(shell, &mut command, "asb", &mut bytes);
+    match shell {
+        Shell::Bash => append_bash_catalog_lookup(&mut bytes),
+        Shell::Zsh => append_zsh_catalog_lookup(&mut bytes),
+        _ => {}
+    }
     bytes
 }
 
@@ -31,6 +39,226 @@ fn write(shell: Shell, output: &mut dyn Write) -> Result<(), Error> {
         .write_all(&generate(shell, crate::parser::completion_command()))
         .map_err(io_error)
 }
+
+/// Print safe, one-per-line suggestions for the generated shell wrappers.
+/// Project-local workload/trial entries are resolved at tab time, rather than
+/// being frozen when `make install` generated the completion file.
+pub(crate) fn values(args: &[OsString], output: &mut dyn Write) -> Result<(), Error> {
+    let kind = args
+        .first()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| Error::Input("completion value kind is required".into()))?;
+    let context = args.get(1).and_then(|value| value.to_str());
+    let mut values = match kind {
+        "agent" => crate::agents::names().map(str::to_owned).collect(),
+        "provider" => crate::providers::names()
+            .iter()
+            .map(|value| (*value).to_owned())
+            .collect(),
+        "tool" => crate::install::tool_names().map(str::to_owned).collect(),
+        "collector" => crate::measurements::available_collectors(),
+        "workload" => local_workloads(),
+        "trial-set" => local_trial_sets(),
+        "trial" => context.map_or_else(Vec::new, local_trials),
+        // A provider-qualified model completion asks the same discovery path as
+        // setup, so a refreshed provider catalog is immediately useful.  A
+        // failed/offline lookup falls back to the documented local snapshot.
+        "model" => context.map_or_else(all_known_models, |provider| {
+            crate::models::discover_for_setup(provider).unwrap_or_else(|_| known_models(provider))
+        }),
+        _ => {
+            return Err(Error::Input(format!(
+                "unknown completion value kind `{kind}`"
+            )));
+        }
+    };
+    values.sort();
+    values.dedup();
+    for value in values {
+        if !value.contains(['\n', '\r']) {
+            writeln!(output, "{value}").map_err(io_error)?;
+        }
+    }
+    Ok(())
+}
+
+fn known_models(provider: &str) -> Vec<String> {
+    crate::providers::known_models(provider)
+        .unwrap_or_default()
+        .iter()
+        .map(|value| (*value).to_owned())
+        .collect()
+}
+
+fn all_known_models() -> Vec<String> {
+    crate::providers::names()
+        .iter()
+        .flat_map(|provider| {
+            known_models(provider)
+                .into_iter()
+                .flat_map(move |model| [model.clone(), format!("{provider}={model}")])
+        })
+        .collect()
+}
+
+fn workload_directory() -> Option<std::path::PathBuf> {
+    let (root, config) = crate::project::load(Path::new(".")).ok()?;
+    Some(crate::project::resolve(&root, &config.workloads_dir))
+}
+
+fn local_workloads() -> Vec<String> {
+    let mut values = crate::workloads::builtin_names()
+        .chain(crate::install::external_workload_names())
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    if let Some(directory) = workload_directory() {
+        values.extend(read_directory_names(&directory, ".txt"));
+    }
+    values
+}
+
+fn local_trial_sets() -> Vec<String> {
+    workload_directory().map_or_else(Vec::new, |directory| {
+        read_directory_names(&directory, ".workload.toml")
+    })
+}
+
+fn local_trials(workload: &str) -> Vec<String> {
+    let Some(directory) = workload_directory() else {
+        return Vec::new();
+    };
+    crate::workloads::installed_trials(workload, &directory)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|trial| trial.id)
+        .collect()
+}
+
+fn read_directory_names(directory: &Path, suffix: &str) -> Vec<String> {
+    fs::read_dir(directory)
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            entry
+                .file_name()
+                .to_str()
+                .and_then(|name| name.strip_suffix(suffix))
+                .map(str::to_owned)
+        })
+        .collect()
+}
+
+fn append_bash_catalog_lookup(bytes: &mut Vec<u8>) {
+    let mut script = String::from_utf8(std::mem::take(bytes)).expect("clap emits UTF-8");
+    script = script.replacen("_asb() {", "_asb_static() {", 1);
+    script = script.replace("complete -F _asb asb", "complete -F _asb_static asb");
+    script.push_str(BASH_CATALOG_LOOKUP);
+    *bytes = script.into_bytes();
+}
+
+fn append_zsh_catalog_lookup(bytes: &mut Vec<u8>) {
+    let mut script = String::from_utf8(std::mem::take(bytes)).expect("clap emits UTF-8");
+    script = script.replacen("_asb() {", "_asb_static() {", 1);
+    script.push_str(ZSH_CATALOG_LOOKUP);
+    *bytes = script.into_bytes();
+}
+
+const BASH_CATALOG_LOOKUP: &str = r#"
+
+_asb_catalog_value() {
+    "${COMP_WORDS[0]}" --__complete-values "$@" 2>/dev/null
+}
+
+_asb_catalog_option() {
+    local name="$1" value="" i
+    for ((i=1; i<COMP_CWORD; i++)); do
+        if [[ "${COMP_WORDS[i]}" == "${name}" ]]; then
+            value="${COMP_WORDS[i+1]}"
+        elif [[ "${COMP_WORDS[i]}" == "${name}="* ]]; then
+            value="${COMP_WORDS[i]#*=}"
+        fi
+    done
+    printf '%s' "$value"
+}
+
+_asb_catalog_complete() {
+    local cur prev kind context="" values
+    cur="${COMP_WORDS[COMP_CWORD]}"
+    prev="${COMP_WORDS[COMP_CWORD-1]}"
+    case "$prev" in
+        --agent) kind=agent ;;
+        --provider) kind=provider ;;
+        --model) kind=model; context="$(_asb_catalog_option --provider)" ;;
+        --workload) kind=workload ;;
+        --trial) kind=trial; context="$(_asb_catalog_option --workload)" ;;
+        --trial-set) kind=trial-set ;;
+        --measure|--collector) kind=collector ;;
+    esac
+    if [[ -z "$kind" && "${COMP_WORDS[1]}" == tool && "${COMP_WORDS[2]}" == install ]]; then
+        kind=tool
+    elif [[ -z "$kind" && "${COMP_WORDS[1]}" == workload && ( "${COMP_WORDS[2]}" == install || "${COMP_WORDS[2]}" == describe ) ]]; then
+        kind=workload
+    elif [[ -z "$kind" && "${COMP_WORDS[1]}" == provider && "${COMP_WORDS[2]}" == models ]]; then
+        kind=provider
+    fi
+    [[ -n "$kind" ]] || return 1
+    values="$(_asb_catalog_value "$kind" "$context")" || return 1
+    COMPREPLY=( $(compgen -W "$values" -- "$cur") )
+    return 0
+}
+
+_asb() {
+    _asb_catalog_complete && return
+    _asb_static "$@"
+}
+complete -F _asb asb
+"#;
+
+const ZSH_CATALOG_LOOKUP: &str = r#"
+
+_asb_catalog_option() {
+    local option="$1" value="" i
+    for ((i=2; i<CURRENT; i++)); do
+        if [[ "${words[i]}" == "$option" ]]; then
+            value="${words[i+1]}"
+        elif [[ "${words[i]}" == "$option="* ]]; then
+            value="${words[i]#*=}"
+        fi
+    done
+    print -r -- "$value"
+}
+
+_asb_catalog_complete() {
+    local previous="${words[CURRENT-1]}" kind="" context=""
+    case "$previous" in
+        --agent) kind=agent ;;
+        --provider) kind=provider ;;
+        --model) kind=model; context="$(_asb_catalog_option --provider)" ;;
+        --workload) kind=workload ;;
+        --trial) kind=trial; context="$(_asb_catalog_option --workload)" ;;
+        --trial-set) kind=trial-set ;;
+        --measure|--collector) kind=collector ;;
+    esac
+    if [[ -z "$kind" && "${words[2]}" == tool && "${words[3]}" == install ]]; then
+        kind=tool
+    elif [[ -z "$kind" && "${words[2]}" == workload && ( "${words[3]}" == install || "${words[3]}" == describe ) ]]; then
+        kind=workload
+    elif [[ -z "$kind" && "${words[2]}" == provider && "${words[3]}" == models ]]; then
+        kind=provider
+    fi
+    [[ -n "$kind" ]] || return 1
+    local -a candidates
+    candidates=("${(@f)$("${words[1]}" --__complete-values "$kind" "$context" 2>/dev/null)}")
+    (( ${#candidates} )) || return 1
+    _describe -t values "$kind" candidates
+}
+
+_asb() {
+    _asb_catalog_complete || _asb_static "$@"
+}
+compdef _asb asb
+"#;
 
 #[cfg(test)]
 mod tests {
@@ -66,11 +294,45 @@ mod tests {
             command.build();
             let script = String::from_utf8(generate(shell, command.clone())).unwrap();
             assert_schema(&command, &script);
-            for tool in crate::install::tool_names() {
+            for (kind, values) in [
+                (
+                    "agent",
+                    crate::agents::names()
+                        .map(str::to_owned)
+                        .collect::<Vec<_>>(),
+                ),
+                (
+                    "provider",
+                    crate::providers::names()
+                        .iter()
+                        .map(|value| (*value).to_owned())
+                        .collect(),
+                ),
+                (
+                    "tool",
+                    crate::install::tool_names().map(str::to_owned).collect(),
+                ),
+                ("collector", crate::measurements::available_collectors()),
+            ] {
+                for value in values {
+                    assert!(script.contains(&value), "{shell:?} missing {kind} {value}");
+                }
+            }
+            for workload in
+                crate::workloads::builtin_names().chain(crate::install::external_workload_names())
+            {
                 assert!(
-                    script.contains(tool),
-                    "{shell:?} missing registry tool {tool}"
+                    script.contains(workload),
+                    "{shell:?} missing workload {workload}"
                 );
+            }
+            for provider in crate::providers::names() {
+                for model in crate::providers::known_models(provider).unwrap_or_default() {
+                    assert!(
+                        script.contains(model),
+                        "{shell:?} missing known {provider} model {model}"
+                    );
+                }
             }
             for option in [
                 "--configure-host",
