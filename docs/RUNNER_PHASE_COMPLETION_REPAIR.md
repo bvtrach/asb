@@ -369,3 +369,57 @@ No source edit or relink occurred during those tests. Logs are retained under
 `target/runner45-*`. These are focused results, not complete qualification.
 No provider, credentials, SDK, Docker or privileged collector was used.
 
+## Renewed complete qualification on corrected fixture stack
+
+Signed normal merge `ece0b2f69164216cee15d59f858c1693137d8bfa` incorporates
+independently reviewed PR310 candidate `7a77a720`. Against that candidate,
+exactly eight files differ: the intended runner implementation and owning
+tests, its proof documents, and the staged0.2.45 version pair. Independent
+read-only review confirmed the runner production and entry-support source
+remain byte-identical to reviewed `6e21f19a`. The five-line runner fixture merge
+changes executable creation/cleanup only; its payload and assertions remain.
+Actual310 and runner delivery merge ancestry are still separate requirements.
+
+Actual ASB built FIRST offline/locked, one job, incremental compilation off,
+in13.20s on the exclusive HOME43 cache. Its frozen copy is
+`target/qualification/runner45-ece0b2f6-asb`, SHA256
+`9889c4c5f70b7dd8856936b85b79db143132ab019c8b330549deb29aa0d0a34f`.
+The fresh workspace/all-target/all-feature suite exited0: **1476 passed,
+zero failed,21 existing opt-in ignored across24 outer targets**. Library
+1221/0/13 took22.73s; benchmark protocol35/0 took38.80s. Both root and the
+independent reviewer selected the last summary for each outer Cargo target,
+excluding three nested subprocess summaries. No tests were skipped to repair
+the earlier failure. Actual/frozen hashes matched after the full suite and
+again after all make/doc/completion gates.
+
+Separate workspace/all-feature doctests passed with zero tests. Strict locked/
+offline workspace/all-target/all-feature Clippy passed15.44s, fmt/diff checks
+passed, and sequential `make -j1 build` passed with private Rustdoc, pinned
+AutoUML0.7.2, SVG/interactive/function-flow views and shell completions. Bash/Zsh
+syntax checks passed; checkout-update tests passed7/0. All handles terminated0
+before packaging, with no source edits or executable relink during runtime.
+Logs are `target/runner45-ece0-{actual-build,full,doctests,clippy,fmt,make,
+update-tests}.log`. The empty generated `.asb/install.log` was verified regular,
+nonsymlink and zero-byte, then moved recoverably with its metadata under
+`target/fixture-preservation/runner45-ece0/`; only the empty directory was removed.
+Other generated crate target diagnostics remain preserved and excluded from
+the archive.
+
+Locked/offline cargo package verification exited0 in15.23s, packaging512files
+(6.1MiB/1.3MiB compressed). Archive SHA256:
+`c6b2ab13ec5f22d1cb945da1021db5d597ef38fbbf6227af9e5b7b3d30c3e0f3`.
+Both shared fixture support files and required runtime assets are present;
+the immutable mock gate is mode0755 with unchanged digest
+`d16a2513892ab4503e31e120de3527e6125783a081e4435279da321b0382b7a2`.
+No generated target tree is packaged. Verification relinked ordinary debug ASB
+after the full tests, SHA256
+`4b3b215c8d685e719de17e2f060db6e9e50f4fc76f21132009ece74ec71dbf44`;
+its separately frozen `runner45-ece0b2f6-packaged-asb` passed help smoke only.
+It is not the full-suite executable. Package logs use the same ece0 prefix.
+
+This is combined local offline Linux x86-64 qualification, not live providers,
+SDKs, Windows/ARM or a second extracted-package full suite. Independent combined
+source/full-evidence approval is tied to ece0; final proof review, actual-main
+ancestry, fresh exact-head hosted/package checks, both post-merge jobs and signed
+patch release remain required. The removed90%coverage gate stays removed.
+

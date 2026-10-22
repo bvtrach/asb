@@ -117,6 +117,25 @@ cross-adapter tests; provider preparation cases belong to their providers.
 
 Use the pinned Rust toolchain and run:
 
+Offline tests require Node.js22 and a genuine Python3.12 or3.13 executable
+named python3.12 or python3.13 on PATH, with the standard-library venv module.
+Provision these prerequisites before testing: cargo --offline does not prevent
+product init from bootstrapping Python if the host lacks a supported version.
+The hosted CI job explicitly provisions Python3.12 with the official
+[setup-python action](https://github.com/actions/setup-python); the hardened
+native job only verifies its already-installed compatible runtime and never
+tries to install into its read-only /opt tool cache.
+
+The offline_cli ordinary Project fixture verifies actual supported version
+output and venv import on its effective PATH/child cwd before every init
+invocation (including repeated-init/refusal tests). This is a test prerequisite,
+not a product restriction: an unmet prerequisite fails precisely before invoking
+ASB or downloading anything. An explicit test-only IntentionalBootstrap policy
+is used ONLY by the existing incompatible-runtime/fake-uv, missing-runtime and
+opt-in real-download fixtures. Their deliberately overridden PATH remains
+authoritative. No version is globally faked and no product bootstrap flag is
+introduced. Actual project initialization still installs Python when necessary.
+
 ```sh
 cargo fmt --all -- --check
 cargo clippy --locked --all-targets --all-features -- -D warnings
