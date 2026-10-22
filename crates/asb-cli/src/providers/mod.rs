@@ -265,7 +265,6 @@ pub(crate) fn runtime_inputs(
 
 /// Interfaces offered by the provider for this model, in provider preference
 /// order. A model whose endpoint family is not yet known must not be guessed.
-#[cfg(test)]
 pub(crate) fn offered_endpoints(provider: &str, model: &str) -> Vec<crate::endpoint::Offer> {
     adapters::find(provider).map_or_else(Vec::new, |adapter| adapter.offered_endpoints(model))
 }

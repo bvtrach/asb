@@ -47,11 +47,12 @@ fn configuration(options: SetupOptions) -> Result<BenchmarkConfig, Error> {
         .iter()
         .map(|adapter| adapter.id())
         .collect::<Vec<_>>();
-    if let Some(candidate) = suggestions::closest(&agent, &known_agents) {
-        return Err(Error::Input(format!(
-            "unknown agent `{agent}`; did you mean `{candidate}`?"
-        )));
-    }
+    let adapter = agents::find(&agent).ok_or_else(|| {
+        let suggestion = suggestions::closest(&agent, &known_agents)
+            .map(|candidate| format!("; did you mean `{candidate}`?"))
+            .unwrap_or_default();
+        Error::Input(format!("unknown agent `{agent}`{suggestion}"))
+    })?;
     let provider = required(provider.into_iter().next())?;
     if let Some(candidate) = suggestions::closest(&provider, providers::names()) {
         return Err(Error::Input(format!(
@@ -100,6 +101,15 @@ fn configuration(options: SetupOptions) -> Result<BenchmarkConfig, Error> {
             },
         }),
     };
+    // Reject static endpoint mismatches before publishing a configuration.
+    // Live model-catalog tool support is checked before the provider/agent starts.
+    crate::endpoint::choose_from(
+        adapter.id(),
+        adapter.supported_endpoints(),
+        &config.provider,
+        &config.model,
+        &providers::offered_endpoints(&config.provider, &config.model),
+    )?;
     Ok(config)
 }
 
@@ -246,5 +256,23 @@ mod tests {
             &mut Vec::new(),
         )
         .expect("setup must not reject models absent from an old snapshot");
+    }
+
+    #[test]
+    fn setup_rejects_unknown_agents_and_incompatible_endpoint_pairs() {
+        let unknown = setup(
+            options("unknown-agent", "cli2key", "fixture"),
+            &mut Vec::new(),
+        )
+        .expect_err("unknown agent must be rejected");
+        assert!(
+            unknown
+                .to_string()
+                .contains("unknown agent `unknown-agent`")
+        );
+
+        let incompatible = setup(options("hermes", "gemini", "fixture"), &mut Vec::new())
+            .expect_err("Gemini cannot satisfy Hermes endpoint contract");
+        assert!(incompatible.to_string().contains("no compatible endpoint"));
     }
 }
