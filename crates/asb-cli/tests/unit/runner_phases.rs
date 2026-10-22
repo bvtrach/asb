@@ -16,6 +16,9 @@ impl Fixture {
 }
 impl Drop for Fixture {
     fn drop(&mut self) {
+        #[cfg(unix)]
+        let _ = crate::fixture_writer::cleanup(&self.0);
+        #[cfg(not(unix))]
         let _ = std::fs::remove_dir_all(&self.0);
     }
 }
@@ -1416,7 +1419,7 @@ fn actual_guest_termination_reaches_true_false_pending_grade_phases_without_reex
             )
             .unwrap();
             let program = root.join("tools/pi/bin/pi");
-            std::fs::write(&program,format!("#!/bin/sh\nprintf 'called\\n' >> '{}'\nprintf '%s\\n' '{{\"type\":\"result\",\"result\":\"submission\"}}'\n{ending}\n",root.join("client-calls").display())).unwrap();
+            crate::write_test_file(&root, &program,format!("#!/bin/sh\nprintf 'called\\n' >> '{}'\nprintf '%s\\n' '{{\"type\":\"result\",\"result\":\"submission\"}}'\n{ending}\n",root.join("client-calls").display())).unwrap();
             std::fs::set_permissions(program, std::fs::Permissions::from_mode(0o700)).unwrap();
             let request = serde_json::json!({"config":{"agent":"pi","provider":"openrouter","model":"fixture","workload":"fixture","workspace":root.join("workspace")},"connection":{"interface":"open_ai_chat","authentication":"bearer","base_url":"http://127.0.0.1:1/v1","credential":"fixture"},"prompt":"offline","project_root":root,"runtime_dir":root.join("private"),"run_dir":root.join("private/attempt")});
             let mut command = Command::new(&runtime);

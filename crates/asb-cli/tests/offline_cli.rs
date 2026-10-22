@@ -1,28 +1,22 @@
 //! CLI contract tests using isolated local projects and no provider credentials.
 
+#[path = "support/fixture_namespace.rs"]
+mod fixture_namespace;
+#[cfg(unix)]
+#[path = "support/fixture_writer.rs"]
+mod fixture_writer;
 mod support;
 use std::path::PathBuf;
 use std::process::{Command, Output};
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+#[cfg(unix)]
+use std::sync::atomic::Ordering;
 use support::IsolatedEnvironment;
-
-static NEXT: AtomicUsize = AtomicUsize::new(0);
 
 struct Project(PathBuf);
 
 impl Project {
     fn new() -> Self {
-        let stamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "asb-offline-cli-{}-{stamp}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::create_dir_all(&root).unwrap();
+        let root = fixture_namespace::allocate(&std::env::temp_dir(), "asb-offline-cli-").unwrap();
         Self(root)
     }
 
@@ -104,6 +98,11 @@ impl Project {
     fn write(&self, name: &str, contents: &str) {
         let path = self.0.join(name);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        #[cfg(unix)]
+        if contents.starts_with("#!") {
+            fixture_writer::write_file(&self.0, &path, contents).unwrap();
+            return;
+        }
         std::fs::write(path, contents).unwrap();
     }
 
@@ -120,6 +119,9 @@ impl Project {
 
 impl Drop for Project {
     fn drop(&mut self) {
+        #[cfg(unix)]
+        let _ = fixture_writer::cleanup(&self.0);
+        #[cfg(not(unix))]
         let _ = std::fs::remove_dir_all(&self.0);
     }
 }

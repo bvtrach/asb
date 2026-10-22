@@ -154,7 +154,7 @@ sys.exit(int(case[4:]) if case.startswith('exit') else 0)
                 python.display()
             );
             if case != "missing-curl" {
-                fs::write(&curl, program).unwrap();
+                crate::write_test_file(&directory, &curl, program).unwrap();
                 fs::set_permissions(
                     &curl,
                     fs::Permissions::from_mode(if case == "nonexec-curl" { 0o600 } else { 0o700 }),

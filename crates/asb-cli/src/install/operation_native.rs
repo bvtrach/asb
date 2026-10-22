@@ -665,7 +665,7 @@ mod tests {
             ),
         ] {
             let path = root.join("bin").join(name);
-            std::fs::write(&path, script).unwrap();
+            crate::write_test_file(&root, &path, script).unwrap();
             std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
         }
         let current = std::env::current_exe().unwrap();

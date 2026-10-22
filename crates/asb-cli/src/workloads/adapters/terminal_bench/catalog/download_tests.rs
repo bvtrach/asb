@@ -54,7 +54,7 @@ fn isolated_catalog_source_download_and_cache_preservation_contracts() {
             .unwrap();
             if case != "missing-curl" {
                 let curl = directory.join("commands/curl");
-                fs::write(&curl,r#"#!/bin/sh
+                crate::write_test_file(&directory, &curl,r#"#!/bin/sh
 printf '%s\n' "$*" > "$HOME/curl-arguments"
 [ "$ASB_TERMINAL_SOURCE_CASE" != download-fails ] || exit 2
 while [ "$#" -gt 0 ]; do
