@@ -50,10 +50,6 @@ if child == 0:
                 output.write(b"x")
                 time.sleep(.01)
     os._exit(0)  # double fork: only the gate can retain this descendant
-if mode == "helper-loss":
-    while not (root / "grandchild.pid").exists():
-        time.sleep(.005)
-    os.kill(os.getppid(), signal.SIGKILL)
 while True:
     time.sleep(1)
 '''
@@ -92,6 +88,48 @@ def environment(root):
     return result
 
 
+def kill_owned_install_helper(process, binary, root):
+    def bounded(path, limit):
+        with path.open("rb") as stream:
+            value = stream.read(limit + 1)
+        assert len(value) <= limit, (path, "oversized fixture process evidence")
+        return value
+
+    def identity(pid):
+        fields = bounded(Path(f"/proc/{pid}/stat"), 4096).rsplit(b")", 1)[1].split()
+        return int(fields[1]), int(fields[19])  # parent PID, start time
+
+    principal = int((root / "principal.pid").read_text())
+    expected = [b"__asb-install", b"ASBINSTALL1", b"tool", os.fsencode(root),
+                os.fsencode(root / ".asb-tools"), b"pi"]
+    chain = []
+    candidates = []
+    pid = principal
+    for _ in range(8):
+        parent, started = identity(pid)
+        chain.append((pid, parent, started))
+        args = bounded(Path(f"/proc/{pid}/cmdline"), 8192).rstrip(b"\0").split(b"\0")
+        if args[1:] == expected:
+            candidates.append((pid, parent, started))
+        if pid == process.pid:
+            break
+        pid = parent
+    assert chain[-1][0] == process.pid, ("not our TUI ancestry", chain)
+    assert len(candidates) == 1, ("expected exactly one owned install helper", chain, candidates)
+    helper, parent, started = candidates[0]
+    descriptor = os.pidfd_open(helper)
+    try:
+        assert identity(helper) == (parent, started), "helper identity changed"
+        assert bounded(Path(f"/proc/{helper}/cmdline"), 8192).rstrip(b"\0").split(b"\0")[1:] == expected
+        assert os.path.samefile(f"/proc/{helper}/cwd", root)
+        assert os.path.samefile(f"/proc/{helper}/exe", binary)
+        print(json.dumps({"helper_loss_owned_ancestry": chain, "helper": helper,
+                          "principal_parent": chain[0][1], "image_matched": True}), flush=True)
+        signal.pidfd_send_signal(descriptor, signal.SIGKILL)
+    finally:
+        os.close(descriptor)
+
+
 def tui(binary, root, action):
     master, slave = pty.openpty()
     fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
@@ -107,6 +145,7 @@ def tui(binary, root, action):
     output_open = True
     started = False
     triggered = False
+    helper_signalled = False
     deadline = time.monotonic() + 15
     try:
         while time.monotonic() < deadline and process.poll() is None:
@@ -124,6 +163,9 @@ def tui(binary, root, action):
             else:
                 time.sleep(.01)
             ready = (root / "grandchild.pid").is_file() and (root / "writes").exists()
+            if action == "helper-loss" and ready and not helper_signalled:
+                kill_owned_install_helper(process, binary, root)
+                helper_signalled = True
             if action in ["epipe", "cancel", "escape", "owner-loss"] and ready and not triggered:
                 triggered = True
                 if action == "epipe":
@@ -153,6 +195,7 @@ def tui(binary, root, action):
         if action == "fail":
             assert b"credential-looking-value" in (root / ".asb/install.log").read_bytes()
         if action == "helper-loss":
+            assert helper_signalled
             assert b"missing final status" in transcript, transcript[-2000:]
         assert not list(root.glob("asb-sweep-*.toml")), "cancellation must not publish selection"
     finally:
