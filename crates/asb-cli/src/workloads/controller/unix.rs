@@ -233,7 +233,21 @@ impl Controller {
     }
 
     pub(crate) fn receive(&mut self, deadline: Instant) -> Result<Value, String> {
-        let event = self.receive_raw(deadline)?;
+        self.receive_until(deadline)?
+            .ok_or_else(|| "workload controller exceeded its response deadline".to_owned())
+    }
+
+    /// Receive one event if it arrives before `deadline`. A deadline expiry is
+    /// a normal polling result here; callers that require a hard deadline use
+    /// `receive` instead.
+    pub(crate) fn receive_until(&mut self, deadline: Instant) -> Result<Option<Value>, String> {
+        let event = match self.receive_raw(deadline) {
+            Ok(event) => event,
+            Err(error) if error == "workload controller exceeded its response deadline" => {
+                return Ok(None);
+            }
+            Err(error) => return Err(error),
+        };
         if EventKind::of(&event) == Some(EventKind::Error) {
             if event["error_class"] == "ExecutionError"
                 && let Some(reason) = event["reason"]
@@ -244,7 +258,7 @@ impl Controller {
             }
             return Err("workload controller could not complete the operation; inspect the private task artifacts".into());
         }
-        Ok(event)
+        Ok(Some(event))
     }
 
     fn receive_raw(&mut self, deadline: Instant) -> Result<Value, String> {
