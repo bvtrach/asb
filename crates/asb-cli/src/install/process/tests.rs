@@ -1633,3 +1633,56 @@ fn actual_source_installation_succeeds_despite_ancillary_write_or_flush_failure(
         );
     }
 }
+
+#[test]
+fn actual_source_installation_and_required_capture_survive_exhausted_diagnostic_budget() {
+    let root = root();
+    let mut context = context(&root);
+    context.log_budget = Arc::new(native::LogBudget::with_limits(0, 0));
+    let source = root.join("input");
+    let destination = root.join("installed");
+    fs::write(&source, "valid product").unwrap();
+    crate::install::source::install_input_in(
+        &context,
+        &crate::install::source::Input::pin_local(source).unwrap(),
+        &destination,
+        crate::install::source::Options {
+            kind: "diagnostic budget independence fixture",
+            limit: 4096,
+            checksum: None,
+            executable: false,
+        },
+        |_, scope| {
+            let mut step = scope.prepare(
+                "/bin/sh",
+                Purpose::Version,
+                "required inspection despite log quota",
+            )?;
+            step.command_mut()
+                .args(["-c", "printf required-inert-response"]);
+            step.capture(Capture::inspection());
+            let result = scope.run(step)?;
+            assert!(result.status.success());
+            assert_eq!(result.stdout, b"required-inert-response");
+            assert!(result.log.settled);
+            assert_eq!(result.log.fault.unwrap().phase, LogPhase::Budget);
+            Ok(())
+        },
+        crate::install::source::Publication::Replace,
+    )
+    .unwrap();
+    assert_eq!(fs::read(destination).unwrap(), b"valid product");
+    let mut output = Vec::new();
+    context.report_diagnostics(&mut output).unwrap();
+    let output = String::from_utf8(output).unwrap();
+    assert_eq!(output.matches("Warning:").count(), 1);
+    assert!(output.contains("diagnostic log budget failed (WouldBlock)"));
+    assert!(!output.contains("required-inert-response"));
+    assert!(!fs::read_dir(&root).unwrap().any(|entry| {
+        entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".asb-install-step-")
+    }));
+}

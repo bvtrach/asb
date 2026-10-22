@@ -220,6 +220,11 @@ fn core_review_log_pressure_must_preserve_only_the_first_bytes_prefix() {
     assert_eq!(report.retained, 17);
     assert_eq!(report.discarded, 8);
     assert_eq!(
+        sink.budget.remaining.load(Ordering::Acquire),
+        OPERATION_LOG_BYTES - 17,
+        "only definitely rejected queue bytes may return to the quota"
+    );
+    assert_eq!(
         report.fault,
         Some(LogFault {
             phase: LogPhase::Queue,
@@ -280,7 +285,12 @@ fn log_fault_phases_distinguish_namespace_open_start_and_flush() {
             assert_eq!(fs::read(log).unwrap(), b"keep arriving bytes");
         }
     }
-    let missing_worker = LogSink::new_inner(&root, None, Some(io::ErrorKind::Other));
+    let missing_worker = LogSink::new_inner(
+        &root,
+        Arc::new(LogBudget::default()),
+        None,
+        Some(io::ErrorKind::Other),
+    );
     missing_worker.push(b"inert-not-written");
     let missing_worker = missing_worker.finish();
     assert!(missing_worker.settled);
@@ -323,4 +333,113 @@ fn log_fault_phases_distinguish_namespace_open_start_and_flush() {
     assert!(output.contains("log flush failed (StorageFull)"));
     assert!(!output.contains("log write failed"));
     assert!(!output.contains("inert-actually-written"));
+}
+
+fn await_log_settlement(report: &Arc<Mutex<LogReport>>) -> LogReport {
+    let end = Instant::now() + Duration::from_secs(5);
+    loop {
+        let report = report.lock().unwrap().clone();
+        if report.settled {
+            return report;
+        }
+        assert!(Instant::now() < end, "actual log writer did not settle");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
+
+#[test]
+fn operation_writer_budget_survives_snapshots_until_actual_held_writers_exit() {
+    let root = root();
+    let budget = Arc::new(LogBudget::with_limits(4, 64));
+    let release = Arc::new((Mutex::new(false), Condvar::new()));
+    let release_on_failure = ReleasePressure(Arc::clone(&release));
+    let mut reports = Vec::new();
+    for _ in 0..4 {
+        let reached = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&reached);
+        let held = Arc::clone(&release);
+        let sink = LogSink::new_inner(
+            &root,
+            Arc::clone(&budget),
+            Some(Box::new(move |file| {
+                Box::new(PressureWriter {
+                    file,
+                    reached: flag,
+                    release: held,
+                })
+            })),
+            None,
+        );
+        sink.push(b"x");
+        let end = Instant::now() + Duration::from_secs(5);
+        while !reached.load(Ordering::Acquire) {
+            assert!(
+                Instant::now() < end,
+                "held writer did not enter actual write"
+            );
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        reports.push(Arc::clone(&sink.report));
+        assert!(
+            !sink.finish().settled,
+            "snapshot invented writer completion"
+        );
+    }
+    assert_eq!(budget.active.load(Ordering::Acquire), 4);
+    let entries = fs::read_dir(&root).unwrap().count();
+    let denied = LogSink::new_inner(&root, Arc::clone(&budget), None, None).finish();
+    assert!(denied.settled);
+    assert_eq!(
+        denied.fault,
+        Some(LogFault {
+            phase: LogPhase::Budget,
+            kind: io::ErrorKind::WouldBlock
+        })
+    );
+    assert!(denied.path.is_none());
+    assert_eq!(
+        fs::read_dir(&root).unwrap().count(),
+        entries,
+        "denial created a namespace before permit acquisition"
+    );
+    assert_eq!(budget.active.load(Ordering::Acquire), 4);
+    drop(release_on_failure);
+    for report in reports {
+        let report = await_log_settlement(&report);
+        assert_eq!(report.retained, 1);
+        assert_eq!(report.fault, None);
+    }
+    assert_eq!(budget.active.load(Ordering::Acquire), 0);
+    let next = LogSink::new_inner(&root, Arc::clone(&budget), None, None);
+    let report = Arc::clone(&next.report);
+    next.push(b"y");
+    next.finish();
+    assert_eq!(await_log_settlement(&report).retained, 1);
+    assert_eq!(budget.active.load(Ordering::Acquire), 0);
+    assert_eq!(budget.remaining.load(Ordering::Acquire), 59);
+}
+
+#[test]
+fn operation_byte_budget_keeps_only_accepted_prefix_and_never_resets_on_writer_exit() {
+    let root = root();
+    let budget = Arc::new(LogBudget::with_limits(1, 5));
+    let first = LogSink::new_inner(&root, Arc::clone(&budget), None, None);
+    let report = Arc::clone(&first.report);
+    first.push(b"1234567");
+    first.finish();
+    let first = await_log_settlement(&report);
+    assert_eq!(fs::read(first.path.unwrap()).unwrap(), b"12345");
+    assert_eq!((first.accepted, first.retained, first.discarded), (5, 5, 2));
+    assert_eq!(first.fault.unwrap().phase, LogPhase::Budget);
+    assert_eq!(budget.remaining.load(Ordering::Acquire), 0);
+    assert_eq!(budget.active.load(Ordering::Acquire), 0);
+    let next = LogSink::new_inner(&root, Arc::clone(&budget), None, None);
+    let report = Arc::clone(&next.report);
+    next.push(b"later");
+    next.finish();
+    let next = await_log_settlement(&report);
+    assert_eq!((next.accepted, next.retained, next.discarded), (0, 0, 5));
+    assert_eq!(fs::read(next.path.unwrap()).unwrap(), b"");
+    assert_eq!(next.fault.unwrap().phase, LogPhase::Budget);
+    assert_eq!(budget.remaining.load(Ordering::Acquire), 0);
 }

@@ -981,3 +981,25 @@ before/final SHA256 all equal
 All handles terminal; this remains focused Linux qualification, not complete
 adapter/CLI/aggregate-budget coverage or non-Linux qualification. No full suite,
 PR, push or release is claimed.
+
+### Approved aggregate ancillary policy and prerequisite ancestry (source)
+
+Normal signed merge e125d2fb brings delivered main66fb and the independently
+approved minimal reaper prerequisite73e, NOT the unfinished class50 guardian
+branch. Only Cargo.toml/lock version conflicts occurred;44 remains a local
+staging value pending root release allocation. Process cleanup/helper exchange/
+checkpoint source matches73e; our gate/installer/runner/collector protections
+were unchanged by the merge. No qualification is inherited merely from merging.
+
+Root approved a private operation-owned diagnostic budget: four live ancillary
+writers and64MiB total accepted bytes, with16MiB per-step unchanged. Writer
+permission is nonblocking and acquired BEFORE namespace/thread admission. The
+actual worker holds it through write, flush and file close; taking a pending
+snapshot does not return it. Denial is settled-with-fault Budget/WouldBlock,
+not a fake pending writer and never a capture/status/product failure. Byte quota
+is charged for accepted prefix bytes and not replenished when a writer exits or
+fails. Only an actual SyncSender rejection proves bytes unaccepted and returns
+that reservation. No uncertain accepted bytes are refunded. This policy adds no
+public configuration/authentication requirement; required capture budgets stay
+independent. Tiny-budget/held-writer and healthy-product tests are SOURCE ONLY
+until the new combined actual is built and focused cases are observed.

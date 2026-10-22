@@ -12,6 +12,60 @@ use std::sync::{Mutex, mpsc};
 const CLEANUP: Duration = Duration::from_secs(6);
 const LOG_BYTES: usize = 16 * 1024 * 1024;
 const CHUNK: usize = 8192;
+const OPERATION_LOG_BYTES: usize = 64 * 1024 * 1024;
+const OPERATION_LOG_WORKERS: usize = 4;
+
+pub(super) struct LogBudget {
+    active: std::sync::atomic::AtomicUsize,
+    remaining: std::sync::atomic::AtomicUsize,
+    workers: usize,
+}
+impl Default for LogBudget {
+    fn default() -> Self {
+        Self {
+            active: std::sync::atomic::AtomicUsize::new(0),
+            remaining: std::sync::atomic::AtomicUsize::new(OPERATION_LOG_BYTES),
+            workers: OPERATION_LOG_WORKERS,
+        }
+    }
+}
+impl LogBudget {
+    #[cfg(test)]
+    pub(super) fn with_limits(workers: usize, bytes: usize) -> Self {
+        Self {
+            active: std::sync::atomic::AtomicUsize::new(0),
+            remaining: std::sync::atomic::AtomicUsize::new(bytes),
+            workers,
+        }
+    }
+    fn acquire(self: &Arc<Self>) -> Option<LogWriterPermit> {
+        self.active
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |active| {
+                (active < self.workers).then_some(active + 1)
+            })
+            .ok()?;
+        Some(LogWriterPermit(Arc::clone(self)))
+    }
+    fn reserve(&self, maximum: usize) -> usize {
+        self.remaining
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
+                Some(remaining.saturating_sub(maximum))
+            })
+            .unwrap()
+            .min(maximum)
+    }
+    fn return_unaccepted(&self, bytes: usize) {
+        // Only a SyncSender rejection proves these bytes were never accepted.
+        // Written, queued, or otherwise uncertain accepted data is never refunded.
+        self.remaining.fetch_add(bytes, Ordering::AcqRel);
+    }
+}
+struct LogWriterPermit(Arc<LogBudget>);
+impl Drop for LogWriterPermit {
+    fn drop(&mut self) {
+        self.0.active.fetch_sub(1, Ordering::AcqRel);
+    }
+}
 
 #[cfg(test)]
 pub(super) type WriterFactory = Box<dyn FnOnce(File) -> Box<dyn Write + Send> + Send>;
@@ -41,11 +95,14 @@ pub(crate) struct LogReport {
 struct LogSink {
     queue: Option<mpsc::SyncSender<Vec<u8>>>,
     report: Arc<Mutex<LogReport>>,
+    budget: Arc<LogBudget>,
 }
 impl LogSink {
+    #[cfg(test)]
     fn new(root: &Path, #[cfg(test)] factory: Option<WriterFactory>) -> Self {
         Self::new_inner(
             root,
+            Arc::new(LogBudget::default()),
             #[cfg(test)]
             factory,
             #[cfg(test)]
@@ -54,10 +111,24 @@ impl LogSink {
     }
     fn new_inner(
         root: &Path,
+        budget: Arc<LogBudget>,
         #[cfg(test)] factory: Option<WriterFactory>,
         #[cfg(test)] worker_start_error: Option<io::ErrorKind>,
     ) -> Self {
         let report = Arc::new(Mutex::new(LogReport::default()));
+        // Admit a bounded ancillary writer BEFORE any namespace or thread IO.
+        let Some(permit) = budget.acquire() else {
+            report.lock().unwrap().fault = Some(LogFault {
+                phase: LogPhase::Budget,
+                kind: io::ErrorKind::WouldBlock,
+            });
+            report.lock().unwrap().settled = true;
+            return Self {
+                queue: None,
+                report,
+                budget,
+            };
+        };
         let prepared = private_log(root);
         let (file, path) = match prepared {
             Ok(value) => value,
@@ -70,6 +141,7 @@ impl LogSink {
                 return Self {
                     queue: None,
                     report,
+                    budget,
                 };
             }
         };
@@ -131,6 +203,8 @@ impl LogSink {
                             kind: error.kind(),
                         });
                     }
+                    drop(file);
+                    drop(permit); // Actual writer/flush/close ended, not just a snapshot.
                     state.lock().unwrap().settled = true;
                 })
         };
@@ -149,11 +223,13 @@ impl LogSink {
             return Self {
                 queue: None,
                 report,
+                budget,
             };
         }
         Self {
             queue: Some(queue),
             report,
+            budget,
         }
     }
     fn push(&self, bytes: &[u8]) {
@@ -161,8 +237,18 @@ impl LogSink {
             return;
         }
         let mut report = self.report.lock().unwrap();
-        let count = bytes.len().min(LOG_BYTES.saturating_sub(report.accepted));
-        if report.truncated || count == 0 || self.queue.is_none() || report.fault.is_some() {
+        if report.truncated || self.queue.is_none() || report.fault.is_some() {
+            report.truncated = true;
+            report.discarded = report.discarded.saturating_add(bytes.len());
+            return;
+        }
+        let maximum = bytes.len().min(LOG_BYTES.saturating_sub(report.accepted));
+        let count = self.budget.reserve(maximum);
+        if count == 0 {
+            report.fault.get_or_insert(LogFault {
+                phase: LogPhase::Budget,
+                kind: io::ErrorKind::WouldBlock,
+            });
             report.truncated = true;
             report.discarded = report.discarded.saturating_add(bytes.len());
             return;
@@ -178,8 +264,15 @@ impl LogSink {
                 report.accepted += count;
                 report.discarded = report.discarded.saturating_add(bytes.len() - count);
                 report.truncated |= count != bytes.len();
+                if count != bytes.len() {
+                    report.fault.get_or_insert(LogFault {
+                        phase: LogPhase::Budget,
+                        kind: io::ErrorKind::WouldBlock,
+                    });
+                }
             }
             Err(mpsc::TrySendError::Full(_)) => {
+                self.budget.return_unaccepted(count);
                 report.fault.get_or_insert(LogFault {
                     phase: LogPhase::Queue,
                     kind: io::ErrorKind::WouldBlock,
@@ -188,6 +281,7 @@ impl LogSink {
                 report.truncated = true;
             }
             Err(mpsc::TrySendError::Disconnected(_)) => {
+                self.budget.return_unaccepted(count);
                 report.fault.get_or_insert(LogFault {
                     phase: LogPhase::Queue,
                     kind: io::ErrorKind::BrokenPipe,
@@ -491,10 +585,13 @@ fn supervise(
 ) {
     // These resources remain outside every fallible/unwinding pump turn.
     let _lease = lease;
-    let log = LogSink::new(
+    let log = LogSink::new_inner(
         &step.context.root,
+        Arc::clone(&step.context.log_budget),
         #[cfg(test)]
         step.log_writer.take(),
+        #[cfg(test)]
+        None,
     );
     #[cfg(test)]
     let replacement = step.observation.take();

@@ -80,6 +80,8 @@ pub(crate) struct OperationContext {
     proxy: crate::project::NetworkProxy,
     project: ProjectConfig,
     diagnostics: Arc<std::sync::Mutex<Diagnostics>>,
+    #[cfg(target_os = "linux")]
+    log_budget: Arc<native::LogBudget>,
     deadline: Instant,
     cancel: Arc<AtomicBool>,
 }
@@ -142,6 +144,8 @@ impl OperationContext {
             proxy: config.proxy.clone(),
             project: config.clone(),
             diagnostics: Arc::new(std::sync::Mutex::new(Diagnostics::default())),
+            #[cfg(target_os = "linux")]
+            log_budget: Arc::new(native::LogBudget::default()),
             deadline,
             cancel: Arc::new(AtomicBool::new(false)),
         })
@@ -227,6 +231,7 @@ pub(crate) enum LogPhase {
     Queue,
     Write,
     Flush,
+    Budget,
 }
 impl std::fmt::Display for LogPhase {
     fn fmt(&self, output: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -237,6 +242,7 @@ impl std::fmt::Display for LogPhase {
             Self::Queue => "bounded log queue",
             Self::Write => "log write",
             Self::Flush => "log flush",
+            Self::Budget => "diagnostic log budget",
         })
     }
 }
