@@ -410,6 +410,8 @@ fn check(
     }
     for key in [
         "task",
+        "execution",
+        "recording",
         "benchmark_outcome",
         "token_usage",
         "execution_plan_fingerprint",
@@ -422,6 +424,8 @@ fn check(
     let summary = read(&batch.join("measurements/summary.json"));
     for key in [
         "task",
+        "execution",
+        "recording",
         "benchmark_outcome",
         "token_usage",
         "execution_plan_fingerprint",
@@ -531,9 +535,8 @@ fn check(
         assert_eq!(selection["selection"]["tracks"], json!([1, 1]));
         assert_eq!(selection["selection"]["seed"], 73);
         let log = last_log(&batch.join("run.jsonl"));
-        // Measurement schema carries task/cohort/fingerprint, not repeated
-        // execution selection. Compare each representation's actual contract.
-        for record in [shown, &log] {
+        // All current result representations retain the actual frozen choice.
+        for record in [shown, &log, &measured] {
             assert_eq!(record["execution"]["replay_track"], 1);
             assert_eq!(record["execution"]["replay_seed"], 73);
             assert_eq!(

@@ -65,6 +65,7 @@ dependencies = [
  "clap",
  "clap_complete",
  "crossterm",
+ "errno",
  "libc",
  "ratatui",
  "serde",

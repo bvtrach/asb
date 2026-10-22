@@ -25,6 +25,20 @@ impl OutputLock {
         busy: &str,
         timeout: std::time::Duration,
     ) -> Result<Self, String> {
+        Self::open(path, busy, timeout, true)
+    }
+
+    /// Continuation must not recreate a missing historical ownership inode.
+    pub(crate) fn acquire_existing(path: &Path, busy: &str) -> Result<Self, String> {
+        Self::open(path, busy, std::time::Duration::ZERO, false)
+    }
+
+    fn open(
+        path: &Path,
+        busy: &str,
+        timeout: std::time::Duration,
+        create: bool,
+    ) -> Result<Self, String> {
         let failure = |error| format!("cannot lock output at {}: {error}", path.display());
         match std::fs::symlink_metadata(path) {
             Ok(metadata) if !metadata.is_file() => {
@@ -38,7 +52,11 @@ impl OutputLock {
             Err(error) => return Err(failure(error)),
         }
         let mut options = OpenOptions::new();
-        options.create(true).read(true).write(true).truncate(false);
+        options
+            .create(create)
+            .read(true)
+            .write(true)
+            .truncate(false);
         #[cfg(unix)]
         {
             use std::os::unix::fs::OpenOptionsExt;

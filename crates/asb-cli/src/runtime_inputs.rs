@@ -442,7 +442,9 @@ mod tests {
             &["--exact", test, "--nocapture"],
             true,
         );
-        let deadline = Instant::now() + Duration::from_secs(2);
+        // Still well below the fixture's 30-second held descendant. Allow the
+        // inner success budget and bounded supervisor settlement, not a retry.
+        let deadline = Instant::now() + Duration::from_secs(10);
         let status = loop {
             if let Some(status) = fixture.try_wait().unwrap() {
                 break Some(status);
@@ -471,6 +473,23 @@ mod tests {
             .as_ref()
             .is_ok_and(|pid| !Path::new(&format!("/proc/{pid}")).exists());
         let returned = root.0.join("returned").exists();
+        let observation = std::fs::File::open(root.0.join("exchange-observation.json"))
+            .ok()
+            .and_then(|file| {
+                use std::io::Read;
+                let mut bytes = Vec::new();
+                file.take(256).read_to_end(&mut bytes).ok()?;
+                let value: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+                let code = value["code"].as_str()?;
+                if !matches!(
+                    code,
+                    "ok" | "exchange-deadline" | "helper-failed" | "other-error"
+                ) {
+                    return None;
+                }
+                Some(format!("{code}, {} ms", value["elapsed_ms"].as_u64()?))
+            })
+            .unwrap_or_else(|| "no completed fixture observation".into());
         if !helper_exited
             || !descendant_exited
             || !status.is_some_and(|status| status.success())
@@ -488,7 +507,7 @@ mod tests {
             let stdout = excerpt("child.stdout");
             let stderr = excerpt("child.stderr");
             panic!(
-                "runtime discovery fixture {case}: status={status:?}, returned={returned}, helper_exited={helper_exited}, descendant={descendant:?}, descendant_exited={descendant_exited}; owned tree reaped; inspect {}\nchild stdout (first16KiB): {stdout:?}\nchild stderr (first16KiB): {stderr:?}",
+                "runtime discovery fixture {case}: status={status:?}, returned={returned}, helper_exited={helper_exited}, descendant={descendant:?}, descendant_exited={descendant_exited}; owned tree reaped; {observation}; inspect {}\nchild stdout (first16KiB): {stdout:?}\nchild stderr (first16KiB): {stderr:?}",
                 retained.display()
             );
         }

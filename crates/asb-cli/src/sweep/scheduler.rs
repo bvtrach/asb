@@ -311,6 +311,7 @@ mod tests {
                     let mut output = super::super::presentation::Presentation::new(&mut spool);
                     assert!(output.write_all(&vec![0; 5 * 1024 * 1024]).is_err());
                     super::super::execution::ConfigurationReport {
+                        stop_admission: false,
                         result: Err(Error::Run("official false grade retained".into())),
                         output_error: output.error(),
                         spool_created: true,
@@ -321,6 +322,7 @@ mod tests {
                         done = release.1.wait(done).unwrap();
                     }
                     super::super::execution::ConfigurationReport {
+                        stop_admission: false,
                         result: Ok(()),
                         output_error: None,
                         spool_created: false,

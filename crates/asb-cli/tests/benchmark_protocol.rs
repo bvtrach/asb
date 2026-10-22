@@ -4,6 +4,11 @@ mod support;
 use support::IsolatedEnvironment;
 
 #[test]
+fn original_sweep_qualification_inventory_is_bounded_and_requires_declared_evidence() {
+    python_protocol("benchmark_live_repeated_sweep_original.py");
+}
+
+#[test]
 fn configured_user_staging_reuses_only_verified_owned_instrumentation() {
     python_protocol("benchmark_staging.py");
 }

@@ -16,22 +16,8 @@ pub(super) fn recorded_object(
     outcome: Option<&Recorded>,
     field: &str,
 ) -> Result<Option<Value>, Error> {
-    let primary = measured.get(field).filter(|value| !value.is_null());
-    let retained = outcome
-        .and_then(|record| record.summary.get(field))
-        .filter(|value| !value.is_null());
-    if primary.zip(retained).is_some_and(|(a, b)| a != b) {
-        return Err(Error::Input(format!(
-            "measurement and outcome disagree on recorded {field}"
-        )));
-    }
-    let value = primary.or(retained);
-    if value.is_some_and(|value| !value.is_object()) {
-        return Err(Error::Input(format!(
-            "recorded {field} metadata must be an object"
-        )));
-    }
-    Ok(value.cloned())
+    crate::planning::recorded_object(measured, outcome.map(|record| &record.summary), field)
+        .map(|value| value.cloned())
 }
 
 /// Called only after current-slot identity and measurement agreement checks.
@@ -89,6 +75,8 @@ impl Recorded {
             ));
         }
         for field in [
+            "execution",
+            "recording",
             "execution_plan_fingerprint",
             "module",
             "benchmark_outcome",
@@ -255,76 +243,8 @@ pub(crate) fn load(directory: &Path, total: usize) -> Result<BTreeMap<usize, Rec
             return Err(invalid(&path, "unexpected file in outcome directory"));
         }
         let raw = bounded_record(&path)?;
-        let summary = &raw["summary"];
-        // Original schema-1 records predate proxy cleanup evidence. Absence is
-        // unknown cleanup, not a fabricated confirmation or an erased grade.
-        let proxy_cleanup = match raw.get("proxy_cleanup_confirmed") {
-            None if raw["schema_version"] == 1 => Some(false),
-            value => value.and_then(Value::as_bool),
-        };
-        let replica = if raw["schema_version"] == 2 {
-            serde_json::from_value::<Identity>(raw["replica"].clone())
-                .map_err(|_| invalid(&path, "outcome replica identity is malformed"))?
-        } else if raw["schema_version"] == 1 {
-            legacy_replica(
-                directory.parent().expect("outcomes have a parent"),
-                &path,
-                summary,
-                total,
-            )?
-        } else {
-            return Err(invalid(
-                &path,
-                "outcome schema or legacy replica mapping is unsupported",
-            ));
-        };
-        if !replica.valid()
-            || replica.total != total
-            || raw["scope"] != "task-outcome-not-yet-a-resume-receipt"
-            || raw["workload_cleanup_confirmed"].as_bool().is_none()
-            || proxy_cleanup.is_none()
-            || !summary.is_object()
-            || summary["schema_version"] != 2
-            || summary["process_success"].as_bool().is_none()
-            || (!summary["workload_success"].is_null()
-                && summary["workload_success"].as_bool().is_none())
-            || !summary["task"].is_object()
-            || summary["replica_index"]
-                .as_u64()
-                .is_some_and(|index| index != replica.index as u64)
-        {
-            return Err(invalid(
-                &path,
-                "outcome identity or result fields are malformed",
-            ));
-        }
-        if !crate::workloads::ResourceDisposition::matches_record(
-            raw.get("workload_resource_disposition"),
-            raw["workload_cleanup_confirmed"] == true,
-            summary,
-        ) {
-            return Err(invalid(
-                &path,
-                if raw["workload_cleanup_confirmed"] == false {
-                    "outcome workload or proxy cleanup is unconfirmed; resource disposition contradicts cleanup"
-                } else {
-                    "outcome resource disposition contradicts cleanup confirmation"
-                },
-            ));
-        }
-        if outcomes
-            .insert(
-                replica.index,
-                Recorded {
-                    path: path.clone(),
-                    summary: summary.clone(),
-                    workload_cleanup: raw["workload_cleanup_confirmed"] == true,
-                    proxy_cleanup: proxy_cleanup == Some(true),
-                    source: "task-outcome",
-                },
-            )
-            .is_some()
-        {
+        let (replica, recorded) = decode_outcome(&path, &raw, total)?;
+        if outcomes.insert(replica, recorded).is_some() {
             return Err(invalid(
                 &path,
                 "multiple task outcomes claim the same replica slot",
@@ -332,6 +252,88 @@ pub(crate) fn load(directory: &Path, total: usize) -> Result<BTreeMap<usize, Rec
         }
     }
     Ok(outcomes)
+}
+
+/// Structural report decoding, deliberately weaker than resume eligibility.
+pub(super) fn decode_outcome(
+    path: &Path,
+    raw: &Value,
+    total: usize,
+) -> Result<(usize, Recorded), Error> {
+    let summary = &raw["summary"];
+    // Original schema-1 records predate proxy cleanup evidence. Absence is
+    // unknown cleanup, not a fabricated confirmation or an erased grade.
+    let proxy_cleanup = match raw.get("proxy_cleanup_confirmed") {
+        None if raw["schema_version"] == 1 => Some(false),
+        value => value.and_then(Value::as_bool),
+    };
+    let replica = if raw["schema_version"] == 2 {
+        serde_json::from_value::<Identity>(raw["replica"].clone())
+            .map_err(|_| invalid(path, "outcome replica identity is malformed"))?
+    } else if raw["schema_version"] == 1 {
+        legacy_replica(
+            path.parent()
+                .and_then(Path::parent)
+                .ok_or_else(|| invalid(path, "outcome has no parent directory"))?,
+            path,
+            summary,
+            total,
+        )?
+    } else {
+        return Err(invalid(
+            path,
+            "outcome schema or legacy replica mapping is unsupported",
+        ));
+    };
+    if !replica.valid()
+        || replica.total != total
+        || raw["scope"] != "task-outcome-not-yet-a-resume-receipt"
+        || raw["workload_cleanup_confirmed"].as_bool().is_none()
+        || proxy_cleanup.is_none()
+        || !summary.is_object()
+        || summary["schema_version"] != 2
+        || summary["process_success"].as_bool().is_none()
+        || (!summary["workload_success"].is_null()
+            && summary["workload_success"].as_bool().is_none())
+        || !summary["task"].is_object()
+        || summary["replica_index"]
+            .as_u64()
+            .is_some_and(|index| index != replica.index as u64)
+    {
+        return Err(invalid(
+            path,
+            "outcome identity or result fields are malformed",
+        ));
+    }
+    if !crate::workloads::ResourceDisposition::matches_record(
+        raw.get("workload_resource_disposition"),
+        raw["workload_cleanup_confirmed"] == true,
+        summary,
+    ) {
+        return Err(invalid(
+            path,
+            if raw["workload_cleanup_confirmed"] == false {
+                "outcome workload or proxy cleanup is unconfirmed; resource disposition contradicts cleanup"
+            } else {
+                "outcome resource disposition contradicts cleanup confirmation"
+            },
+        ));
+    }
+    let mut summary = summary.clone();
+    if let Some(object) = summary.as_object_mut() {
+        object.remove("stdout");
+        object.remove("stderr");
+    }
+    Ok((
+        replica.index,
+        Recorded {
+            path: path.to_path_buf(),
+            summary,
+            workload_cleanup: raw["workload_cleanup_confirmed"] == true,
+            proxy_cleanup: proxy_cleanup == Some(true),
+            source: "task-outcome",
+        },
+    ))
 }
 
 /// Ordinary runs append logs and may share an outcome directory with other
@@ -410,36 +412,37 @@ fn load_logs(
         if offset > 0 && line.len() == tail.len() {
             return Err(invalid(&path, "latest run log record exceeds 16 MiB"));
         }
-        let mut summary: Value = serde_json::from_slice(line)
+        let summary: Value = serde_json::from_slice(line)
             .map_err(|error| invalid(&path, &format!("invalid latest run log JSON: {error}")))?;
-        if summary["schema_version"] != 2
-            || !summary["task"].is_object()
-            || summary["process_success"].as_bool().is_none()
-            || (!summary["workload_success"].is_null()
-                && summary["workload_success"].as_bool().is_none())
-        {
-            return Err(invalid(
-                &path,
-                "latest run log lacks a supported task summary",
-            ));
-        }
-        // Logs include client transcripts; reports must never copy them.
-        if let Some(object) = summary.as_object_mut() {
-            object.remove("stdout");
-            object.remove("stderr");
-        }
-        records.insert(
-            index,
-            Recorded {
-                path,
-                summary,
-                workload_cleanup: false,
-                proxy_cleanup: false,
-                source: "run-log",
-            },
-        );
+        records.insert(index, decode_log(&path, summary)?);
     }
     Ok(records)
+}
+
+pub(super) fn decode_log(path: &Path, mut summary: Value) -> Result<Recorded, Error> {
+    if summary["schema_version"] != 2
+        || !summary["task"].is_object()
+        || summary["process_success"].as_bool().is_none()
+        || (!summary["workload_success"].is_null()
+            && summary["workload_success"].as_bool().is_none())
+    {
+        return Err(invalid(
+            path,
+            "latest run log lacks a supported task summary",
+        ));
+    }
+    // Logs include client transcripts; reports must never copy them.
+    if let Some(object) = summary.as_object_mut() {
+        object.remove("stdout");
+        object.remove("stderr");
+    }
+    Ok(Recorded {
+        path: path.to_path_buf(),
+        summary,
+        workload_cleanup: false,
+        proxy_cleanup: false,
+        source: "run-log",
+    })
 }
 
 /// Sweep execution owns these fixed isolated log paths. Logs supply reporting

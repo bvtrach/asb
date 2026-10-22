@@ -272,6 +272,10 @@ fn raw_cleanup_refuses_foreign_replacement_and_discloses_owned_removal_failure()
 #[cfg(unix)]
 fn fixture_measurement() -> RunMeasurement<'static> {
     RunMeasurement {
+        planning: None,
+        effective_budgets: None,
+        execution: None,
+        recording: None,
         observation: Default::default(),
         execution_plan_fingerprint: None,
         module: None,

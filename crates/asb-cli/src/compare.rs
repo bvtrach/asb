@@ -34,6 +34,7 @@ const Y_TICKS: usize = 5;
 struct BenchmarkData {
     observation: crate::process_termination::Observation,
     id: RowId,
+    execution: Option<Value>,
     planning: Option<Value>,
     effective_budgets: Option<Value>,
     legacy_evaluation_provenance: Option<crate::workloads::outcome::LegacyEvaluationProvenance>,
@@ -366,7 +367,15 @@ fn write_html_report(stage: &Path, prepared: &PreparedReport) -> Result<(), Erro
         .request
         .plan
         .as_ref()
-        .map(|plan| plan.execution_mode.as_str());
+        .map(|plan| plan.execution_mode.as_str())
+        .or_else(|| {
+            prepared
+                .data
+                .request
+                .campaign
+                .as_ref()
+                .and_then(|campaign| campaign["execution_mode"].as_str())
+        });
     let scheduling = prepared
         .data
         .request
@@ -390,12 +399,21 @@ fn write_html_report(stage: &Path, prepared: &PreparedReport) -> Result<(), Erro
         html.push_str(&format!("<p class=\"scheduling\">Sweep scheduling: up to {} distinct configurations; {} active attempt slots, including replicas. Concurrent tasks share host resources.</p>", scheduling.jobs, scheduling.max_active_attempts));
     }
     html.push_str("<header class=\"hero\"><p class=\"eyebrow\">ASB BENCHMARK REPORT</p><h1>Benchmark comparison</h1><p>Explore recorded benchmark results and measurements. Use the filters to focus the report without rerunning anything.</p></header>");
+    if let Some(intent) = prepared
+        .data
+        .request
+        .plan
+        .as_ref()
+        .and_then(|plan| plan.execution.as_ref())
+    {
+        html.push_str(&format!("<p>Each configuration selected {} sequential batches at its configured concurrency. Every planned execution remains a separate row. Shared replay seeds apply only to bundled inputs; legacy sampling stays unknown. Response replay does not measure current provider latency or live model quality.</p>", intent.repeat));
+    }
     let coverage = &prepared.evaluation;
     html.push_str("<p>Declared planning and controller caps are recorded separately in comparison.json, not plotted as measurements. Missing policy metadata remains unknown.</p>");
     html.push_str(&format!("<section class=\"explain\"><strong>Evaluation coverage</strong><p>Execution mode: {}.</p><p>{}/{} eligible selected attempts evaluated; {} have no completed evaluation. {} attempts are unscored. {}</p><p>Partial results are not a complete-population benchmark score. See population_coverage in comparison.json for dataset selection, unique tasks and complete one-attempt-per-task scores.</p></section>",
         escape(selection_mode.unwrap_or("unknown")),
         coverage.evaluated_attempts, coverage.eligible_selected_attempts, coverage.unevaluated_attempts, coverage.unscored_attempts,
-        if selection_mode.is_some() {"Pre-run task selection is preserved and matches the configurations."} else {"No pre-run selection snapshot exists; dataset completeness cannot be established from these legacy records."}));
+        if prepared.data.request.plan.is_some() {"Pre-run task selection is preserved and matches the configurations."} else if prepared.data.request.campaign.is_some() {"Saved campaign slots are enumerated; repeated attempts do not establish a complete one-attempt-per-task population score."} else {"No pre-run selection snapshot exists; dataset completeness cannot be established from these legacy records."}));
     html.push_str(&coverage::html_table(&prepared.populations));
     html.push_str(&coverage::metric_html(&prepared.metric_groups));
     html.push_str("<section class=\"explain\"><strong>How to read this report</strong><p>Each row is one selected task attempt for an agent/provider/model/workload combination. Runtime, success rate, token usage, host metadata, component timings, and structured collector measurements are summarized in the table and charts. Network wait remains null unless directly observed. The complete machine-readable evidence inventory is available in comparison.json.</p></section>");
@@ -463,6 +481,10 @@ fn write_html_report(stage: &Path, prepared: &PreparedReport) -> Result<(), Erro
                 )
             },
         );
+        let execution_details = benchmark.execution.as_ref().map_or_else(String::new, |execution| {
+            let text = serde_json::to_string_pretty(execution).unwrap_or_else(|_| "{}".into());
+            format!("<details><summary>Execution / replay identity</summary><pre class=\"json-details\">{}</pre></details>", escape(&text))
+        });
         let artifacts = if benchmark.artifacts.is_empty() {
             String::new()
         } else {
@@ -514,14 +536,22 @@ fn write_html_report(stage: &Path, prepared: &PreparedReport) -> Result<(), Erro
                 "<details><summary>Run artifacts</summary>{previews}<ul class=\"artifact-list\">{links}</ul></details>"
             )
         };
+        let dispatch_details = benchmark.execution_cohort.as_ref().map_or_else(
+            || "Dispatch context unknown (legacy or missing measurement).".into(),
+            |cohort| {
+                let descriptor = cohort.dispatch.map_or_else(
+                    || "Runtime population descriptor unknown (historical).".into(),
+                    |dispatch| format!("Configured {} · admitted {}{}.", dispatch.configured(), dispatch.admitted(), if dispatch.admitted() < dispatch.configured() { " (partial admission)" } else { "" }),
+                );
+                format!("Dispatch group {}: {} of {} selected replicas admitted; slots {}. {descriptor} Dispatch membership is not proof of simultaneous execution. Resumed measurements may belong to different cohorts.", dispatch_groups[cohort.id.as_str()], cohort.admitted_slots.len(), cohort.selected_replicas, cohort.admitted_slots.iter().map(usize::to_string).collect::<Vec<_>>().join(", "))
+            },
+        );
         html.push_str(&format!("<tr data-dimension-benchmark=\"{}\" data-dimension-agent=\"{}\" data-dimension-provider=\"{}\" data-dimension-model=\"{}\" data-dimension-workload=\"{}\"><td><strong>{}</strong></td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td class=\"details\">{}{}{}{}{}{}</td></tr>",
             escape(&benchmark.label), escape(&benchmark.agent), escape(&benchmark.provider), escape(&benchmark.model), escape(&benchmark.workload),
             escape(&benchmark.label), escape(&benchmark.agent), escape(&benchmark.provider), escape(&benchmark.model), escape(&benchmark.workload),
             runtime, success, tokens,
-            format_args!("{}{}<p>{}</p>", evaluation_details, if benchmark.reconciled { "<p>Reconciled retained local outcome: current artifact consistency checked; no agent rerun or historical attestation.</p>" } else { "" }, benchmark.execution_cohort.as_ref().map_or_else(
-                || "Dispatch context unknown (legacy or missing measurement).".into(),
-                |cohort| format!("Dispatch group {}: {} of {} selected replicas admitted; slots {}. Dispatch membership is not proof of simultaneous execution. Resumed measurements may belong to different cohorts.", dispatch_groups[cohort.id.as_str()], cohort.admitted_slots.len(), cohort.selected_replicas, cohort.admitted_slots.iter().map(usize::to_string).collect::<Vec<_>>().join(", ")))),
-            component_details,
+            format_args!("{}{}<p>{dispatch_details}</p>", evaluation_details, if benchmark.reconciled { "<p>Reconciled retained local outcome: current artifact consistency checked; no agent rerun or historical attestation.</p>" } else { "" }),
+            format_args!("{execution_details}{component_details}"),
             host_details,
             metrics_details,
             artifacts,
@@ -1082,8 +1112,10 @@ mod tests {
             observation: Default::default(),
             id: RowId {
                 configuration: 0,
+                batch: None,
                 replica: 1,
             },
+            execution: None,
             planning: None,
             effective_budgets: None,
             legacy_evaluation_provenance: None,

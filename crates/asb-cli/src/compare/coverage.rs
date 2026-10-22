@@ -4,13 +4,32 @@ use crate::Error;
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 
+/// Missing slots inherit compatible observed protocol groups for denominators;
+/// actual observations with absent dispatch remain a distinct unknown group.
+#[derive(Clone, Debug, Default, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+pub(super) struct ProtocolGroup {
+    fingerprint: Option<String>,
+    dispatch: Option<crate::planning::Dispatch>,
+}
+impl ProtocolGroup {
+    fn observed(row: &BenchmarkData) -> Self {
+        Self {
+            fingerprint: row.execution_plan_fingerprint.clone(),
+            dispatch: row
+                .execution_cohort
+                .as_ref()
+                .and_then(|cohort| cohort.dispatch),
+        }
+    }
+}
+
 fn metric_scope(benchmark: &BenchmarkData) -> Result<String, Error> {
-    metric_scope_with_fingerprint(benchmark, &benchmark.execution_plan_fingerprint)
+    metric_scope_with_fingerprint(benchmark, &ProtocolGroup::observed(benchmark))
 }
 
 fn metric_scope_with_fingerprint(
     benchmark: &BenchmarkData,
-    fingerprint: &Option<String>,
+    fingerprint: &ProtocolGroup,
 ) -> Result<String, Error> {
     serde_json::to_string(&(
         &benchmark.agent,
@@ -35,23 +54,21 @@ fn metric_scope_with_fingerprint(
 pub(super) fn fingerprints(
     benchmark: &BenchmarkData,
     benchmarks: &[BenchmarkData],
-) -> Result<BTreeSet<Option<String>>, Error> {
+) -> Result<BTreeSet<ProtocolGroup>, Error> {
     if benchmark.result_source != super::ResultSource::Missing {
-        return Ok(BTreeSet::from([benchmark
-            .execution_plan_fingerprint
-            .clone()]));
+        return Ok(BTreeSet::from([ProtocolGroup::observed(benchmark)]));
     }
-    let scope = metric_scope_with_fingerprint(benchmark, &None)?;
+    let scope = metric_scope_with_fingerprint(benchmark, &ProtocolGroup::default())?;
     let mut local = BTreeSet::new();
     let mut compatible = BTreeSet::new();
     for peer in benchmarks
         .iter()
         .filter(|row| row.result_source != super::ResultSource::Missing)
     {
-        if metric_scope_with_fingerprint(peer, &None)? == scope {
-            compatible.insert(peer.execution_plan_fingerprint.clone());
+        if metric_scope_with_fingerprint(peer, &ProtocolGroup::default())? == scope {
+            compatible.insert(ProtocolGroup::observed(peer));
             if peer.directory == benchmark.directory {
-                local.insert(peer.execution_plan_fingerprint.clone());
+                local.insert(ProtocolGroup::observed(peer));
             }
         }
     }
@@ -60,7 +77,7 @@ pub(super) fn fingerprints(
     } else if !compatible.is_empty() {
         compatible
     } else {
-        BTreeSet::from([None])
+        BTreeSet::from([ProtocolGroup::default()])
     })
 }
 
@@ -370,9 +387,11 @@ mod tests {
         use crate::workloads::outcome::*;
         let task = crate::workloads::TaskIdentity::local("bug-fix", Some("case"));
         BenchmarkData {
+            execution: None,
             observation: Default::default(),
             id: crate::compare::RowId {
                 configuration: 0,
+                batch: None,
                 replica: if missing { 2 } else { 1 },
             },
             artifact_sources: BTreeMap::new(),
@@ -423,6 +442,75 @@ mod tests {
             status: None,
             artifacts: vec![],
         }
+    }
+
+    #[test]
+    fn runtime_full_and_partial_dispatch_populations_never_pool_scores() {
+        let config = toml::from_str::<crate::benchmark::BenchmarkConfig>("agent='pi'\nprovider='openrouter'\nmodel='fixture'\nworkload='bug-fix'\nconcurrency=4\n").unwrap();
+        let policy = crate::planning::resolve(&config).unwrap();
+        let caps = crate::planning::EffectiveBudgets {
+            execution_seconds: Some(900.0),
+            ..Default::default()
+        };
+        let mut rows = Vec::new();
+        for (index, admitted) in [4, 2, 2].into_iter().enumerate() {
+            let mut next = row(false);
+            next.id.configuration = index;
+            next.execution_cohort = Some(crate::measurements::ExecutionCohort {
+                id: format!("a{index}"),
+                selected_replicas: 4,
+                admitted_slots: if admitted == 4 {
+                    vec![1, 2, 3, 4]
+                } else {
+                    vec![2, 4]
+                },
+                dispatch: Some(crate::planning::Dispatch::new(4, admitted).unwrap()),
+            });
+            next.execution_plan_fingerprint = Some(
+                crate::planning::protocol_fingerprint_with_dispatch(
+                    &config,
+                    &policy,
+                    caps,
+                    4,
+                    None,
+                    Some(crate::planning::Dispatch::new(4, admitted).unwrap()),
+                )
+                .unwrap()
+                .as_str()
+                .into(),
+            );
+            rows.push(next);
+        }
+        let groups = metric_groups(&rows).unwrap();
+        assert_eq!(groups.len(), 2);
+        let mut counts: Vec<_> = groups
+            .values()
+            .map(|group| group.selected_attempts)
+            .collect();
+        counts.sort_unstable();
+        assert_eq!(counts, vec![1, 2]);
+        let mut unknown = row(false);
+        unknown.execution_plan_fingerprint = rows[1].execution_plan_fingerprint.clone();
+        // Even the exact same string cannot silently promote unknown metadata
+        // into the known P=2 population.
+        rows.push(unknown);
+        assert_eq!(metric_groups(&rows).unwrap().len(), 3);
+        let mut missing = row(true);
+        missing.directory = rows[1].directory.clone();
+        let before = serde_json::to_value(&rows[1].execution_cohort).unwrap();
+        assert_eq!(fingerprints(&missing, &rows).unwrap().len(), 3);
+        rows.push(missing);
+        let groups = metric_groups(&rows).unwrap();
+        let mut counts: Vec<_> = groups
+            .values()
+            .map(|group| group.selected_attempts)
+            .collect();
+        counts.sort_unstable();
+        assert_eq!(counts, vec![2, 2, 3]);
+        assert_eq!(
+            serde_json::to_value(&rows[1].execution_cohort).unwrap(),
+            before
+        );
     }
 
     #[test]

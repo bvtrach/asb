@@ -1,0 +1,156 @@
+# Successive continuation generations
+
+Status: independently reviewed implementation checkpoints for feature 5, not a
+completed release qualification. Normal successive continuations and unused-head
+recovery exist; the remaining crash paths and broader fault matrix below still
+need completion before delivery.
+
+Implementation checkpoint: the passive catalog validates an explicit bounded
+chain and preserves original-node start/recording resolution. Consuming successor
+publication retains and rechecks the predecessor under all owners, validates
+global progress/cumulative metadata before staging, imports all configurations,
+and publishes the predecessor link last before returning worker capabilities.
+Legacy first admissions omit `lineage` unchanged. Later recording ledgers are
+generation-local; current selection derives the latest applicable descriptor per
+configuration from the explicit validated chain, never filesystem recency.
+
+Actual measured C4/N3 recording and seeded ZIP replay fixtures passed two
+successive interruptions (4 -> 8 -> 12 -> 12 attempts), including complete false
+grades, historical byte preservation, final-union metadata/payload equality for
+all eight ancestor tracks, provider-free old/new track replay, historical compare
+and default latest-union selection. Missing ancestor metadata/receipts/ledgers and
+orphan stages launch no new client and do not replace reports. The repeated CLI
+suite currently has 56 passing cases; this is not full release qualification.
+
+Unused-head recovery now reuses the exact admission, manifests and frozen cohorts
+after the full owning classifier proves every pending slot untouched. It refuses
+retained prepared/finished/runtime artifacts and unknown original slot activity.
+Recording recovery requires precisely the durable imported-only start/commit/file
+population, matching origin/compatibility and payload hashes, never local producer
+intents or a frozen writer. Publication-only tests recover the same unused head
+twice in record/replay modes without minting a generation or execution.
+
+A failed metadata link/sync may leave one `.ID.pending` duplicate. Passive loading
+recognizes it only by bounded exact name, same pinned inode and declared target
+blob, charging its bytes/name against the cumulative budget; inspection never
+cleans it. Owning confirmation rechecks both target and alias before and after
+file syncing, removes only that verified duplicate and syncs node/parent
+directories before returning any worker capability. Even an alias-free retry
+must resync after prior unlink-before-directory-sync failure. Tests cover these
+boundaries, replacement during sync and foreign/symlink/copy/duplicate refusal.
+The declared admission/manifest/link bytes are not rewritten.
+
+Unlinked fully staged successors have a separate metadata-only operation:
+
+```sh
+asb sweep sweep.toml --resume --recover-continuation
+```
+
+It accepts no execution/selection options and requires no current provider
+credentials or executable discovery. The passive recovery inspection contains an
+authoritative catalog and a separate candidate; the candidate never resolves
+historical starts or recording evidence. Only the fixed next ordinal can qualify,
+with complete exact admission/manifests, lineage, progress and bounded envelope.
+Missing/partial manifests, foreign stages and unknown runtime activity remain
+retained/refused, never reconstructed. Aggregate recording reservation/import
+budgets are admitted from metadata before opening any archive or journal.
+
+The consuming repair holds all campaign owners, classifies original receipts and
+untouched slots against the predecessor, reconstructs recording descriptors from
+actual completion evidence and retains imported-only journal owners. It confirms
+candidate/predecessor durability and rechecks the whole population before linking
+`next.json` last. It returns a report with zero agent executions/evaluations, not
+worker capabilities. Subsequent normal resume activates the exact frozen head.
+Repeated repair confirms only an unused head; it refuses a subsequently started
+head. Fault tests preserve original bytes and cover failed link-directory sync,
+late-configuration conflicts, forged partitions and aggregate payload limits.
+
+Replay owner-death qualification now interrupts a real owned publisher at both
+child-admission/pre-sync and predecessor-link/pre-sync boundaries. The two-
+configuration fixture retains the exact original input closure and synthetic
+settled history; a separate publisher proves that closure before taking owners.
+Private bounded regular-file input avoids a blocking stdin writer. Both campaign
+locks exclude recovery while it is alive, and the existing process guardian
+confirms quiescence after abrupt signalled death. Recovery twice preserves all
+earlier bytes and the exact frozen candidate; normal activation returns only the
+original pending membership. Uncertain test teardown retains evidence instead of
+deleting an active tree. This is not a SIGKILL/power-loss claim, actual prior
+client qualification, or recording-journal owner-death qualification.
+
+Still unfinished: broader multi-configuration recording inheritance/owner-death
+and publication-fault tests, original-SDK
+qualification and full current-main packaging/CI. Do not mark feature 5 delivered
+until these remaining paths and release gates are complete.
+
+## Explicit append-only authority
+
+Keep the existing `.checkpoint/campaign-continuation` admission as the first
+node. Each admitted node can acquire one create-new `next.json` reference to a
+fixed derived successor directory. The link binds the predecessor admission,
+successor ordinal, generation ID, relative location and exact admission blob.
+Successor admission includes a versioned predecessor identity and ordinal.
+The final link is outside the child's admission, avoiding a digest cycle.
+
+Publish the successor directory, all configuration manifests and imports, then
+the child admission. Sync them before publishing/syncing the predecessor link
+LAST; return worker capabilities only afterward. An existing successor stage
+without its final link is retained metadata requiring explicit recovery, never
+permission to mint another random generation. Exact completed publication can
+be linked by a narrowly qualified zero-client metadata-recovery operation.
+
+Follow only explicit validated links. No directory-recency selection, implicit
+replacement, scanning for the newest ID or modification of existing admissions.
+Bound aggregate chain metadata, configuration/slot populations and traversal
+before payload reads or effects; reject cycles, aliases and foreign stages.
+
+## Shared catalog and historical evidence
+
+The passive catalog owns all validated nodes and an ID index. Every historical
+`StartReference` resolves against its ORIGINAL admission, manifest, prepared
+material, dispatch cohort and recording descriptor. Never reinterpret it against
+the head or rewrite old receipt roots. A missing generation reference is allowed
+only for established original-fresh membership, not merely because the head now
+lists that slot completed.
+
+For each successor, completed membership must grow monotonically and pending
+membership shrink strictly. Inherited receipt blobs remain exact; newly completed
+slots must have belonged to predecessor pending membership. Classification still
+proves actual completion receipts and positively untouched residual slots under
+all original owners. Started-but-unsealed attempts remain recovery-only. An empty
+duplicate generation is not progress and must not mint execution authority.
+
+## Recording publication
+
+Keep historical root `recording-current.json` immutable. Successor nodes use
+their generation-specific immutable publication receipt/reference; the validated
+admission chain identifies the current node. Default replay requires that node's
+confirmed union when its configuration declares one. Missing publication must
+require recovery, never silently select an older union.
+
+Build a new self-contained physical ZIP from exact completed-track evidence
+across all ancestors plus genuinely new local captures. Preserve original slot
+IDs, full Track metadata, nullable facts and all ancestor archives/associations.
+Do not create new producer or grade claims for imports. Historical reports and
+strict settlement use each track's own admitted node and original proof.
+
+## Actual public qualification
+
+Use C4/N3 fixtures for recording and saved seeded replay. Interrupt after the
+first batch, resume and interrupt after the second, then resume the third batch.
+Drain reused-first-batch output while waiting for all four actual second-batch
+clients at a fixture barrier; closing a full undrained pipe too early would not
+prove a second execution interruption. Expected actual attempt counts are
+4 -> 8 -> 12 -> 12, including a final completed-only resume.
+
+Preserve original IDs/seed/private replay choices, inherited false grades,
+measurements, receipts, original index and input seal bytes. Validate each
+generation's actual start/cohort/prepared binding and the final 12-track union;
+all historical unions remain readable. Negative cases cover changed ancestor
+admissions/links/receipts, orphan successors, missing head publication, partial
+captures and late-configuration failures with zero extra clients and no rewritten
+evidence. Extend the actual fixtures separately from passive metadata tests;
+synthetic receipt construction is not execution qualification.
+
+Feature delivery additionally requires full source, documentation, packaging,
+extracted-install, hosted exact-head and relevant original-SDK gates. Coverage
+remains an optional diagnostic under DEVELOPMENT.md, not a merge threshold.

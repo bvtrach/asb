@@ -75,6 +75,28 @@ The exclusive grading-start marker binds the original attempt; protocol unit
 tests separately count the single evaluate request and cached cancellation.
 Neither test retries a retained verifier or converts a missing grade into zero.
 
+`benchmark_live_repeated_sweep_original.py` reuses the installed-Pi/original-SDK
+qualification with the same explicit project/frozen-binary opt-ins. It runs one
+configuration at C2/N2 through the public sweep, validates four actual report
+execution/attempt identities and grades, then requires completed-only resume to
+issue zero additional fixture inference requests and preserve all declared result
+and verifier inventories, seals and receipts. Inventories include roots, file
+content/modes, directory modes and symlink targets without following them, with
+4096-entry/64 MiB bounds and propagated traversal errors. Both qualification
+harnesses join the Python source-hash receipt. Default discovery includes only
+this normal live qualification, not the inherited costly verifier-fault case.
+Its inventory and emitted-row tests run provider-/Docker-free in ordinary
+`benchmark_protocol` CI; the actual installed-SDK test is skipped without opt-in.
+This qualifies completed-only reuse, not interrupted SDK-worker recovery.
+
+The first local Terminal1 sweep attempt failed before client execution because
+Docker's predefined address pools were fully subnetted. Both owned attempts
+were stopped/preserved and the frozen binary hash stayed unchanged. The raw
+qualification/Compose logs remain local evidence; this is not a passing original
+SDK qualification. Do not prune unrelated networks or change daemon configuration
+to turn the qualification green. The run also disclosed an unavailable initial
+input seal, which must be resolved before claiming original-SDK resume readiness.
+
 `benchmark_live_material_environment.py` uses the same explicit image/binary/
 artifact-parent opt-ins as the mounted-root qualification below. It prepares
 two network-none services per fixture, checks independent fresh generated
@@ -410,6 +432,43 @@ These are protocol-only fixtures: no agent/provider is executed. See the
 [independently checked repair ledger](CODE_SMELL_REPAIRS.md) for the broader
 code-smell audit and remaining delivery classes.
 Continuation metadata is optional for a fresh grade, not optional for reuse.
+The generation resolver shares passive manifest/start-reference wire types with
+the publisher, validates the entire original population before payload proofs,
+and derives new prepared-material paths without granting execution authority.
+Settlement binds inherited receipt bytes exactly and publishes only new slots.
+The generation-resolution fixtures cover substituted metadata, stripped start
+references, changed old receipt bytes, bounded new material and mixed sealing.
+The public repeated-sweep interruption fixture uses C4/N2/jobs1 and a closed
+output pipe to retain four genuine first-batch receipts (including a false grade)
+and an untouched second batch. Public continuation consumes the classified owner,
+publishes all configuration manifests before any new client, and retains all
+campaign locks through settlement and comparison. Shared batch execution preserves
+original IDs and emits new generation references/material without overwriting
+old receipts or input seals. Recording continuation still requires immutable
+union publication/recovery and is not delivered by the replay/live activation.
+These fixtures use local synthetic clients, not installed agents or SDKs.
+The public matrix additionally qualifies seeded ZIP/private payload routing,
+known-incomplete numeric selection disclosure, measured dispatch/reporting and
+live mode against an owned synthetic provider. All preserve the false grade,
+eight original result slots and zero new clients on the second resume. A corrupt
+last old receipt prevents any new admission. The source checkpoint passed the
+complete offline suite (1,289 library cases, 13 opt-in cases ignored), strict
+all-target/all-feature Clippy, build and unchanged-binary verification. After a
+test-only fixture deadline adjustment, all 47 repeated-run cases and Clippy
+passed again. Rust docs, UML, flow SVGs and interactive diagrams regenerated;
+Graphviz retained its straight-edge fallback warning, with no graph content
+removed. This is not original-SDK, live LLM, packaged-install or hosted-CI proof.
+Campaign input-root regressions in `sweep::checkpoint::campaigns` check exact
+shared plan binding, private-input/configuration changes, original-source
+replacement and output independence without clients. The actual `repeated_run`
+case `campaign_input_seals_stay_stable` drives a registered Pi adapter backed by
+a local fixture executable: four synthetic-provider recordings and four replays
+with that provider shut down keep stable seals. This is not an installed Pi,
+live-provider or SDK qualification. The owning sweep-phase subprocess matrix
+also blocks initial key and final seal publication for two-batch campaigns;
+four real local grades and all report rows survive with one warning, while
+invalid keys and failed-seal diagnostics remain preserved. Build the actual ASB
+first and keep source/executable stable throughout runtime/full qualification.
 Runtime-discovery regressions require building the actual ASB binary first,
 then running `cargo test --offline --locked --lib runtime_inputs::tests` and
 `cargo test --offline --locked --test benchmark_protocol`. The inherited-pipe
@@ -423,6 +482,13 @@ the existing schema-1 JSON, including escaping/separators/newline, rather than
 introducing a smaller arbitrary pathname cap. These are offline Linux/Unix
 contracts, not qualification of the retained non-Unix legacy fallback or
 whole-SDK descendant ownership outside a discovery gate.
+The successful inherited-pipe fixtures allow five seconds for native-gate and
+Python startup (including the nested probe's deliberate 50 ms deadline). Their
+outer watchdog is ten seconds, below the descendant's 30-second hold. The
+deliberately blocked-input case retains its 150 ms exchange deadline. This
+separates host startup scheduling from the cleanup invariant after an observed
+181 ms packaged-CI success-case timeout; production's 60-second policy, mandatory
+success, descendant-reaping and unrelated-sentinel assertions are unchanged.
 If an outcome, replica/group receipt or initial/final input seal cannot be
 published, human output identifies the missing evidence without changing the
 grade or retrying a client. JSONL instead emits a separate schema-1 object with
@@ -466,6 +532,27 @@ agent/provider/container runs. Fault hooks exist only in test builds and have no
 environment/configuration surface in the installed CLI. `run` integrates the
 backend through its own recording/replay coordinators; sweep/resume/report and
 viewer delivery remain separate steps in MULTITRACK.md.
+The read-only `TrackEvidence::verify_batch` regressions use bounded synthetic
+recordings with no clients: duplicate and conflicting references, 257 recordings,
+aggregate quota boundaries, late metadata errors, selective corruption, active
+writer/publication races, lost targets, between-pass mutation and exact opened
+descriptor identity. Test-only observations count catalogue and payload reads;
+they are not production fault switches. Grouped reports perform two bounded
+catalogue passes per published recording, with one open archive at a time, not
+one pass per row. Per-archive format limits and whole-operation `ProofLimits`
+are separate; single proofs retain independent journal/manifest allowances.
+`cassette::tests::reservation` checks byte-exact wire compatibility, all optional
+digest combinations, escaped logical values, actual maximum-statistics journal/
+manifest/proof sizes and ZIP directory digit transitions. Capacity planning uses
+the same private serialization projections as real evidence and creates no
+observed fingerprint or file. Exact/minus-one/overflow quotas and a pure full
+ZIP32 population remain covered. Campaign layout and compare reject altered
+reservations; the genuine material-gate fixture refuses same-length wrong names
+before journal creation and persists actual hashes, never sizing placeholders.
+The repeated-sweep CLI suite additionally selects 60 configurations at repeat
+1000 with long model names: each fits independently, but the aggregate must be
+rejected with zero synthetic-provider/client calls and unchanged previous
+index/report. No live credentials, SDK or containers are involved.
 `cargo test --locked --offline --lib runner::recording` includes deterministic
 source-name and parent-namespace replacement after original validation, private
 custody move/restore/unlink/sync faults, EEXIST arrivals, no recursive deletion,
@@ -890,9 +977,10 @@ failed recording disposition and raw bytes, and stop before another batch.
 Selected seeded replay preserves track/algorithm/usage after source replacement
 despite publication failure. Assertions check exact-once client/evaluate/workload/
 provider-observer finish, independent final outputs, immutable association/raw
-digests and absent completion receipts. Measurement schemas do not carry the
-repeated `execution` selection object: their task/cohort/fingerprint/usage are
-checked against plan/log/streamed selection identity without inventing fields.
+digests and absent completion receipts. Current measurement and summary schemas
+retain the same optional repeated `execution` and `recording` objects as logs
+and streamed summaries. Publication-fault qualification checks their agreement
+alongside task/cohort/fingerprint/usage; legacy absent objects remain unknown.
 No production fault switch, SDK, container, privileged collector or live LLM is
 used. Build the current ASB executable first and keep it unchanged while testing.
 The artifact-handoff test in the same module adds six actual native MiniSWE

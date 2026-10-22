@@ -12,6 +12,7 @@ use std::sync::Mutex;
 /// Benchmark errors and inability to deliver output have different admission
 /// policies. Do not recover this distinction from an error's display text.
 pub(super) struct ConfigurationReport {
+    pub stop_admission: bool,
     pub result: Result<(), Error>,
     pub output_error: Option<Error>,
     pub spool_created: bool,
@@ -33,6 +34,7 @@ pub(super) fn replay_sources(plan: &plan::SweepPlan, root: &Path) -> Vec<PathBuf
 }
 
 pub(super) struct Execution<'a> {
+    pub campaigns: Option<&'a super::campaigns::Pool>,
     pub source: &'a str,
     pub parent: &'a Path,
     pub plan: &'a plan::SweepPlan,
@@ -75,10 +77,14 @@ impl Execution<'_> {
                     &self.results.join(".checkpoint/interrupted-terminal"),
                 )?;
             }
-            let mut spool = spool::Output::create(
-                &self.output_path(index),
-                self.plan.entries[index].configuration.concurrency,
-            )?;
+            let mut spool = if self.campaigns.is_some() {
+                spool::Output::create_campaign(
+                    &self.output_path(index),
+                    self.presentation_count(index),
+                )?
+            } else {
+                spool::Output::create(&self.output_path(index), self.presentation_count(index))?
+            };
             let mut output = super::presentation::Presentation::new(&mut spool);
             prepared_output = true;
             let result = self.run_to(index, &mut output);
@@ -98,6 +104,7 @@ impl Execution<'_> {
             output_error = Some(Error::Io(format!("cannot prepare sweep output: {error}")));
         }
         ConfigurationReport {
+            stop_admission: self.stop_requested(index),
             result,
             output_error,
             spool_created: prepared_output,
@@ -106,6 +113,9 @@ impl Execution<'_> {
 
     /// Sequential defaults retain immediate warnings and --show-output.
     pub(super) fn run_to(&self, index: usize, output: &mut dyn Write) -> Result<(), Error> {
+        if let Some(campaigns) = self.campaigns {
+            return campaigns.run(index, output, self.warnings);
+        }
         if let Some(summaries) = self.reused.groups.get(&index) {
             return super::resume::render_reused(summaries, self.options.json, output);
         }
@@ -205,6 +215,36 @@ impl Execution<'_> {
         };
         runner::diagnostics::preserve_primary(result, presentation)
     }
+
+    pub(super) fn stop_requested(&self, index: usize) -> bool {
+        self.campaigns
+            .is_some_and(|campaigns| campaigns.stop_requested(index))
+    }
+
+    fn presentation_count(&self, index: usize) -> usize {
+        let repeat = self
+            .plan
+            .execution
+            .as_ref()
+            .map_or(1, |intent| intent.repeat as usize);
+        repeat * self.plan.entries[index].configuration.concurrency
+    }
+
+    pub(super) fn drain_output(&self, index: usize, output: &mut dyn Write) -> Result<(), Error> {
+        if self.campaigns.is_some() {
+            spool::drain_campaign(
+                &self.output_path(index),
+                self.presentation_count(index),
+                output,
+            )
+        } else {
+            spool::drain(
+                &self.output_path(index),
+                self.presentation_count(index),
+                output,
+            )
+        }
+    }
 }
 
 #[cfg(test)]
@@ -241,6 +281,7 @@ mod tests {
         .unwrap();
         for resume in [false, true] {
             let execution = Execution {
+                campaigns: None,
                 source: "fixture",
                 parent: &root,
                 plan: &plan,

@@ -7,6 +7,7 @@ use std::collections::BTreeMap;
 pub(super) struct State {
     pub groups: BTreeMap<usize, Vec<Value>>,
     pub slots: BTreeMap<usize, BTreeMap<usize, Value>>,
+    pub campaign_owners: Vec<crate::output_lock::OutputLock>,
 }
 
 impl std::fmt::Debug for State {
@@ -15,6 +16,7 @@ impl std::fmt::Debug for State {
             .debug_struct("ContinuationState")
             .field("completed_groups", &self.groups.len())
             .field("partial_groups", &self.slots.len())
+            .field("owned_campaigns", &self.campaign_owners.len())
             .finish()
     }
 }

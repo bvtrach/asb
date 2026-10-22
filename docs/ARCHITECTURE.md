@@ -575,10 +575,32 @@ Record/replay dispatch asks the selected proxy adapters for their
 execution files without starting them or materializing scratch scripts. The
 default adapter binds its selected host Node executable or explicit proxy
 override, preserving symlinks and PATH precedence. Replay additionally binds
-the actual source cassette directories, including rebased/preserved history
-paths. Record cassettes are outputs, not replay inputs. Interpreter and native
+the actual source cassette directories for legacy sweeps, including rebased/
+preserved history paths. Campaign sweeps instead bind the exact referenced
+plans, original configuration sources and staged private selected JSONL files,
+after all publications and before execution. Their input seals exclude original
+replay archives and growing recording/output directories. The same validated
+index-to-campaign binding serves reporting and sealing; stability is not proof
+of selected-payload identity or permission to resume. Record cassettes are
+outputs, not replay inputs. Interpreter and native
 loader dependencies are added by shared runtime discovery, not inferred merely
 from an executable's pathname.
+
+Campaign continuation consumes the original input owner and a whole-population
+classification under every campaign lock. Only positively untouched slots enter
+a new dispatch; completed false grades remain reused failures. All configuration
+manifests are published and rechecked before one final admission marker returns
+consuming worker capabilities. The parent `ActiveMode::Continued` retains its
+input/campaign guard through scoped worker joins, strict receipt sealing,
+read-only input verification and comparison. Passive generation wire/resolution
+lives with the runner's campaign model, not in a runner-to-sweep dependency.
+Fresh and continued runs share `BatchRun`; continued material/finished metadata
+is generation-scoped while original slot starts/outcomes remain create-new.
+Replay routes saved private JSONL and frozen choices without reopening sources.
+Inherited receipt bytes are verified before new receipts publish; original seals
+are not rewritten. Recording continuation still needs the separate immutable
+union/recovery contract in MULTITRACK-RECORDING-CONTINUATION.md.
+
 On Unix, runtime discovery owns one nonblocking duplex exchange, with a 1 MiB
 serialized request and 4 MiB complete response, a single 60-second exchange
 deadline and bounded cleanup. Linux launches the exact typed command through
@@ -1600,7 +1622,23 @@ the exact prepared bytes rather than rebuilding a different archive. Publication
 confirmation is separate from resumable staging cleanup. Missing published
 archives are never silently recreated. Per-track evidence binds immutable
 metadata and selected entry bytes, not staging paths that cleanup removes;
-batch evidence verification reuses one archive index. Sweep and cassette output
+writer-owned batch evidence verification reuses one archive index. Read-only
+report verification instead validates all reference and journal/catalogue
+metadata before selected JSONL, then uses a second bounded catalogue pass with
+the same receipt and metadata-size identity. Only one archive stays open, avoiding
+a descriptor-count cap on valid sweeps. Each receipt length check and decoder
+share one opened regular file. Whole-operation `ProofLimits` bound references,
+metadata, directory/end-record snapshots, compressed input and distinct selected
+bytes separately from per-archive format limits; single proofs retain their
+independent journal and manifest allowances. Capacity planning uses the same
+private compatibility/manifest/reference wire
+projections, with a separate size-only digest type that cannot enter observed
+compatibility. Metadata reservations bind real read-only selections and are
+recomputed rather than trusted on load. Fresh sweeps sum them before publication
+or dependency warming; genuine material admission checks selected names and
+capacity before journal creation. Response sizes remain runtime bounds, not
+guessed reservations. Association receipts retain their separate runner-owned
+128-byte-per-slot policy. Sweep and cassette output
 owners share a private persistent-inode lock implementation, with domain-owned
 paths and diagnostics. Finalization requires the caller to stop/join recording
 producers; freezing the journal does not drain a proxy itself. This backend is a

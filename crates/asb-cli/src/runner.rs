@@ -1,6 +1,8 @@
 //! Live execution of one configured benchmark.
 mod attempt;
 mod batch;
+pub(crate) use batch::{dataset_fingerprint, replay_protocol_fingerprint};
+pub(crate) mod campaign;
 mod completion;
 pub(crate) mod diagnostics;
 pub(crate) mod disposition;
@@ -11,7 +13,7 @@ mod native;
 mod phases;
 mod progress;
 pub(crate) mod recording;
-mod repeated;
+pub(crate) mod repeated;
 use phases::{
     AdmittedAttempt, AttemptIssues, ExecutionEvidence, FinalizedAttempt, MeasuredOutput,
     PreparedAttempt,
@@ -215,17 +217,64 @@ fn run_loaded(
             return reuse::render_reused(std::slice::from_ref(summary), options.json, output);
         }
     }
-    let cohort = measurements::ExecutionCohort {
+    let mut cohort = measurements::ExecutionCohort {
         id: workloads::TaskIdentity::local("execution-cohort", None).attempt_id,
         selected_replicas: config.concurrency,
         admitted_slots: (1..=config.concurrency)
             .filter(|slot| !options.reused.is_some_and(|saved| saved.contains_key(slot)))
             .collect(),
+        dispatch: None,
     };
+    if let Some(index) = cohort.admitted_slots.first() {
+        cohort.dispatch = Some(cohort.dispatch_for(*index, config.concurrency)?);
+    }
     let options = RunOptions {
         execution_cohort: Some(&cohort),
         ..options
     };
+    run_dispatched(config_path, config, options, output, warnings)
+}
+
+/// Consume the workflow's selected runtime admission, rather than replacing its
+/// cohort or manufacturing gate arrivals for retained peers. Only the workflow
+/// owner, not CLI/deserialized options, can supply this internal runtime object.
+fn run_admitted_batch(
+    config_path: &Path,
+    config: BenchmarkConfig,
+    options: RunOptions<'_>,
+    admission: &batch::Admission,
+    output: &mut dyn Write,
+    warnings: &Mutex<BTreeSet<String>>,
+) -> Result<(), Error> {
+    crate::planning::resolve_snapshot(&config, options.measurement_dir.is_some(), options.policy)?;
+    if options.replica != replica::Identity::default()
+        || !admission.matches(config.concurrency, options.reused)
+        || options.execution_cohort.is_some()
+        || options.preparation_gate.is_some()
+        || options.launch_gate.is_some()
+    {
+        return Err(Error::Input(
+            "batch admission differs from original pending replica population".into(),
+        ));
+    }
+    admission.claim()?;
+    let options = RunOptions {
+        execution_cohort: Some(admission.cohort()),
+        preparation_gate: Some(admission.material()),
+        launch_gate: Some(admission.launch()),
+        verify_initial_material: true,
+        ..options
+    };
+    run_dispatched(config_path, config, options, output, warnings)
+}
+
+fn run_dispatched(
+    config_path: &Path,
+    config: BenchmarkConfig,
+    options: RunOptions<'_>,
+    output: &mut dyn Write,
+    warnings: &Mutex<BTreeSet<String>>,
+) -> Result<(), Error> {
     if let Some(measures) = config.measurements.as_ref().filter(|value| value.enabled) {
         // Parallel sweep configurations can share project-local tool paths.
         // Serialize dependency publication, not benchmark execution.
@@ -866,18 +915,22 @@ fn replay_cassette(
         (1..=crate::benchmark::MAX_CONCURRENCY)
             .map(|replica| crate::benchmark_paths::replica_path(&legacy, replica)),
     ) {
-        match std::fs::symlink_metadata(&path) {
-            Ok(_) => return Ok(legacy),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
-            Err(error) => return Err(io_error(error)),
+        if crate::cassette::Source::is_present(&path)
+            .map_err(|failure| Error::Input(failure.to_string()))?
+        {
+            return Ok(legacy);
         }
     }
     let bundle = default_bundle_cassette(config_path, config);
-    match std::fs::symlink_metadata(&bundle) {
-        Ok(_) => Ok(bundle),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(legacy),
-        Err(error) => Err(io_error(error)),
-    }
+    Ok(
+        if crate::cassette::Source::is_present(&bundle)
+            .map_err(|failure| Error::Input(failure.to_string()))?
+        {
+            bundle
+        } else {
+            legacy
+        },
+    )
 }
 
 fn default_bundle_cassette(config_path: &Path, config: &BenchmarkConfig) -> PathBuf {
@@ -915,7 +968,7 @@ pub(crate) fn resolve_log_path(config_path: &Path, configured_path: &str) -> Pat
 
 fn render_json(result: &RunResult<'_>, output: &mut dyn Write) -> Result<(), Error> {
     let mut summary = serde_json::json!({
-        "execution": result.execution,
+        "measurement_directory": result.measurement_directory,
         "planning": result.planning,
         "effective_budgets": result.effective_budgets,
         "execution_plan": result.execution_plan,
@@ -947,6 +1000,10 @@ fn render_json(result: &RunResult<'_>, output: &mut dyn Write) -> Result<(), Err
         "steps": result.steps,
         "token_usage": result.token_usage,
     });
+    if let Some(execution) = &result.execution {
+        summary["execution"] =
+            serde_json::to_value(execution).map_err(|error| Error::Io(error.to_string()))?;
+    }
     if let Some(diagnostic) = result.observation.process_termination_diagnostic {
         summary["process_termination_diagnostic"] =
             serde_json::to_value(diagnostic).map_err(|error| Error::Io(error.to_string()))?;
@@ -1613,6 +1670,10 @@ mod tests {
             .unwrap();
         session
             .finish(crate::measurements::RunMeasurement {
+                planning: None,
+                effective_budgets: None,
+                execution: None,
+                recording: None,
                 observation: Default::default(),
                 workload_resource_disposition: None,
                 workload_artifacts: &[],
@@ -2024,7 +2085,29 @@ mod tests {
         assert_eq!(value["provider"], expected.provider);
         assert_eq!(value["model"], expected.model);
         assert!(value.get("stdout").is_none());
+        assert!(value.get("execution").is_none());
+        assert!(value.get("recording").is_none());
         assert_eq!(output.iter().filter(|byte| **byte == b'\n').count(), 1);
+    }
+
+    #[test]
+    fn json_output_preserves_present_campaign_identity_like_the_saved_log() {
+        let mut result = result();
+        result.execution = Some(
+            serde_json::from_value(serde_json::json!({
+                "admission":crate::planning::BatchAdmissionPolicy::current(),
+                "campaign":"fixture-campaign", "batch":2, "replica":1,
+                "slot":3, "total":4, "replay_track":7, "replay_seed":42,
+                "replay_algorithm":"fixture-selection"
+            }))
+            .unwrap(),
+        );
+        let saved = serde_json::to_value(&result).unwrap();
+        let mut output = Vec::new();
+        render_json(&result, &mut output).unwrap();
+        let summary: serde_json::Value = serde_json::from_slice(&output).unwrap();
+        assert_eq!(summary.get("execution"), saved.get("execution"));
+        assert!(summary["execution"].is_object());
     }
 
     #[test]

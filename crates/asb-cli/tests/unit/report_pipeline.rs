@@ -79,6 +79,67 @@ impl Drop for Fixture {
         let _ = fs::remove_dir_all(&self.0);
     }
 }
+
+#[test]
+fn dispatch_report_preserves_original_slots_and_refuses_a_forged_population_before_writes() {
+    let fixture = Fixture::new();
+    let manifest = fixture.seed("", 1);
+    let config_text =
+        "agent='fixture'\nprovider='fixture'\nmodel='fixture'\nworkload='bug-fix'\nconcurrency=4\n";
+    fixture.write("0.toml", config_text);
+    let config = toml::from_str::<crate::benchmark::BenchmarkConfig>(config_text).unwrap();
+    let policy = crate::planning::resolve(&config).unwrap();
+    let caps = crate::planning::EffectiveBudgets {
+        execution_seconds: Some(900.0),
+        ..Default::default()
+    };
+    let dispatch = crate::planning::Dispatch::new(4, 2).unwrap();
+    let fingerprint = crate::planning::protocol_fingerprint_with_dispatch(
+        &config,
+        &policy,
+        caps,
+        4,
+        None,
+        Some(dispatch),
+    )
+    .unwrap();
+    let relative = "sweep-results/000-0/measurements-concurrency-2/run.json";
+    let mut run = json!({"schema_version":2,"status":"completed","elapsed_ms":12,"agent":"fixture","provider":"fixture","model":"fixture","workload":"bug-fix","module":crate::workloads::descriptor("bug-fix"),"replica_index":2,"execution_cohort":{"id":"a123","selected_replicas":4,"admitted_slots":[2,4],"dispatch":dispatch},"planning":policy,"effective_budgets":caps,"execution_plan_fingerprint":fingerprint});
+    fixture.write(relative, run.to_string());
+    generate(manifest.to_str().unwrap(), &mut Vec::new()).unwrap();
+    let directory = fixture.0.join("results/sweep-comparison");
+    let report: Value =
+        serde_json::from_slice(&fs::read(directory.join("comparison.json")).unwrap()).unwrap();
+    assert_eq!(
+        report["benchmarks"][1]["execution_cohort"]["dispatch"],
+        json!(dispatch)
+    );
+    assert_eq!(report["benchmarks"][1]["replica_index"], 2);
+    let html = fs::read_to_string(directory.join("report.html")).unwrap();
+    assert!(html.contains("Configured 4 · admitted 2 (partial admission)"));
+    assert!(html.contains("slots 2, 4"));
+    let prior = Fixture::snapshot(&directory);
+    // Still valid shape/membership, but its retained hash belongs to P=2.
+    run["execution_cohort"]["admitted_slots"] = json!([1, 2, 3, 4]);
+    run["execution_cohort"]["dispatch"]["admitted"] = json!(4);
+    fixture.write(relative, run.to_string());
+    assert!(
+        generate(manifest.to_str().unwrap(), &mut Vec::new())
+            .unwrap_err()
+            .to_string()
+            .contains("runtime protocol fingerprint")
+    );
+    assert_eq!(Fixture::snapshot(&directory), prior);
+    // Missing old descriptor is genuinely unknown, not a fabricated new P.
+    run["execution_cohort"]
+        .as_object_mut()
+        .unwrap()
+        .remove("dispatch");
+    fixture.write(relative, run.to_string());
+    generate(manifest.to_str().unwrap(), &mut Vec::new()).unwrap();
+    let html = fs::read_to_string(directory.join("report.html")).unwrap();
+    assert!(html.contains("Runtime population descriptor unknown (historical)"));
+}
 fn series(values: Value, timestamps: Option<Value>) -> TimeSeries {
     TimeSeries::parse(
         &values,
@@ -444,6 +505,7 @@ fn every_cross_row_invariant_and_population_failure_precedes_publication() {
                         id: "aaa".into(),
                         selected_replicas: 2,
                         admitted_slots: vec![index + 1],
+                        dispatch: None,
                     });
                 }
             }

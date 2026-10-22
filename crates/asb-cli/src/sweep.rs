@@ -9,6 +9,7 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+mod campaigns;
 mod checkpoint;
 mod execution;
 mod lock;
@@ -42,6 +43,9 @@ pub(crate) struct SweepFile {
 
 #[derive(Clone, Copy)]
 pub(crate) struct Options<'a> {
+    pub repeat: Option<u64>,
+    pub track: Option<crate::cassette::Selector>,
+    pub seed: Option<u64>,
     pub json: bool,
     pub show_output: bool,
     /// The process has both presentation streams attached to a terminal.
@@ -58,11 +62,16 @@ pub(crate) struct Options<'a> {
     pub resume: bool,
     pub reconcile_completed: bool,
     pub import_grades: bool,
+    pub recover_recording: bool,
+    pub recover_continuation: bool,
 }
 
 impl Default for Options<'_> {
     fn default() -> Self {
         Self {
+            repeat: None,
+            track: None,
+            seed: None,
             json: false,
             show_output: false,
             interactive: false,
@@ -74,6 +83,8 @@ impl Default for Options<'_> {
             resume: false,
             reconcile_completed: false,
             import_grades: false,
+            recover_recording: false,
+            recover_continuation: false,
         }
     }
 }
@@ -130,6 +141,81 @@ pub(crate) fn run_with_options(
         .unwrap_or("sweep");
     // Keep ownership through comparison, including moving older output trees.
     let _output_lock = lock::OutputLock::acquire(parent, stem)?;
+    if options.recover_continuation {
+        if !options.resume
+            || mode.is_some()
+            || options.import_grades
+            || options.reconcile_completed
+            || options.recover_recording
+            || options.show_output
+            || options.repeat.is_some()
+            || options.track.is_some()
+            || options.seed.is_some()
+            || options.cassette_root.is_some()
+            || options.respect_record_timings
+            || options.max_active_attempts.is_some()
+            || options.jobs != 1
+        {
+            return Err(Error::Input("--recover-continuation requires --resume and accepts no execution/selection options".into()));
+        }
+        let results = parent.join(format!("{stem}-results"));
+        let saved = plan::SweepPlan::load(&results, parent, &sweep)?
+            .ok_or_else(|| Error::Input("no retained sweep to recover".into()))?;
+        if saved.execution.is_none() {
+            return Err(Error::Input(
+                "retained sweep is not a repeated campaign".into(),
+            ));
+        }
+        let report = checkpoint::Inputs::recover_continuation(parent, &results, &saved)?;
+        if options.json {
+            writeln!(output, "{report}").map_err(crate::io_error)?;
+        } else {
+            writeln!(
+                output,
+                "Recovered continuation metadata: {} (no agents or evaluators started)",
+                report["generation"].as_str().unwrap_or("unknown")
+            )
+            .map_err(crate::io_error)?;
+        }
+        return Ok(());
+    }
+    if options.recover_recording {
+        if !options.resume
+            || options.mode != Some(crate::tape::Mode::Record)
+            || options.import_grades
+            || options.reconcile_completed
+            || options.show_output
+            || options.repeat.is_some()
+            || options.track.is_some()
+            || options.seed.is_some()
+            || options.cassette_root.is_some()
+            || options.respect_record_timings
+            || options.max_active_attempts.is_some()
+        {
+            return Err(Error::Input("--recover-recording requires --resume --record and accepts no execution/selection options".into()));
+        }
+        let results = parent.join(format!("{stem}-results"));
+        let saved = plan::SweepPlan::load(&results, parent, &sweep)?
+            .ok_or_else(|| Error::Input("no retained sweep to recover".into()))?;
+        if saved.execution_mode != plan::SavedExecutionMode::Record || saved.execution.is_none() {
+            return Err(Error::Input(
+                "retained sweep is not a recording campaign".into(),
+            ));
+        }
+        for report in checkpoint::Inputs::recover_recordings(parent, &results, &saved)? {
+            if options.json {
+                writeln!(output, "{report}").map_err(crate::io_error)?;
+            } else {
+                writeln!(
+                    output,
+                    "Recovered recording publication: {} (no agents or evaluators started)",
+                    report["destination"].as_str().unwrap_or("unknown")
+                )
+                .map_err(crate::io_error)?;
+            }
+        }
+        return Ok(());
+    }
     if options.import_grades {
         if options.resume
             || options.reconcile_completed
@@ -139,11 +225,19 @@ pub(crate) fn run_with_options(
             || options.cassette_root.is_some()
             || options.jobs != 1
             || options.max_active_attempts.is_some()
+            || options.repeat.is_some()
+            || options.track.is_some()
+            || options.seed.is_some()
         {
             return Err(Error::Input(
                 "--import-grades is report-only and cannot be combined with execution options"
                     .into(),
             ));
+        }
+        if plan::SweepPlan::source_snapshot(&parent.join(format!("{stem}-results")), parent)?
+            .is_some_and(|saved| saved.execution.is_some())
+        {
+            return Err(Error::Input("campaign grade import requires saved-slot validation; existing results were not changed".into()));
         }
         return recovered::import(sweep_path, &sweep, parent, stem, json, output);
     }

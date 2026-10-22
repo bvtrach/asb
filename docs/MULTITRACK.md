@@ -153,3 +153,32 @@ execution or grading. Per-attempt completion seals bind immutable committed
 tracks, not a growing archive or staging paths removed by successful cleanup.
 Ordinary execution failures still finalize settled results; interruption keeps
 recoverable partial state, and explicit recovery never implicitly reruns slots.
+
+## Sweep continuation integration
+
+The original input owner classifies every original slot under all campaign
+locks before publishing a continuation generation. Completed false grades are
+reused; only positively untouched slots may be newly dispatched. Every
+configuration manifest is published and rechecked before the final admission
+marker and before returning any consuming worker capability. The parent retains
+the input owner and every campaign lock through worker joins, receipt sealing,
+input stability verification and comparison.
+
+Fresh and continued execution share one actual batch dispatcher. A continued
+batch retains original concurrency/replica/slot identities but gates only its
+selected pending members. Retained peers produce no preparation/launch arrivals.
+Replay aliases use saved private JSONL inputs and precomputed track choices,
+never reopen the public source, and preserve nullable legacy selection facts.
+Known-incomplete pending selections retain their warning and strict proxy checks.
+New prepared/finished metadata is generation-scoped; original start/outcome
+paths remain create-new and carry exact admission/manifest references.
+
+Settlement validates inherited receipt bytes before proving the full population
+and publishes only new receipts. Completed-only reuse does not mint a generation
+or rewrite original input seals. Recording continuation additionally needs a
+self-contained old-plus-new immutable archive generation and no-client recovery;
+the replay/live dispatch does not authorize reopening an old recording journal.
+See [the recording continuation contract](MULTITRACK-RECORDING-CONTINUATION.md)
+for the remaining physical-generation, union and no-client recovery work.
+Interrupted generation publication/activation remains recovery-only, not an
+implicit retry or permission to pick a new generation.

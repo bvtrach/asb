@@ -1,6 +1,6 @@
 //! Run-owned whole-track selection and private JSONL staging; no proxy changes.
 use super::{Plan, ReplayInput, Slot, path_text, private_directory, publish_bytes};
-use crate::cassette::{Compatibility, Limits, SelectionPlan, Selector, Source};
+use crate::cassette::{Compatibility, Limits, SelectionPlan, Selector, Source, SourceInspection};
 use crate::{Error, benchmark::BenchmarkConfig, runner::RunOptions};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -24,10 +24,21 @@ pub(super) struct Prepared {
     path: PathBuf,
     chosen: Vec<u64>,
     pub selection: Option<SelectionPlan>,
+}
+
+pub(super) struct Inspection {
+    source: SourceInspection,
+    path: PathBuf,
+    chosen: Vec<u64>,
+    pub selection: Option<SelectionPlan>,
     pub compatibility: Option<Compatibility>,
 }
 
-impl Prepared {
+impl Inspection {
+    pub fn validate(&self) -> Result<(), Error> {
+        self.source.validate().map_err(input_error)
+    }
+
     pub fn open(
         config_path: &Path,
         config: &BenchmarkConfig,
@@ -44,7 +55,7 @@ impl Prepared {
         {
             return Ok(None);
         }
-        let source = Source::open(&path, Limits::default()).map_err(input_error)?;
+        let source = Source::inspect(&path, Limits::default()).map_err(input_error)?;
         let (chosen, selection, compatibility) = if let Some(manifest) = source.manifest() {
             // Selection is precomputed once in slot order, never by worker arrival.
             let seed = options.replay_seed.unwrap_or_else(generated_seed);
@@ -72,7 +83,7 @@ impl Prepared {
             let Some(Selector::Id(id)) = options.track else {
                 return Err(Error::Input("legacy JSONL supports numeric --track only; statistic observations are unknown".into()));
             };
-            if !source.legacy_tracks().iter().any(|track| track.id == id) {
+            if source.legacy_bytes(id).is_none() {
                 return Err(Error::Input(format!(
                     "legacy cassette track {id} does not exist"
                 )));
@@ -92,6 +103,46 @@ impl Prepared {
         }))
     }
 
+    pub fn input_cost(&self) -> Result<super::InputCost, Error> {
+        let ids: std::collections::BTreeSet<_> = self.chosen.iter().copied().collect();
+        let mut bytes = 0u64;
+        for id in &ids {
+            let size = if let Some(manifest) = self.source.manifest() {
+                manifest.track(*id).map_err(input_error)?.bytes
+            } else {
+                self.source
+                    .legacy_bytes(*id)
+                    .ok_or_else(|| Error::Input("selected legacy metadata is missing".into()))?
+            };
+            bytes = bytes
+                .checked_add(size)
+                .filter(|bytes| *bytes <= Limits::default().max_total_bytes)
+                .ok_or_else(|| {
+                    Error::Input("selected replay inputs exceed aggregate byte budget".into())
+                })?;
+        }
+        let (files, directory_bytes, manifest_bytes, observed_bytes) = self.source.retained_cost();
+        Ok(super::InputCost {
+            inputs: ids.len(),
+            bytes,
+            files,
+            directory_bytes,
+            manifest_bytes,
+            observed_bytes,
+        })
+    }
+
+    pub fn observe(self) -> Result<Prepared, Error> {
+        Ok(Prepared {
+            source: self.source.observe().map_err(input_error)?,
+            path: self.path,
+            chosen: self.chosen,
+            selection: self.selection,
+        })
+    }
+}
+
+impl Prepared {
     pub fn inputs(&self, slots: &mut [Slot]) -> Result<Vec<ReplayInput>, Error> {
         if slots.len() != self.chosen.len() {
             return Err(Error::Input(
@@ -166,7 +217,7 @@ impl Prepared {
         Ok(())
     }
 
-    pub fn batch_choices(&self, plan: &Plan<'_>, batch: u64, concurrency: usize) -> BatchChoices {
+    pub fn batch_choices(&self, plan: &Plan, batch: u64, concurrency: usize) -> BatchChoices {
         let start = (batch as usize - 1) * concurrency;
         let tracks: Vec<_> = plan.slots[start..start + concurrency]
             .iter()
@@ -196,13 +247,59 @@ impl Prepared {
 /// Each batch has its own replica aliases; each proxy still owns its own cursor.
 pub(super) fn stage_batch(
     root: &Path,
-    plan: &Plan<'_>,
+    plan: &Plan,
     batch: u64,
     concurrency: usize,
 ) -> Result<String, Error> {
-    let base = root.join(format!("batch-{batch}/replay.jsonl"));
+    stage_selected(
+        root,
+        plan,
+        batch,
+        &(1..=concurrency).collect::<Vec<_>>(),
+        &root.join(format!("batch-{batch}")),
+    )
+}
+
+pub(super) fn saved_batch_choices(plan: &Plan, batch: u64) -> Option<BatchChoices> {
+    let start = (batch as usize - 1) * plan.concurrency;
+    let slots = &plan.slots[start..start + plan.concurrency];
+    let tracks = slots
+        .iter()
+        .map(|slot| slot.replay_track)
+        .collect::<Option<Vec<_>>>()?;
+    Some(BatchChoices {
+        seed: plan
+            .replay_selection
+            .as_ref()
+            .map(|selection| selection.seed),
+        algorithm: plan
+            .replay_selection
+            .as_ref()
+            .map(|selection| selection.algorithm.clone()),
+        tracks,
+        // Saved plans retain selected track identities but not a source handle
+        // or a copied manifest. Statistics remain unavailable until a fresh
+        // replay source is inspected.
+        statistics: vec![None; plan.concurrency],
+    })
+}
+
+/// Derive aliases only from saved private inputs and original replica IDs.
+/// This route never opens the public source or samples a replacement track.
+pub(super) fn stage_selected(
+    root: &Path,
+    plan: &Plan,
+    batch: u64,
+    members: &[usize],
+    destination: &Path,
+) -> Result<String, Error> {
+    let concurrency = plan.concurrency;
+    let base = destination.join("replay.jsonl");
     let start = (batch as usize - 1) * concurrency;
-    for slot in &plan.slots[start..start + concurrency] {
+    for slot in plan.slots[start..start + concurrency]
+        .iter()
+        .filter(|slot| members.contains(&slot.replica))
+    {
         let input = &plan.replay_inputs[slot.replay_input.expect("planned replay input")];
         let destination = if concurrency == 1 {
             base.clone()
@@ -226,13 +323,13 @@ fn generated_seed() -> u64 {
 
 /// Explicit selection permits incomplete traces but must disclose their status
 /// before any material/client admission. Unknown legacy status stays unknown.
-pub(super) fn disclose_incomplete(
-    inputs: &[ReplayInput],
+pub(super) fn disclose_incomplete<'a>(
+    inputs: impl IntoIterator<Item = &'a ReplayInput>,
     json: bool,
     output: &mut dyn std::io::Write,
 ) -> Result<(), Error> {
     let ids: Vec<_> = inputs
-        .iter()
+        .into_iter()
         .filter(|input| input.complete == Some(false))
         .filter_map(|input| input.track)
         .collect();

@@ -1,35 +1,27 @@
 //! Fresh sequential batches with a durable intended-slot plan and outcome links.
+mod execution;
+mod legacy;
 mod replay;
+pub(crate) use super::campaign::ExecutionIdentity;
+use super::campaign::{MAX_EXECUTIONS, Plan, ReplayInput, Slot, planned_slots};
 use super::{RunOptions, batch, replica};
 use crate::{Error, benchmark::BenchmarkConfig, cassette::Compatibility, io_error};
+pub(crate) use execution::{Continuation, continue_campaign};
 use serde::Serialize;
 use serde_json::json;
-use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-const MAX_EXECUTIONS: u64 = 65_533;
 const MAX_PLAN_BYTES: usize = 16 * 1024 * 1024;
 const MAX_OUTCOME_BYTES: u64 = 1024 * 1024;
 
-#[derive(Clone, Debug, Serialize)]
-pub(crate) struct ExecutionIdentity {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    replay_track: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    replay_seed: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    replay_algorithm: Option<String>,
-    admission: crate::planning::BatchAdmissionPolicy,
-    campaign: String,
-    batch: u64,
-    replica: usize,
-    slot: u64,
-    total: u64,
+#[cfg(test)]
+pub(crate) fn take_legacy_observation_count() -> usize {
+    legacy::take_transfer_count()
 }
 
 #[derive(Clone, Serialize)]
@@ -75,53 +67,6 @@ impl BatchIdentity {
     }
 }
 
-#[derive(Serialize)]
-struct Slot {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    replay_track: Option<u64>,
-    id: u64,
-    batch: u64,
-    replica: usize,
-    workspace: PathBuf,
-    log: PathBuf,
-    measurements: Option<PathBuf>,
-    replay_input: Option<usize>,
-}
-
-#[derive(Serialize)]
-struct ReplayInput {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    complete: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    track: Option<u64>,
-    source: PathBuf,
-    private: PathBuf,
-    bytes: u64,
-    sha256: String,
-}
-
-#[derive(Serialize)]
-struct Plan<'a> {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    replay_selection: Option<crate::cassette::SelectionPlan>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    recording: Option<PathBuf>,
-    admission: crate::planning::BatchAdmissionPolicy,
-    schema_version: u32,
-    scope: &'static str,
-    campaign: &'a str,
-    source: PathBuf,
-    configuration: &'a BenchmarkConfig,
-    configuration_sha256: String,
-    repeat: u64,
-    concurrency: usize,
-    mode: &'static str,
-    respect_record_timings: bool,
-    measurement_root: Option<PathBuf>,
-    replay_inputs: Vec<ReplayInput>,
-    slots: Vec<Slot>,
-}
-
 pub(super) fn run(
     config_path: &Path,
     config: BenchmarkConfig,
@@ -130,96 +75,417 @@ pub(super) fn run(
     output: &mut dyn Write,
     warnings: &Mutex<BTreeSet<String>>,
 ) -> Result<(), Error> {
-    // Reject unsupported combinations and excessive populations before any IO
-    // publication or dependency/environment preparation.
-    let total = repeat
-        .checked_mul(config.concurrency as u64)
-        .filter(|total| repeat > 0 && *total <= MAX_EXECUTIONS)
-        .ok_or_else(|| {
-            Error::Input("repeat must be positive and its concurrency product at most 65533".into())
-        })?;
-    if options.on_completion.is_some()
-        || options.replica.index != 1
-        || options.replica.total != 1
-        || options.reused.is_some()
-        || options.preparation_gate.is_some()
-        || options.launch_gate.is_some()
-        || options.batch.is_some()
-        || options.recording.is_some()
-    {
-        return Err(Error::Input(
-            "repeated execution cannot reuse legacy observers, slots or preparation gates".into(),
-        ));
+    activate(
+        Prepared::prepare(config_path, config, repeat, options, None)?,
+        output,
+        warnings,
+    )
+}
+
+/// Own frozen planning facts and opened sources, never an active process/lock.
+pub(crate) struct Prepared {
+    config_path: PathBuf,
+    options: ActivationOptions,
+    parent: PathBuf,
+    root: PathBuf,
+    plan: Plan,
+    bytes: Vec<u8>,
+    replay: Option<PreparedReplay>,
+}
+
+/// Metadata-only planning owner. Its plan is deliberately not publishable until
+/// the consuming observation step supplies genuine legacy input digests.
+pub(crate) struct Inspection {
+    config_path: PathBuf,
+    options: ActivationOptions,
+    parent: PathBuf,
+    root: PathBuf,
+    plan: Plan,
+    replay: Option<InspectedReplay>,
+}
+
+enum InspectedReplay {
+    Selected(Box<replay::Inspection>),
+    Legacy(legacy::Inspection),
+}
+
+#[derive(Clone, Copy, Default)]
+pub(crate) struct InputCost {
+    pub inputs: usize,
+    pub bytes: u64,
+    pub observed_bytes: u64,
+    pub files: usize,
+    pub directory_bytes: u64,
+    pub manifest_bytes: u64,
+}
+
+impl InputCost {
+    pub(crate) fn checked_add(self, next: Self) -> Result<Self, Error> {
+        let invalid =
+            |reason: &str| Error::Input(format!("sweep replay input admission: {reason}"));
+        Ok(Self {
+            inputs: self
+                .inputs
+                .checked_add(next.inputs)
+                .filter(|value| *value <= MAX_EXECUTIONS as usize)
+                .ok_or_else(|| invalid("selected inputs exceed execution population"))?,
+            bytes: self
+                .bytes
+                .checked_add(next.bytes)
+                .filter(|value| *value <= 2 * 1024 * 1024 * 1024)
+                .ok_or_else(|| invalid("private replay inputs exceed aggregate 2 GiB"))?,
+            observed_bytes: self
+                .observed_bytes
+                .checked_add(next.observed_bytes)
+                .filter(|value| *value <= 2 * 1024 * 1024 * 1024)
+                .ok_or_else(|| invalid("legacy observations exceed aggregate 2 GiB"))?,
+            files: self
+                .files
+                .checked_add(next.files)
+                .filter(|value| *value <= 256)
+                .ok_or_else(|| invalid("retained replay descriptors exceed 256"))?,
+            directory_bytes: self
+                .directory_bytes
+                .checked_add(next.directory_bytes)
+                .filter(|value| *value <= 64 * 1024 * 1024)
+                .ok_or_else(|| invalid("archive directories exceed aggregate 64 MiB"))?,
+            manifest_bytes: self
+                .manifest_bytes
+                .checked_add(next.manifest_bytes)
+                .filter(|value| *value <= 256 * 1024 * 1024)
+                .ok_or_else(|| invalid("archive manifests exceed aggregate 256 MiB"))?,
+        })
     }
-    crate::planning::resolve_snapshot(&config, options.measurement_dir.is_some(), options.policy)?;
-    if config
-        .planning
-        .as_ref()
-        .is_some_and(|planning| planning.repetition != crate::planning::Repetition::default())
-    {
-        return Err(Error::Input("--repeat cannot combine with a nondefault planning.repetition; choose automated batches or manually identified configurations".into()));
+}
+
+enum PreparedReplay {
+    Selected(Box<replay::Prepared>),
+    Legacy(legacy::Prepared),
+}
+
+/// Only presentation and saved policy survive preparation as execution options.
+/// Routing/counts/timings come from the owned plan/source, not parallel copies.
+struct ActivationOptions {
+    json: bool,
+    show_output: bool,
+    measurement_override: bool,
+    policy: Option<crate::planning::ResolvedPlan>,
+}
+
+impl Prepared {
+    pub(crate) fn prepare(
+        config_path: &Path,
+        config: BenchmarkConfig,
+        repeat: u64,
+        options: RunOptions<'_>,
+        campaign_parent: Option<&Path>,
+    ) -> Result<Self, Error> {
+        Inspection::prepare_selected(config_path, config, repeat, options, campaign_parent, None)?
+            .observe()
     }
-    let admission = crate::planning::BatchAdmissionPolicy::current();
-    let (project_root, _) = crate::project::load(config_path)?;
-    let project_root = project_root.canonicalize().map_err(io_error)?;
-    let campaign = crate::workloads::TaskIdentity::local("execution-campaign", None).attempt_id;
-    let measured = options.measurement_dir.is_some()
-        || config
-            .measurements
+}
+
+impl Inspection {
+    pub(crate) fn validate_sources(&self) -> Result<(), Error> {
+        match &self.replay {
+            Some(InspectedReplay::Selected(selected)) => selected.validate(),
+            Some(InspectedReplay::Legacy(legacy)) => legacy.validate(),
+            None => Ok(()),
+        }
+    }
+
+    pub(crate) fn prepare_selected(
+        config_path: &Path,
+        config: BenchmarkConfig,
+        repeat: u64,
+        options: RunOptions<'_>,
+        campaign_parent: Option<&Path>,
+        selection: Option<&crate::workloads::TaskSelection>,
+    ) -> Result<Self, Error> {
+        // Reject unsupported combinations and excessive populations before any IO
+        // publication or dependency/environment preparation.
+        repeat
+            .checked_mul(config.concurrency as u64)
+            .filter(|total| repeat > 0 && *total <= MAX_EXECUTIONS)
+            .ok_or_else(|| {
+                Error::Input(
+                    "repeat must be positive and its concurrency product at most 65533".into(),
+                )
+            })?;
+        if options.on_completion.is_some()
+            || options.replica.index != 1
+            || options.replica.total != 1
+            || options.reused.is_some()
+            || options.preparation_gate.is_some()
+            || options.launch_gate.is_some()
+            || options.batch.is_some()
+            || options.recording.is_some()
+        {
+            return Err(Error::Input(
+                "repeated execution cannot reuse legacy observers, slots or preparation gates"
+                    .into(),
+            ));
+        }
+        crate::planning::resolve_snapshot(
+            &config,
+            options.measurement_dir.is_some(),
+            options.policy,
+        )?;
+        if config
+            .planning
             .as_ref()
-            .is_some_and(|value| value.enabled);
-    let mut slots = planned_slots(&config, repeat, measured)?;
-    let mut replay = replay::Prepared::open(config_path, &config, options, repeat)?;
-    let replay_inputs = if let Some(replay) = &replay {
-        replay.inputs(&mut slots)?
-    } else {
-        replay_inputs(config_path, &config, options, &mut slots)?
-    };
-    let parent = project_root.join("results/asb-executions");
-    let root = parent.join(&campaign);
-    let recording_destination = (options.mode == Some(crate::tape::Mode::Record))
-        .then(|| {
-            let destination = options
-                .cassette
-                .map(PathBuf::from)
-                .unwrap_or_else(|| super::default_bundle_cassette(config_path, &config));
-            super::recording::preflight(&destination)
+            .is_some_and(|planning| planning.repetition != crate::planning::Repetition::default())
+        {
+            return Err(Error::Input("--repeat cannot combine with a nondefault planning.repetition; choose automated batches or manually identified configurations".into()));
+        }
+        let admission = crate::planning::BatchAdmissionPolicy::current();
+        let (project_root, settings) = crate::project::load(config_path)?;
+        let project_root = project_root.canonicalize().map_err(io_error)?;
+        let campaign = crate::workloads::TaskIdentity::local("execution-campaign", None).attempt_id;
+        let measured = options.measurement_dir.is_some()
+            || config
+                .measurements
+                .as_ref()
+                .is_some_and(|value| value.enabled);
+        let mut slots = planned_slots(&config, repeat, measured)?;
+        let replay_source = (options.mode == Some(crate::tape::Mode::Replay))
+            .then(|| {
+                super::replay_cassette(config_path, &config, options.cassette)
+                    .and_then(|path| std::path::absolute(path).map_err(io_error))
+            })
+            .transpose()?;
+        let replay = match replay::Inspection::open(config_path, &config, options, repeat)? {
+            Some(selected) => Some(InspectedReplay::Selected(Box::new(selected))),
+            None if options.mode == Some(crate::tape::Mode::Replay) => {
+                Some(InspectedReplay::Legacy(legacy::Inspection::open(
+                    config_path,
+                    &config,
+                    options,
+                    &mut slots,
+                )?))
+            }
+            None => None,
+        };
+        let parent = campaign_parent
+            .map(|path| std::path::absolute(path).map_err(io_error))
+            .transpose()?
+            .unwrap_or_else(|| project_root.join("results/asb-executions"));
+        let root = parent.join(&campaign);
+        let recording_destination = (options.mode == Some(crate::tape::Mode::Record))
+            .then(|| {
+                let destination = options.cassette.map(PathBuf::from).unwrap_or_else(|| {
+                    if campaign_parent.is_some() {
+                        root.join("recording.asb.zip")
+                    } else {
+                        super::default_bundle_cassette(config_path, &config)
+                    }
+                });
+                super::recording::inspect_destination(&destination)
+            })
+            .transpose()?;
+        let measurement_root = measured
+            .then(|| {
+                options
+                    .measurement_dir
+                    .map(|path| std::path::absolute(path).map(|path| path.join(&campaign)))
+                    .unwrap_or_else(|| Ok(root.clone()))
+            })
+            .transpose()
+            .map_err(io_error)?;
+        let recording_selection = if recording_destination.is_some() {
+            Some(if let Some(selection) = selection {
+                selection.clone()
+            } else {
+                let directory = std::env::var_os("ASB_WORKLOAD_DIR")
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| {
+                        crate::project::resolve(&project_root, &settings.workloads_dir)
+                    });
+                let catalog = crate::workloads::planning_catalog(&config.workload, &directory)
+                    .map_err(Error::Input)?;
+                crate::workloads::describe_selection(&config, &directory, catalog.as_ref())
+                    .map_err(Error::Input)?
+            })
+        } else {
+            None
+        };
+        let mut plan = Plan {
+            replay_compatibility: replay.as_ref().and_then(|replay| match replay {
+                InspectedReplay::Selected(selected) => selected.compatibility.clone(),
+                InspectedReplay::Legacy(_) => None,
+            }),
+            recording_selection,
+            recording_reservation: None,
+            replay_source,
+            measurement_storage: measured.then_some(if options.measurement_dir.is_some() {
+                super::campaign::MeasurementStorage::Override
+            } else {
+                super::campaign::MeasurementStorage::Campaign
+            }),
+            replay_selection: replay.as_ref().and_then(|replay| match replay {
+                InspectedReplay::Selected(selected) => selected.selection.clone(),
+                InspectedReplay::Legacy(_) => None,
+            }),
+            recording: recording_destination.clone(),
+            admission,
+            schema_version: 1,
+            scope: "intended-executions-not-attempt-evidence".into(),
+            campaign: campaign.clone(),
+            source: config_path.canonicalize().map_err(io_error)?,
+            configuration_sha256: crate::cassette::digest(
+                &serde_json::to_vec(&config).map_err(|error| Error::Input(error.to_string()))?,
+            ),
+            repeat,
+            concurrency: config.concurrency,
+            configuration: config,
+            mode: match options.mode {
+                Some(crate::tape::Mode::Record) => crate::planning::ExecutionMode::Record,
+                Some(crate::tape::Mode::Replay) => crate::planning::ExecutionMode::Replay,
+                _ => crate::planning::ExecutionMode::Live,
+            },
+            respect_record_timings: options.respect_record_timings,
+            measurement_root: measurement_root.clone(),
+            replay_inputs: Vec::new(),
+            slots,
+        };
+        plan.recording_reservation = plan.recording_capacity()?;
+        Ok(Self {
+            // Anchor the invocation without following its final symlink: its
+            // project authority can differ from the canonical source location.
+            config_path: std::path::absolute(config_path).map_err(io_error)?,
+            options: ActivationOptions {
+                json: options.json,
+                show_output: options.show_output,
+                measurement_override: options.measurement_dir.is_some(),
+                policy: options.policy.cloned(),
+            },
+            parent,
+            root,
+            plan,
+            replay,
         })
-        .transpose()?;
-    let measurement_root = measured
-        .then(|| {
-            options
-                .measurement_dir
-                .map(|path| std::path::absolute(path).map(|path| path.join(&campaign)))
-                .unwrap_or_else(|| Ok(root.clone()))
+    }
+
+    pub(crate) fn input_cost(&self) -> Result<InputCost, Error> {
+        match &self.replay {
+            Some(InspectedReplay::Selected(selected)) => selected.input_cost(),
+            Some(InspectedReplay::Legacy(legacy)) => Ok(legacy.input_cost()),
+            None => Ok(InputCost::default()),
+        }
+    }
+
+    pub(crate) fn recording_reservation(&self) -> Option<&crate::cassette::RecordingReservation> {
+        self.plan.recording_reservation.as_ref()
+    }
+
+    pub(crate) fn observe(mut self) -> Result<Prepared, Error> {
+        let replay = match self.replay {
+            Some(InspectedReplay::Selected(selected)) => {
+                let selected = selected.observe()?;
+                self.plan.replay_inputs = selected.inputs(&mut self.plan.slots)?;
+                Some(PreparedReplay::Selected(Box::new(selected)))
+            }
+            Some(InspectedReplay::Legacy(legacy)) => {
+                let (legacy, inputs) = legacy.observe()?;
+                self.plan.replay_inputs = inputs;
+                Some(PreparedReplay::Legacy(legacy))
+            }
+            None => None,
+        };
+        self.plan.validate_layout()?;
+        let bytes = encode(&self.plan)?;
+        Ok(Prepared {
+            config_path: self.config_path,
+            options: self.options,
+            parent: self.parent,
+            root: self.root,
+            plan: self.plan,
+            bytes,
+            replay,
         })
-        .transpose()
-        .map_err(io_error)?;
-    let plan = Plan {
-        replay_selection: replay.as_ref().and_then(|replay| replay.selection.clone()),
-        recording: recording_destination.clone(),
-        admission,
-        schema_version: 1,
-        scope: "intended-executions-not-attempt-evidence",
-        campaign: &campaign,
-        source: config_path.canonicalize().map_err(io_error)?,
-        configuration: &config,
-        configuration_sha256: crate::cassette::digest(
-            &serde_json::to_vec(&config).map_err(|error| Error::Input(error.to_string()))?,
-        ),
-        repeat,
-        concurrency: config.concurrency,
-        mode: match options.mode {
-            Some(crate::tape::Mode::Record) => "record",
-            Some(crate::tape::Mode::Replay) => "replay",
-            _ => "live",
-        },
-        respect_record_timings: options.respect_record_timings,
-        measurement_root: measurement_root.clone(),
-        replay_inputs,
-        slots,
-    };
-    let bytes = encode(&plan)?;
+    }
+}
+
+impl Prepared {
+    pub(crate) fn reference(&self, results: &Path) -> Result<super::campaign::Reference, Error> {
+        let results = std::path::absolute(results).map_err(io_error)?;
+        Ok(super::campaign::Reference {
+            root: self
+                .root
+                .strip_prefix(results)
+                .map_err(|_| {
+                    Error::Input("campaign must be beneath its owning sweep results".into())
+                })?
+                .to_path_buf(),
+            bytes: self.bytes.len() as u64,
+            sha256: crate::cassette::digest(&self.bytes),
+        })
+    }
+
+    /// Open source handles remain pinned; only their durable display locations
+    /// change when the owning sweep preserves the previous results tree.
+    pub(crate) fn preserve_source_locations(
+        &mut self,
+        old: &Path,
+        preserved: &Path,
+    ) -> Result<(), Error> {
+        let old = std::path::absolute(old).map_err(io_error)?;
+        let preserved = std::path::absolute(preserved).map_err(io_error)?;
+        if let Some(source) = &mut self.plan.replay_source
+            && let Ok(relative) = source.strip_prefix(&old)
+        {
+            *source = preserved.join(relative);
+        }
+        for input in &mut self.plan.replay_inputs {
+            if let Ok(relative) = input.source.strip_prefix(&old) {
+                input.source = preserved.join(relative);
+            }
+        }
+        self.bytes = encode(&self.plan)?;
+        Ok(())
+    }
+}
+
+fn activate(
+    prepared: Prepared,
+    output: &mut dyn Write,
+    warnings: &Mutex<BTreeSet<String>>,
+) -> Result<(), Error> {
+    execute(publish_campaign(prepared)?, output, warnings)
+}
+
+/// Published layout/input ownership is not evidence of an attempted execution.
+pub(crate) struct PublishedCampaign {
+    config_path: PathBuf,
+    options: ActivationOptions,
+    root: PathBuf,
+    plan: Plan,
+    private_cassette: Option<String>,
+    replay: Option<Box<replay::Prepared>>,
+    _owner: crate::output_lock::OutputLock,
+}
+
+pub(crate) fn publish_campaign(prepared: Prepared) -> Result<PublishedCampaign, Error> {
+    let Prepared {
+        config_path,
+        options,
+        parent,
+        root,
+        plan,
+        bytes,
+        replay,
+    } = prepared;
+    plan.validate_layout()?;
+    // Inspection never reserved the output. Recheck before creating a campaign
+    // or starting any dependency; the journal remains the final no-clobber owner.
+    if let Some(destination) = &plan.recording {
+        let observed = super::recording::inspect_destination(destination)?;
+        if observed != *destination {
+            return Err(Error::Input(
+                "recording destination changed after planning".into(),
+            ));
+        }
+    }
     private_directory(&parent, true)?;
     private_directory(&root, false)?;
     let _owner = crate::output_lock::OutputLock::acquire(
@@ -227,23 +493,26 @@ pub(super) fn run(
         "execution campaign already has an owner",
     )
     .map_err(Error::Run)?;
+    // Root-contained cassettes must not create/adopt the root ahead of its
+    // exclusive owner. Inspection was not a reservation; recheck after owning it.
+    if let Some(destination) = &plan.recording {
+        let observed = super::recording::preflight(destination)?;
+        if observed != *destination {
+            return Err(Error::Input(
+                "recording destination changed during publication".into(),
+            ));
+        }
+    }
     publish_bytes(&root.join("plan.json"), &bytes)?;
-    let recording = recording_destination.map(|destination| {
-        Arc::new(super::recording::Recorder::new(
-            destination,
-            root.clone(),
-            campaign.clone(),
-            repeat,
-            config.concurrency,
-        ))
-    });
-    let private_cassette = if let Some(replay) = &mut replay {
-        replay.stage(&root, &plan.replay_inputs)?;
-        None
-    } else {
-        stage_replay(&root, &plan, config.concurrency)?
+    let (private_cassette, replay) = match replay {
+        Some(PreparedReplay::Selected(mut selected)) => {
+            selected.stage(&root, &plan.replay_inputs)?;
+            (None, Some(selected))
+        }
+        Some(PreparedReplay::Legacy(legacy)) => (legacy.stage(&root, &plan)?, None),
+        None => (None, None),
     };
-    if let Some(measurement_root) = &measurement_root
+    if let Some(measurement_root) = &plan.measurement_root
         && measurement_root != &root
     {
         let parent = measurement_root
@@ -252,6 +521,46 @@ pub(super) fn run(
         private_directory(parent, true)?;
         private_directory(measurement_root, false)?;
     }
+    Ok(PublishedCampaign {
+        config_path,
+        options,
+        root,
+        plan,
+        private_cassette,
+        replay,
+        _owner,
+    })
+}
+
+pub(crate) fn execute(
+    published: PublishedCampaign,
+    output: &mut dyn Write,
+    warnings: &Mutex<BTreeSet<String>>,
+) -> Result<(), Error> {
+    let PublishedCampaign {
+        config_path,
+        options,
+        root,
+        plan,
+        private_cassette,
+        replay,
+        _owner,
+    } = published;
+    let config = &plan.configuration;
+    let repeat = plan.repeat;
+    let total = plan.slots.len();
+    let admission = plan.admission;
+    let campaign = plan.campaign.clone();
+    let recording = plan.recording.as_ref().map(|destination| {
+        Arc::new(super::recording::Recorder::new(
+            destination.clone(),
+            root.clone(),
+            campaign.clone(),
+            repeat,
+            config.concurrency,
+            Some(&plan),
+        ))
+    });
     if options.json {
         serde_json::to_writer(
             &mut *output,
@@ -292,9 +601,7 @@ pub(super) fn run(
         }
     }
     replay::disclose_incomplete(&plan.replay_inputs, options.json, output)?;
-    let mut reference: Option<Compatibility> = replay
-        .as_ref()
-        .and_then(|replay| replay.compatibility.clone());
+    let mut reference: Option<Compatibility> = plan.replay_compatibility.clone();
     let mut failures = 0u64;
     let mut completed_batches = 0u64;
     let mut stopped = false;
@@ -315,50 +622,13 @@ pub(super) fn run(
         private_directory(&batch_root.join("starts"), false)?;
         private_directory(&batch_root.join("outcomes"), false)?;
         private_directory(&batch_root.join("allocations"), false)?;
-        let observer = Arc::new(Observer {
-            root: root.clone(),
-            directory: batch_root.clone(),
-            identity: identity.clone(),
-            completed: Mutex::new(BTreeSet::new()),
-            cleanup_confirmed: AtomicBool::new(true),
-        });
         let prepared = batch_root.join("prepared.json");
-        let batch_recorder = recording.clone();
-        let gate = batch::Gate::new(config.concurrency, reference.clone(), admission.material_timeout())?.observe(Arc::new(move |compatibility| {
-            publish(&prepared, &json!({"schema_version":1,"scope":"verified-prepared-material","compatibility":compatibility}))?;
-            if let Some(recorder) = &batch_recorder { recorder.prepare(compatibility,number)?; }
-            Ok(())
-        }));
-        let mut selected = config.clone();
-        selected
-            .planning
-            .get_or_insert_with(Default::default)
-            .repetition = crate::planning::Repetition {
-            index: number as usize,
-            total: repeat as usize,
-        };
-        let mut policy =
-            crate::planning::resolve_for_run(&selected, options.measurement_dir.is_some())?;
-        if let Some(saved) = options.policy {
-            policy.task_requirements = saved.task_requirements.clone();
-        }
-        let launch_gate = batch::Gate::deferred(config.concurrency, admission.launch_timeout())?;
-        selected.workspace = path_text(&batch_root.join("workspace"))?;
-        selected.log_file = path_text(&batch_root.join("run.jsonl"))?;
-        let measures = measurement_root
-            .as_ref()
-            .map(|root| root.join(format!("batch-{number}/measurements")));
-        if let Some(measurements) = selected.measurements.as_mut() {
-            measurements.directory = path_text(
-                measures
-                    .as_deref()
-                    .unwrap_or(&batch_root.join("measurements")),
-            )?;
-        }
-        let override_measurements = options
-            .measurement_dir
-            .map(|_| path_text(measures.as_deref().expect("explicit override is measured")))
-            .transpose()?;
+        let dispatch = batch::Admission::new(
+            config.concurrency,
+            (1..=config.concurrency).collect(),
+            reference.clone(),
+            admission,
+        )?;
         let batch_cassette = if recording.is_some() {
             Some(path_text(&super::recording::base(&root, number))?)
         } else if replay.is_some() {
@@ -371,67 +641,40 @@ pub(super) fn run(
         } else {
             private_cassette.clone()
         };
-        let result = super::run_loaded(
-            config_path,
-            selected,
-            RunOptions {
-                repeat: None,
-                policy: Some(&policy),
-                batch: Some(&identity),
-                preparation_gate: Some(&gate),
-                launch_gate: Some(&launch_gate),
-                verify_initial_material: true,
-                measurement_dir: override_measurements.as_deref(),
-                cassette: batch_cassette.as_deref(),
-                recording: recording.as_deref(),
-                on_completion: Some(observer.as_ref()),
-                ..options
-            },
-            output,
-            warnings,
-        );
-        let prepared = gate.confirmed_identity();
-        let completed = observer
-            .completed
-            .lock()
-            .map_err(|_| Error::Run("execution completion state was interrupted".into()))?
-            .len();
-        let batch_failed = result.is_err();
-        producers_quiescent &=
-            completed == config.concurrency && observer.cleanup_confirmed.load(Ordering::Acquire);
-        // A published outcome for every admitted slot distinguishes ordinary
-        // completed failures from setup, output or evidence-publication failure.
-        stopped = must_stop(
-            &result,
-            completed,
-            config.concurrency,
-            prepared.is_ok(),
-            observer.cleanup_confirmed.load(Ordering::Acquire),
-        );
-        let reason = result
-            .as_ref()
-            .err()
-            .map(|error| error.to_string().chars().take(4096).collect::<String>())
-            .or_else(|| {
-                stopped.then(|| {
-                    "execution evidence or cleanup was not confirmed; inspect retained outcomes"
-                        .into()
-                })
-            });
+        let settled = execution::BatchRun {
+            config_path: &config_path,
+            plan: &plan,
+            root: &root,
+            options: &options,
+            identity,
+            batch_root: &batch_root,
+            material_path: prepared,
+            finished_path: batch_root.join("finished.json"),
+            generation: None,
+            cassette: batch_cassette.as_deref(),
+            recording: recording.clone(),
+            reused: None,
+        }
+        .execute(dispatch, output, warnings)?;
+        let execution::SettledBatch {
+            prepared,
+            failed: batch_failed,
+            stopped: batch_stopped,
+            reason,
+            quiescent,
+        } = settled;
+        stopped = batch_stopped;
+        producers_quiescent &= quiescent;
         if first_reason.is_none() {
             first_reason = reason.clone();
         }
-        publish(
-            &batch_root.join("finished.json"),
-            &json!({"schema_version":1,"completed_executions":completed,"failed":batch_failed||stopped,"stopped":stopped,"failure_reason":reason}),
-        )?;
         if batch_failed || stopped {
             failures += 1;
         }
         if stopped {
             break;
         }
-        reference = Some(prepared?);
+        reference = prepared;
         completed_batches += 1;
     }
     let publication = recording
@@ -442,7 +685,9 @@ pub(super) fn run(
         Some(Ok(Some(published))) => {
             json!({"status":"published","format":"asb-zip-v1","path":published.destination,"tracks":published.manifest.tracks.len(),"cleanup_complete":published.cleanup_complete,"warnings":published.warnings})
         }
-        Some(Ok(None)) => json!({"status":"not-created","reason":"no verified recording material"}),
+        Some(Ok(None)) => {
+            json!({"status":"not-created","reason":"no verified recording material"})
+        }
         Some(Err(error)) => json!({"status":"failed","reason":error.to_string()}),
     };
     publish(
@@ -523,191 +768,8 @@ fn must_stop(
     (result.is_err() && !ordinary_failure) || !prepared || !cleanup || completed != selected
 }
 
-fn planned_slots(
-    config: &BenchmarkConfig,
-    repeat: u64,
-    measured: bool,
-) -> Result<Vec<Slot>, Error> {
-    let mut slots = Vec::new();
-    for batch in 1..=repeat {
-        let mut selected = config.clone();
-        selected.workspace = format!("batch-{batch}/workspace");
-        selected.log_file = format!("batch-{batch}/run.jsonl");
-        for replica in 1..=config.concurrency {
-            let selected = replica::configuration(
-                &selected,
-                replica::Identity {
-                    index: replica,
-                    total: config.concurrency,
-                },
-            )?;
-            let measures = PathBuf::from(format!("batch-{batch}/measurements"));
-            slots.push(Slot {
-                replay_track: None,
-                id: (batch - 1) * config.concurrency as u64 + replica as u64,
-                batch,
-                replica,
-                workspace: selected.workspace.into(),
-                log: selected.log_file.into(),
-                measurements: measured.then(|| {
-                    if config.concurrency == 1 {
-                        measures
-                    } else {
-                        super::parallel_path(measures.to_str().expect("generated UTF-8"), replica)
-                            .into()
-                    }
-                }),
-                replay_input: None,
-            });
-        }
-    }
-    Ok(slots)
-}
-
-fn replay_inputs(
-    config_path: &Path,
-    config: &BenchmarkConfig,
-    options: RunOptions<'_>,
-    slots: &mut [Slot],
-) -> Result<Vec<ReplayInput>, Error> {
-    if options.mode != Some(crate::tape::Mode::Replay) {
-        return Ok(Vec::new());
-    }
-    let base = options
-        .cassette
-        .map(PathBuf::from)
-        .unwrap_or_else(|| super::default_cassette(config_path, config));
-    let mut seen = BTreeMap::new();
-    let mut inputs = Vec::new();
-    let mut total = 0u64;
-    let mut replicas = Vec::new();
-    for replica in 1..=config.concurrency {
-        let source = if config.concurrency == 1 {
-            base.clone()
-        } else {
-            super::replica_cassette(crate::tape::Mode::Replay, &base, replica)
-        };
-        let source = source.canonicalize().map_err(|error| {
-            Error::Input(format!(
-                "cannot resolve replay input {}: {error}",
-                source.display()
-            ))
-        })?;
-        let id = if let Some(id) = seen.get(&source) {
-            *id
-        } else {
-            let (bytes, sha256) = transfer_input(&source, &mut std::io::sink())?;
-            total = total
-                .checked_add(bytes)
-                .filter(|total| *total <= 2 * 1024 * 1024 * 1024)
-                .ok_or_else(|| Error::Input("replay inputs exceed 2 GiB aggregate bound".into()))?;
-            let id = inputs.len();
-            inputs.push(ReplayInput {
-                complete: None,
-                track: None,
-                source: source.clone(),
-                private: PathBuf::from(format!("inputs/recording-{}.jsonl", id + 1)),
-                bytes,
-                sha256,
-            });
-            seen.insert(source, id);
-            id
-        };
-        replicas.push(id);
-    }
-    for slot in slots {
-        slot.replay_input = Some(replicas[slot.replica - 1]);
-    }
-    Ok(inputs)
-}
-
-fn transfer_input(path: &Path, output: &mut dyn Write) -> Result<(u64, String), Error> {
-    let mut options = OpenOptions::new();
-    options.read(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
-    }
-    let mut file = options.open(path).map_err(io_error)?;
-    let metadata = file.metadata().map_err(io_error)?;
-    if !metadata.is_file() || metadata.len() > 64 * 1024 * 1024 {
-        return Err(Error::Input(
-            "legacy replay input must be a regular file at most 64 MiB".into(),
-        ));
-    }
-    let mut hash = Sha256::new();
-    let mut bytes = 0u64;
-    let mut buffer = [0u8; 64 * 1024];
-    loop {
-        let count = file.read(&mut buffer).map_err(io_error)?;
-        if count == 0 {
-            break;
-        }
-        bytes += count as u64;
-        if bytes > metadata.len() {
-            return Err(Error::Input(
-                "legacy replay input changed while reading".into(),
-            ));
-        }
-        hash.update(&buffer[..count]);
-        output.write_all(&buffer[..count]).map_err(io_error)?;
-    }
-    if bytes != metadata.len() {
-        return Err(Error::Input(
-            "legacy replay input changed while reading".into(),
-        ));
-    }
-    Ok((bytes, format!("{:x}", hash.finalize())))
-}
-
-fn stage_replay(root: &Path, plan: &Plan<'_>, concurrency: usize) -> Result<Option<String>, Error> {
-    if plan.replay_inputs.is_empty() {
-        return Ok(None);
-    }
-    private_directory(&root.join("inputs"), false)?;
-    for input in &plan.replay_inputs {
-        let destination = root.join(&input.private);
-        let pending = destination.with_extension("partial");
-        let mut options = OpenOptions::new();
-        options.create_new(true).write(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        let mut file = options.open(&pending).map_err(io_error)?;
-        let observed = transfer_input(&input.source, &mut file)?;
-        if observed != (input.bytes, input.sha256.clone()) {
-            return Err(Error::Input(
-                "replay input changed after execution planning; no agent was started".into(),
-            ));
-        }
-        file.sync_all()
-            .and_then(|()| fs::hard_link(&pending, &destination))
-            .map_err(io_error)?;
-        fs::File::open(root.join("inputs"))
-            .and_then(|file| file.sync_all())
-            .map_err(io_error)?;
-        fs::remove_file(pending).map_err(io_error)?;
-    }
-    let base = root.join("inputs/cassette.jsonl");
-    for slot in plan.slots.iter().take(concurrency) {
-        let source = &plan.replay_inputs[slot.replay_input.expect("replay slot")];
-        let destination = if concurrency == 1 {
-            base.clone()
-        } else {
-            super::replica_cassette(crate::tape::Mode::Record, &base, slot.replica)
-        };
-        fs::hard_link(root.join(&source.private), destination).map_err(io_error)?;
-    }
-    fs::File::open(root.join("inputs"))
-        .and_then(|file| file.sync_all())
-        .map_err(io_error)?;
-    path_text(&base).map(Some)
-}
-
 struct Observer {
+    generation: Option<super::campaign::generation::StartReference>,
     root: PathBuf,
     directory: PathBuf,
     identity: BatchIdentity,
@@ -731,13 +793,29 @@ impl replica::CompletionObserver for Observer {
     fn starting(
         &self,
         replica: replica::Identity,
-        _: Option<&crate::measurements::ExecutionCohort>,
+        cohort: Option<&crate::measurements::ExecutionCohort>,
     ) -> Result<(), Error> {
+        if !replica.valid() || replica.total != self.identity.concurrency {
+            return Err(Error::Input(
+                "campaign start differs from its original replica population".into(),
+            ));
+        }
+        let cohort = cohort
+            .filter(|cohort| cohort.admits(replica.index, replica.total))
+            .ok_or_else(|| {
+                Error::Input("campaign start requires its actual dispatch cohort".into())
+            })?;
         publish(
             &self
                 .directory
                 .join(format!("starts/{}.json", replica.index)),
-            &json!({"schema_version":1,"scope":"execution-start-intent-not-actual-attempt","execution":self.identity.execution(replica)}),
+            &super::campaign::StartIntent {
+                schema_version: 1,
+                scope: "execution-start-intent-not-actual-attempt".into(),
+                execution: self.identity.execution(replica),
+                execution_cohort: Some(cohort.clone()),
+                generation: self.generation.clone(),
+            },
         )
     }
     fn completed(&self, replica: replica::Identity, record: &Path) -> Result<(), Error> {
@@ -779,7 +857,14 @@ impl replica::CompletionObserver for Observer {
             &self
                 .directory
                 .join(format!("outcomes/{}.json", replica.index)),
-            &json!({"schema_version":1,"execution":expected,"path":relative,"bytes":bytes.len(),"sha256":crate::cassette::digest(&bytes),"task":value["summary"]["task"]}),
+            &super::campaign::OutcomeReference {
+                schema_version: 1,
+                execution: expected,
+                path: relative.to_path_buf(),
+                bytes: bytes.len() as u64,
+                sha256: crate::cassette::digest(&bytes),
+                task: value["summary"]["task"].clone(),
+            },
         )?;
         if value["workload_cleanup_confirmed"] != true || value["proxy_cleanup_confirmed"] != true {
             self.cleanup_confirmed.store(false, Ordering::Release);
@@ -843,7 +928,17 @@ fn publish(path: &Path, value: &impl Serialize) -> Result<(), Error> {
     publish_bytes(path, &encode(value)?)
 }
 
-pub(super) fn publish_bytes(path: &Path, bytes: &[u8]) -> Result<(), Error> {
+pub(crate) fn publish_bytes(path: &Path, bytes: &[u8]) -> Result<(), Error> {
+    publish_bytes_after_link(path, bytes, || Ok(()))
+}
+
+/// Shared publisher seam for private fault qualification; production callers
+/// cannot select it through configuration, environment or CLI arguments.
+pub(crate) fn publish_bytes_after_link(
+    path: &Path,
+    bytes: &[u8],
+    after_link: impl FnOnce() -> Result<(), Error>,
+) -> Result<(), Error> {
     let directory = path
         .parent()
         .ok_or_else(|| Error::Input("execution metadata needs a parent".into()))?;
@@ -863,6 +958,7 @@ pub(super) fn publish_bytes(path: &Path, bytes: &[u8]) -> Result<(), Error> {
         .and_then(|()| file.sync_all())
         .and_then(|()| fs::hard_link(&temporary, path))
         .map_err(io_error)?;
+    after_link()?;
     fs::File::open(directory)
         .and_then(|file| file.sync_all())
         .map_err(io_error)?;
@@ -877,12 +973,415 @@ mod tests {
     use super::super::replica::CompletionObserver;
     use super::*;
 
+    #[test]
+    fn input_admission_has_independent_exact_and_overflow_limits() {
+        let maximum = InputCost {
+            inputs: MAX_EXECUTIONS as usize,
+            bytes: 2 * 1024 * 1024 * 1024,
+            observed_bytes: 2 * 1024 * 1024 * 1024,
+            files: 256,
+            directory_bytes: 64 * 1024 * 1024,
+            manifest_bytes: 256 * 1024 * 1024,
+        };
+        assert!(InputCost::default().checked_add(maximum).is_ok());
+        // Track count is not a descriptor count: one archive may provide every
+        // bounded selected input, rather than an artificial 256-track limit.
+        assert!(
+            InputCost::default()
+                .checked_add(InputCost {
+                    inputs: MAX_EXECUTIONS as usize,
+                    files: 1,
+                    ..Default::default()
+                })
+                .is_ok()
+        );
+        for field in 0..6 {
+            let mut one = InputCost::default();
+            match field {
+                0 => one.inputs = 1,
+                1 => one.bytes = 1,
+                2 => one.observed_bytes = 1,
+                3 => one.files = 1,
+                4 => one.directory_bytes = 1,
+                _ => one.manifest_bytes = 1,
+            }
+            assert!(maximum.checked_add(one).is_err());
+            let mut overflow = InputCost::default();
+            match field {
+                0 => overflow.inputs = usize::MAX,
+                1 => overflow.bytes = u64::MAX,
+                2 => overflow.observed_bytes = u64::MAX,
+                3 => overflow.files = usize::MAX,
+                4 => overflow.directory_bytes = u64::MAX,
+                _ => overflow.manifest_bytes = u64::MAX,
+            }
+            assert!(overflow.checked_add(one).is_err());
+        }
+    }
+
+    fn planning_fixture() -> (PathBuf, BenchmarkConfig, PathBuf) {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/campaign-planning-fixtures")
+            .join(crate::workloads::TaskIdentity::local("planning", None).attempt_id);
+        fs::create_dir_all(root.join(".asb")).unwrap();
+        let root = root.canonicalize().unwrap();
+        fs::write(
+            root.join(".asb/project.toml"),
+            toml::to_string(&crate::project::ProjectConfig::default()).unwrap(),
+        )
+        .unwrap();
+        let config: BenchmarkConfig = toml::from_str(
+            "agent='pi'\nprovider='openrouter'\nmodel='fixture'\nworkload='bug-fix'\nconcurrency=2",
+        )
+        .unwrap();
+        let config_path = root.join("benchmark.toml");
+        fs::write(&config_path, toml::to_string(&config).unwrap()).unwrap();
+        (root, config, config_path)
+    }
+
+    #[test]
+    fn completed_only_continuation_validates_population_and_never_creates_runtime_state() {
+        use crate::runner::campaign::generation::{Blob, StartReference};
+        use serde_json::Value;
+        use std::collections::BTreeMap;
+        struct BrokenOutput;
+        impl Write for BrokenOutput {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::from(std::io::ErrorKind::BrokenPipe))
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        for case in [
+            "complete",
+            "failed",
+            "missing",
+            "extra",
+            "wrong-slot",
+            "writer",
+            "presentation",
+        ] {
+            let (root, config, path) = planning_fixture();
+            let prepared = Prepared::prepare(
+                &path,
+                config,
+                1,
+                RunOptions {
+                    mode: Some(crate::tape::Mode::Record),
+                    ..Default::default()
+                },
+                Some(&root.join("campaigns")),
+            )
+            .unwrap();
+            let campaign = prepared.root.clone();
+            let mut completed = BTreeMap::from([
+                (
+                    1,
+                    json!({"process_success":true,"workload_success":case != "failed","task":{"task_id":"first"}}),
+                ),
+                (
+                    2,
+                    json!({"process_success":true,"workload_success":true,"task":{"task_id":"second"}}),
+                ),
+            ]);
+            if matches!(case, "missing" | "wrong-slot") {
+                completed.remove(&2);
+            }
+            if matches!(case, "extra" | "wrong-slot") {
+                completed.insert(3, completed[&1].clone());
+            }
+            let recording = (case == "writer").then(|| {
+                Arc::new(super::super::recording::Recorder::new(
+                    campaign.join("unexpected.zip"),
+                    campaign.clone(),
+                    prepared.plan.campaign.clone(),
+                    1,
+                    2,
+                    Some(&prepared.plan),
+                ))
+            });
+            let mut bytes = Vec::new();
+            let mut broken = BrokenOutput;
+            let result = continue_campaign(
+                Continuation {
+                    invocation: path,
+                    root: campaign.clone(),
+                    plan: prepared.plan,
+                    completed,
+                    pending: Vec::new(),
+                    compatibility: None,
+                    reference: StartReference {
+                        generation: "unused-generation".into(),
+                        configuration: 0,
+                        manifest: Blob::of(b"test"),
+                        admission: Blob::of(b"test"),
+                    },
+                    recording,
+                },
+                true,
+                false,
+                None,
+                if case == "presentation" {
+                    &mut broken
+                } else {
+                    &mut bytes
+                },
+                &Mutex::new(BTreeSet::new()),
+            );
+            match case {
+                "complete" => assert!(result.is_ok()),
+                "failed" => assert!(matches!(result, Err(Error::Run(_)))),
+                "presentation" => assert!(matches!(result, Err(Error::Io(_)))),
+                _ => {
+                    assert!(matches!(result, Err(Error::Input(_))));
+                    assert!(bytes.is_empty());
+                }
+            }
+            if matches!(case, "complete" | "failed") {
+                let rows: Vec<Value> = String::from_utf8(bytes)
+                    .unwrap()
+                    .lines()
+                    .map(|line| serde_json::from_str(line).unwrap())
+                    .collect();
+                assert_eq!(rows.len(), 2);
+                assert!(rows.iter().all(|row| row["reused"] == true));
+            }
+            assert!(!campaign.exists(), "{case} must not allocate runtime state");
+            crate::fixture_writer::cleanup(&root).unwrap();
+        }
+    }
+
+    #[test]
+    fn published_internal_recording_owns_root_without_starting_a_journal_or_client() {
+        let (root, config, path) = planning_fixture();
+        let parent = root.join("isolated/campaigns");
+        let prepared = Prepared::prepare(
+            &path,
+            config.clone(),
+            2,
+            RunOptions {
+                mode: Some(crate::tape::Mode::Record),
+                ..Default::default()
+            },
+            Some(&parent),
+        )
+        .unwrap();
+        assert_eq!(
+            prepared.plan.recording.as_ref().unwrap(),
+            &prepared.root.join("recording.asb.zip")
+        );
+        assert!(!parent.exists());
+        let published = publish_campaign(prepared).unwrap();
+        let campaign = published.root.clone();
+        let lock = campaign.join(".owner.lock");
+        assert!(campaign.join("plan.json").is_file());
+        assert!(!campaign.join("recording.asb.zip").exists());
+        assert!(!campaign.join(".recording.asb.zip.partial").exists());
+        assert!(!campaign.join("batch-1").exists());
+        assert!(crate::output_lock::OutputLock::acquire(&lock, "busy").is_err());
+        drop(published);
+        let owner = crate::output_lock::OutputLock::acquire(&lock, "busy").unwrap();
+        assert!(campaign.join("plan.json").is_file());
+        drop(owner);
+
+        struct BrokenOutput(PathBuf);
+        impl Write for BrokenOutput {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                assert!(crate::output_lock::OutputLock::acquire(&self.0, "busy").is_err());
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "publication-only fixture output closed",
+                ))
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let prepared = Prepared::prepare(
+            &path,
+            config,
+            1,
+            RunOptions {
+                mode: Some(crate::tape::Mode::Record),
+                ..Default::default()
+            },
+            Some(&parent),
+        )
+        .unwrap();
+        let campaign = prepared.root.clone();
+        let published = publish_campaign(prepared).unwrap();
+        let error = execute(
+            published,
+            &mut BrokenOutput(campaign.join(".owner.lock")),
+            &Mutex::new(BTreeSet::new()),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("fixture output closed"));
+        assert!(!campaign.join("batch-1").exists());
+        assert!(!campaign.join(".recording.asb.zip.partial").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn later_publication_failure_retains_earlier_plan_and_cannot_execute_any_campaign() {
+        let (root, config, path) = planning_fixture();
+        let parent = root.join("isolated/campaigns");
+        let first = Prepared::prepare(
+            &path,
+            config.clone(),
+            1,
+            RunOptions {
+                mode: Some(crate::tape::Mode::Record),
+                ..Default::default()
+            },
+            Some(&parent),
+        )
+        .unwrap();
+        let first_root = first.root.clone();
+        let second = Prepared::prepare(
+            &path,
+            config.clone(),
+            1,
+            RunOptions {
+                mode: Some(crate::tape::Mode::Record),
+                ..Default::default()
+            },
+            Some(&parent),
+        )
+        .unwrap();
+        fs::create_dir_all(&second.root).unwrap();
+        let foreign = second.plan.recording.as_ref().unwrap().clone();
+        fs::write(&foreign, b"foreign cassette").unwrap();
+        let second_root = second.root.clone();
+        let executions = std::cell::Cell::new(0);
+        let result = (|| -> Result<(), Error> {
+            let all = [first, second]
+                .into_iter()
+                .map(publish_campaign)
+                .collect::<Result<Vec<_>, _>>()?;
+            for published in all {
+                executions.set(executions.get() + 1);
+                execute(published, &mut Vec::new(), &Mutex::new(BTreeSet::new()))?;
+            }
+            Ok(())
+        })();
+        assert!(result.unwrap_err().to_string().contains("already exists"));
+        assert_eq!(executions.get(), 0);
+        assert!(first_root.join("plan.json").is_file());
+        assert!(!first_root.join("batch-1").exists());
+        assert!(!first_root.join(".recording.asb.zip.partial").exists());
+        assert!(!second_root.join("plan.json").exists());
+        assert_eq!(fs::read(foreign).unwrap(), b"foreign cassette");
+        let owner =
+            crate::output_lock::OutputLock::acquire(&first_root.join(".owner.lock"), "busy")
+                .unwrap();
+        drop(owner);
+
+        let prepared =
+            Prepared::prepare(&path, config, 1, RunOptions::default(), Some(&parent)).unwrap();
+        let foreign_root = prepared.root.clone();
+        fs::create_dir_all(&foreign_root).unwrap();
+        fs::write(foreign_root.join("sentinel"), b"untouched").unwrap();
+        assert!(publish_campaign(prepared).is_err());
+        assert_eq!(
+            fs::read(foreign_root.join("sentinel")).unwrap(),
+            b"untouched"
+        );
+        assert!(!foreign_root.join("plan.json").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn campaign_planning_has_no_output_side_effects_and_activation_rechecks_destination() {
+        let (root, config, config_path) = planning_fixture();
+        let parent = root.join("isolated/sweep-configuration/campaigns");
+        let destination = root.join("recordings/new/trials.asb.zip");
+        let (prepared, saved_policy) = {
+            let cassette = destination.to_string_lossy().into_owned();
+            let measurements = root
+                .join("external-measures")
+                .to_string_lossy()
+                .into_owned();
+            let policy = crate::planning::resolve_for_run(&config, true).unwrap();
+            let prepared = Prepared::prepare(
+                &config_path,
+                config.clone(),
+                3,
+                RunOptions {
+                    mode: Some(crate::tape::Mode::Record),
+                    cassette: Some(&cassette),
+                    measurement_dir: Some(&measurements),
+                    policy: Some(&policy),
+                    ..Default::default()
+                },
+                Some(&parent),
+            )
+            .unwrap();
+            (prepared, policy)
+        }; // Temporary option strings are gone; policy is no longer borrowed.
+        assert_eq!(prepared.options.policy.as_ref(), Some(&saved_policy));
+        assert!(prepared.options.measurement_override);
+        assert_eq!(
+            prepared.plan.measurement_root.as_ref().unwrap(),
+            &root.join("external-measures").join(&prepared.plan.campaign)
+        );
+        assert!(!root.join("external-measures").exists());
+        assert_eq!(prepared.plan.validate_layout().unwrap(), 6);
+        assert_eq!(prepared.root.parent().unwrap(), parent);
+        assert_eq!(prepared.config_path, config_path);
+        assert!(prepared.config_path.is_absolute());
+        assert_eq!(prepared.plan.configuration, config);
+        assert_eq!(prepared.plan.recording.as_ref().unwrap(), &destination);
+        assert!(!parent.exists());
+        assert!(!root.join("recordings").exists());
+        assert!(!root.join("results").exists());
+        #[cfg(unix)]
+        {
+            let other = root.join("other-project");
+            fs::create_dir_all(other.join(".asb")).unwrap();
+            fs::copy(
+                root.join(".asb/project.toml"),
+                other.join(".asb/project.toml"),
+            )
+            .unwrap();
+            let other_config = other.join("benchmark.toml");
+            fs::copy(&config_path, &other_config).unwrap();
+            let alias = root.join("linked-benchmark.toml");
+            std::os::unix::fs::symlink(&other_config, &alias).unwrap();
+            let linked =
+                Prepared::prepare(&alias, config.clone(), 1, RunOptions::default(), None).unwrap();
+            assert_eq!(linked.config_path, alias);
+            assert_eq!(linked.plan.source, other_config);
+            assert_eq!(linked.parent, root.join("results/asb-executions"));
+        }
+        let planned_root = prepared.root.clone();
+        fs::create_dir_all(destination.parent().unwrap()).unwrap();
+        fs::write(&destination, b"foreign cassette created after planning").unwrap();
+        let error = activate(prepared, &mut Vec::new(), &Mutex::new(BTreeSet::new())).unwrap_err();
+        assert!(error.to_string().contains("already exists"));
+        assert!(!planned_root.exists());
+        assert!(!parent.exists());
+        assert_eq!(
+            fs::read(&destination).unwrap(),
+            b"foreign cassette created after planning"
+        );
+        let live = Prepared::prepare(&config_path, config, 2, RunOptions::default(), None).unwrap();
+        assert_eq!(live.plan.validate_layout().unwrap(), 4);
+        assert_eq!(live.parent, root.join("results/asb-executions"));
+        assert!(!live.root.exists());
+        drop(live);
+        assert!(!root.join("results").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
     fn outcome_observer() -> (PathBuf, Observer, replica::Identity) {
         let root = std::env::temp_dir()
             .join(crate::workloads::TaskIdentity::local("repeat-settlement", None).attempt_id);
         private_directory(&root, false).unwrap();
         private_directory(&root.join("outcomes"), false).unwrap();
         let observer = Observer {
+            generation: None,
             root: root.clone(),
             directory: root.clone(),
             identity: BatchIdentity {
@@ -896,6 +1395,62 @@ mod tests {
             cleanup_confirmed: AtomicBool::new(true),
         };
         (root, observer, replica::Identity::default())
+    }
+
+    #[test]
+    fn start_intent_binds_actual_partial_cohort_without_renumbering_original_replicas() {
+        let (root, mut observer, _) = outcome_observer();
+        private_directory(&root.join("starts"), false).unwrap();
+        observer.identity.concurrency = 4;
+        let replica = replica::Identity { index: 2, total: 4 };
+        let cohort = crate::measurements::ExecutionCohort {
+            id: "abc-123".into(),
+            selected_replicas: 4,
+            admitted_slots: vec![2, 4],
+            dispatch: None,
+        };
+        let path = root.join("starts/2.json");
+        assert!(observer.starting(replica, None).is_err());
+        for changed in [
+            crate::measurements::ExecutionCohort {
+                admitted_slots: vec![1, 4],
+                ..cohort.clone()
+            },
+            crate::measurements::ExecutionCohort {
+                selected_replicas: 2,
+                ..cohort.clone()
+            },
+            crate::measurements::ExecutionCohort {
+                id: String::new(),
+                ..cohort.clone()
+            },
+        ] {
+            assert!(observer.starting(replica, Some(&changed)).is_err());
+        }
+        assert!(
+            observer
+                .starting(replica::Identity { index: 2, total: 2 }, Some(&cohort))
+                .is_err()
+        );
+        assert!(!path.exists());
+        observer.starting(replica, Some(&cohort)).unwrap();
+        let original = fs::read(&path).unwrap();
+        let intent: super::super::campaign::StartIntent =
+            serde_json::from_slice(&original).unwrap();
+        assert_eq!(intent.execution, observer.identity.execution(replica));
+        assert_eq!(intent.execution_cohort, Some(cohort.clone()));
+        assert!(observer.starting(replica, Some(&cohort)).is_err());
+        assert_eq!(fs::read(&path).unwrap(), original);
+        // Old start declarations remain inspectable with explicitly unknown
+        // cohort provenance; deserialization alone grants no continuation.
+        let mut historical: serde_json::Value = serde_json::from_slice(&original).unwrap();
+        historical
+            .as_object_mut()
+            .unwrap()
+            .remove("execution_cohort");
+        let old: super::super::campaign::StartIntent = serde_json::from_value(historical).unwrap();
+        assert!(old.execution_cohort.is_none());
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -950,6 +1505,7 @@ mod tests {
             private_directory(&root, false).unwrap();
             private_directory(&root.join("outcomes"), false).unwrap();
             let observer = Observer {
+                generation: None,
                 root: root.clone(),
                 directory: root.clone(),
                 identity: BatchIdentity {
@@ -1011,7 +1567,7 @@ mod tests {
             .unwrap()
             .set_len(64 * 1024 * 1024 + 1)
             .unwrap();
-        assert!(transfer_input(&large, &mut std::io::sink()).is_err());
+        assert!(legacy::transfer_input(&large, &mut std::io::sink()).is_err());
         fs::remove_dir_all(root).unwrap();
     }
 }

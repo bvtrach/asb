@@ -10,6 +10,7 @@ thread_local! {static FAIL_INITIAL: std::cell::Cell<bool> = const {std::cell::Ce
 thread_local! {static FAIL_COMPARE: std::cell::Cell<bool> = const {std::cell::Cell::new(false)};}
 thread_local! {static ACTIVE: std::cell::Cell<bool> = const {std::cell::Cell::new(false)};}
 thread_local! {static FAIL_FINAL: std::cell::Cell<bool> = const {std::cell::Cell::new(false)};}
+thread_local! {static RESERVATION_FAULT: std::cell::Cell<Option<&'static str>> = const {std::cell::Cell::new(None)};}
 pub(super) fn before_input_finish(results: &Path) {
     if FAIL_FINAL.get() {
         let input = results.join(".checkpoint/inputs.json");
@@ -36,6 +37,11 @@ pub(super) fn before_comparison(source: &Path) {
     }
 }
 pub(super) fn before_initial_seal(results: &Path) {
+    if let Some(relative) = RESERVATION_FAULT.get() {
+        let path = results.join(".checkpoint").join(relative);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, "owned fixture reservation blocker").unwrap();
+    }
     if FAIL_INITIAL.get() {
         std::fs::create_dir(results.join(".checkpoint")).unwrap();
         std::fs::write(results.join(".checkpoint/key"), "invalid owned fixture key").unwrap();
@@ -96,6 +102,11 @@ fn actual_sweeps_stop_after_presentation_failure_but_settle_groups_and_partial_r
             "benchmark",
             "benchmark-output-compare",
             "json-final-seal",
+            "campaign-initial",
+            "campaign-final",
+            "campaign-reservation-first",
+            "campaign-reservation-last",
+            "campaign-admission",
         ] {
             let child=Command::new(&executable)
                 .args(["--exact","sweep::phases::tests::actual_sweeps_stop_after_presentation_failure_but_settle_groups_and_partial_reports","--nocapture"])
@@ -172,6 +183,79 @@ fn actual_sweeps_stop_after_presentation_failure_but_settle_groups_and_partial_r
         cassette_root: Some(&inputs),
         ..Default::default()
     };
+    if case.starts_with("campaign-") {
+        FAIL_INITIAL.set(case == "campaign-initial");
+        FAIL_FINAL.set(case == "campaign-final");
+        RESERVATION_FAULT.set(match case {
+            "campaign-reservation-first" => Some("campaign-reservations/000000.json"),
+            "campaign-reservation-last" => Some("campaign-reservations/000001.json"),
+            "campaign-admission" => Some("campaign-admission.json"),
+            _ => None,
+        });
+        let mut output = Vec::new();
+        run_with_options(
+            manifest.to_str().unwrap(),
+            Options {
+                repeat: Some(2),
+                ..options
+            },
+            &mut output,
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&counter).unwrap().lines().count(),
+            4
+        );
+        let rows = String::from_utf8(output)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        let code = if case == "campaign-final" {
+            "input_seal_unavailable"
+        } else {
+            "initial_input_seal_unavailable"
+        };
+        assert_eq!(
+            rows.iter()
+                .filter(|row| row["event"] == "continuation_warning" && row["code"] == code)
+                .count(),
+            1
+        );
+        assert_eq!(
+            rows.iter()
+                .filter(|row| row["workload_success"] == true)
+                .count(),
+            4
+        );
+        let comparison = read(root.join("results/sweep-comparison/comparison.json"));
+        assert_eq!(comparison["benchmarks"].as_array().unwrap().len(), 4);
+        if case == "campaign-initial" {
+            assert_eq!(
+                std::fs::read_to_string(root.join("sweep-results/.checkpoint/key")).unwrap(),
+                "invalid owned fixture key"
+            );
+            assert!(!root.join("sweep-results/.checkpoint/inputs.json").exists());
+        } else if case == "campaign-final" {
+            assert!(root.join("sweep-results/.checkpoint/inputs.json").is_dir());
+            assert_eq!(
+                read(root.join("sweep-results/.checkpoint/initial-inputs.saved"))["status"],
+                "pending"
+            );
+        } else {
+            let checkpoint = root.join("sweep-results/.checkpoint");
+            assert_eq!(read(checkpoint.join("inputs.json"))["status"], "pending");
+            assert_eq!(
+                std::fs::read_to_string(checkpoint.join(RESERVATION_FAULT.get().unwrap())).unwrap(),
+                "owned fixture reservation blocker"
+            );
+            if case != "campaign-admission" {
+                assert!(!checkpoint.join("campaign-admission.json").exists());
+            }
+        }
+        assert!(lock::OutputLock::acquire(root, "sweep").is_ok());
+        return;
+    }
     if case == "resume" || case == "resume-mode" {
         run_with_options(manifest.to_str().unwrap(), options, &mut Vec::new()).unwrap();
         std::fs::write(
@@ -205,6 +289,7 @@ fn actual_sweeps_stop_after_presentation_failure_but_settle_groups_and_partial_r
     );
     assert!(lock::OutputLock::acquire(root, "sweep").is_ok());
     assert!(outcome.is_err(), "{case}");
+    let diagnostic = outcome.as_ref().err().map(ToString::to_string);
     if case == "resume-mode" {
         assert!(
             outcome
@@ -250,9 +335,51 @@ fn actual_sweeps_stop_after_presentation_failure_but_settle_groups_and_partial_r
         assert!(!root.join("sweep-results/001-b").exists());
     }
     if case != "benchmark-output-compare" {
-        assert!(root.join("results/sweep-comparison/report.html").is_file());
+        assert!(
+            root.join("results/sweep-comparison/report.html").is_file(),
+            "{case}: {diagnostic:?}"
+        );
         let comparison = read(root.join("results/sweep-comparison/comparison.json"));
         assert!(!comparison["benchmarks"].as_array().unwrap().is_empty());
+    }
+    if case == "json" {
+        // Actual stopped-output run: measurements must remain self-contained,
+        // while old omissions can borrow only the agreeing original outcome.
+        let measurement = root.join("sweep-results/000-a/measurements/run.json");
+        let original = std::fs::read(&measurement).unwrap();
+        let measured: Value = serde_json::from_slice(&original).unwrap();
+        let summary = read(root.join("sweep-results/000-a/run.log"));
+        assert!(measured["planning"].is_object());
+        assert!(measured["effective_budgets"].is_object());
+        assert_eq!(measured["planning"], summary["planning"]);
+        assert_eq!(measured["effective_budgets"], summary["effective_budgets"]);
+        let mut omitted = measured.clone();
+        omitted.as_object_mut().unwrap().remove("planning");
+        omitted.as_object_mut().unwrap().remove("effective_budgets");
+        assert!(crate::sweep::checkpoint::completed::measurement_matches(
+            &omitted, &summary
+        ));
+        std::fs::write(&measurement, serde_json::to_vec(&omitted).unwrap()).unwrap();
+        crate::compare::generate(manifest.to_str().unwrap(), &mut Vec::new()).unwrap();
+        let report = root.join("results/sweep-comparison/comparison.json");
+        let prior = std::fs::read(&report).unwrap();
+        for field in ["planning", "effective_budgets"] {
+            let mut contradictory = omitted.clone();
+            contradictory[field] = json!({"wrong":"cannot replace original policy"});
+            assert!(!crate::sweep::checkpoint::completed::measurement_matches(
+                &contradictory,
+                &summary
+            ));
+            std::fs::write(&measurement, serde_json::to_vec(&contradictory).unwrap()).unwrap();
+            assert!(
+                crate::compare::generate(manifest.to_str().unwrap(), &mut Vec::new())
+                    .unwrap_err()
+                    .to_string()
+                    .contains("disagree on recorded")
+            );
+            assert_eq!(std::fs::read(&report).unwrap(), prior);
+        }
+        std::fs::write(&measurement, original).unwrap();
     }
     if case != "initial" && case != "json-final-seal" {
         assert_eq!(

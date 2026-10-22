@@ -16,9 +16,9 @@ const ADAPTER: TerminalBenchAdapter = TerminalBenchAdapter {
 struct Fixture(PathBuf);
 impl Fixture {
     fn new() -> Self {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../target/catalog-coverage-fixtures")
-            .join(TaskIdentity::local("catalog-coverage", None).attempt_id);
+        let root =
+            crate::fixture_namespace::allocate(&std::env::temp_dir(), "asb-terminal-catalog-")
+                .unwrap();
         fs::create_dir_all(root.join(".asb")).unwrap();
         fs::write(
             root.join(".asb/project.toml"),
@@ -69,7 +69,7 @@ impl Fixture {
         fs::create_dir_all(root.join("venv/bin")).unwrap();
         for name in ["python", "tb"] {
             let path = root.join("venv/bin").join(name);
-            fs::write(&path, content).unwrap();
+            crate::write_test_file(&self.0, &path, content).unwrap();
             fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
         }
         root
@@ -77,6 +77,9 @@ impl Fixture {
 }
 impl Drop for Fixture {
     fn drop(&mut self) {
+        #[cfg(unix)]
+        let _ = crate::fixture_writer::cleanup(&self.0);
+        #[cfg(not(unix))]
         let _ = fs::remove_dir_all(&self.0);
     }
 }
@@ -257,7 +260,12 @@ fn local_install_verifies_runtime_and_catalog_without_fetching_or_replacing_subs
     #[cfg(target_os = "linux")]
     let before = diagnostic_count();
     assert!(runtime_available(&ADAPTER, &tool).unwrap());
-    fs::write(tool.join("venv/bin/python"), "#!/bin/sh\nexit 7\n").unwrap();
+    crate::write_test_file(
+        &fixture.0,
+        &tool.join("venv/bin/python"),
+        "#!/bin/sh\nexit 7\n",
+    )
+    .unwrap();
     assert!(!runtime_available(&ADAPTER, &tool).unwrap());
     fs::write(
         tool.join("venv/bin/python"),

@@ -15,7 +15,7 @@ use zip::{
 pub struct Limits {
     /// Maximum compressed archive file length.
     pub max_archive_bytes: u64,
-    /// Maximum central directory bytes, checked before ZIP metadata allocation.
+    /// Maximum central directory plus end-record bytes, checked before allocation.
     pub max_directory_bytes: u64,
     /// Maximum manifest JSON bytes.
     pub max_manifest_bytes: u64,
@@ -65,6 +65,7 @@ pub struct Archive {
     manifest: Manifest,
     entries: BTreeMap<u64, usize>,
     limits: Limits,
+    metadata_bytes: (u64, u64),
 }
 
 impl Archive {
@@ -72,20 +73,57 @@ impl Archive {
     /// when selected. Schema one uses bounded single-disk ZIP32, not ZIP64.
     pub fn open(path: &Path, limits: Limits) -> Result<Self, Error> {
         limits.validate()?;
-        let mut options = OpenOptions::new();
-        options.read(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            // Opening a FIFO must not block before the regular-file check.
-            options.custom_flags(libc::O_NONBLOCK);
+        Self::from_file(open_file(path)?, limits)
+    }
+
+    /// Pin and verify exact compressed publication bytes before inspecting its
+    /// manifest. Hashing does not decompress unselected track entries.
+    pub fn open_verified(
+        path: &Path,
+        bytes: u64,
+        sha256: &str,
+        limits: Limits,
+    ) -> Result<Self, Error> {
+        use sha2::{Digest, Sha256};
+        use std::io::{Seek, SeekFrom};
+        limits.validate()?;
+        if bytes > limits.max_archive_bytes || !super::valid_digest(sha256) {
+            return Err(Error("invalid confirmed archive identity".into()));
         }
-        let file = options.open(path).map_err(io_error)?;
+        let mut file = open_file(path)?;
+        if file.metadata().map_err(io_error)?.len() != bytes {
+            return Err(Error("confirmed archive length changed".into()));
+        }
+        let mut hash = Sha256::new();
+        let mut count = 0u64;
+        let mut buffer = [0; 64 * 1024];
+        loop {
+            let read = file.read(&mut buffer).map_err(io_error)?;
+            if read == 0 {
+                break;
+            }
+            count = count
+                .checked_add(read as u64)
+                .filter(|count| *count <= bytes)
+                .ok_or_else(|| Error("confirmed archive grew while reading".into()))?;
+            hash.update(&buffer[..read]);
+        }
+        if count != bytes || format!("{:x}", hash.finalize()) != sha256 {
+            return Err(Error("confirmed archive checksum changed".into()));
+        }
+        file.seek(SeekFrom::Start(0)).map_err(io_error)?;
+        Self::from_file(file, limits)
+    }
+
+    /// Consume the exact descriptor already checked by a recording proof.
+    pub(super) fn from_file(file: std::fs::File, limits: Limits) -> Result<Self, Error> {
+        limits.validate()?;
         if !file.metadata().map_err(io_error)?.is_file() {
             return Err(Error("cassette archive must be a regular file".into()));
         }
         let (reader, metadata_phase, expected_entries, directory_start) =
             MetadataReader::new(file, limits)?;
+        let directory_bytes = reader.metadata_bytes();
         let mut archive = ZipArchive::with_config(
             Config {
                 archive_offset: ArchiveOffset::Known(0),
@@ -151,6 +189,7 @@ impl Archive {
         let manifest: Manifest = serde_json::from_slice(&bytes)
             .map_err(|error| Error(format!("invalid cassette manifest: {error}")))?;
         manifest.validate(limits)?;
+        manifest.validate_imports()?;
         if names.len() != manifest.tracks.len() + 1 {
             return Err(Error(
                 "cassette manifest and ZIP track catalogue differ".into(),
@@ -174,7 +213,12 @@ impl Archive {
             manifest,
             entries,
             limits,
+            metadata_bytes: (directory_bytes, bytes.len() as u64),
         })
+    }
+
+    pub(super) fn metadata_bytes(&self) -> (u64, u64) {
+        self.metadata_bytes
     }
 
     /// Inspect metadata without decoding any track payload.
@@ -219,6 +263,21 @@ fn read_bounded(
         ));
     }
     Ok(bytes)
+}
+
+fn open_file(path: &Path) -> Result<std::fs::File, Error> {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NONBLOCK);
+    }
+    let file = options.open(path).map_err(io_error)?;
+    if !file.metadata().map_err(io_error)?.is_file() {
+        return Err(Error("cassette archive must be a regular file".into()));
+    }
+    Ok(file)
 }
 
 fn io_error(error: std::io::Error) -> Error {

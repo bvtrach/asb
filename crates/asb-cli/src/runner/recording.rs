@@ -1,5 +1,6 @@
 //! Run-owned recording coordination; providers and proxies see only JSONL.
 mod raw;
+pub(crate) mod union;
 use super::{RunResult, io_error, replica};
 use crate::cassette::{
     Compatibility, Limits, Manifest, Publication, RecordingJournal, Statistics, Track,
@@ -25,26 +26,73 @@ pub(crate) struct Evidence {
     pub producer: PathBuf,
     pub attempt_id: String,
     pub track: TrackEvidence,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generation: Option<union::Binding>,
 }
 
 impl Evidence {
+    pub(crate) fn association_path(&self) -> Result<PathBuf, Error> {
+        association_path(&self.track)
+    }
+
     pub fn validate_summary(
         &self,
         summary: &serde_json::Value,
         captures: &[proxy::capture::CaptureEvidence],
     ) -> Result<(), Error> {
+        self.validate_summary_metadata(summary, captures)?;
+        self.track
+            .verify(Limits::default())
+            .map_err(recording_error)
+    }
+
+    /// Validate the association and capture declarations without reading payloads.
+    /// Reports must subsequently verify the collected tracks as one batch.
+    pub fn validate_summary_metadata(
+        &self,
+        summary: &serde_json::Value,
+        captures: &[proxy::capture::CaptureEvidence],
+    ) -> Result<(), Error> {
+        self.validate_report_metadata(summary)?;
+        let track = &self.track.track;
+        let matching: Vec<_> = captures
+            .iter()
+            .filter(|capture| capture.output == self.producer)
+            .collect();
+        if matching.len() > 1
+            || matching.iter().any(|capture| {
+                capture.bytes != track.bytes
+                    || capture.sha256 != track.sha256
+                    || capture.complete != track.complete
+            })
+            || (track.complete && matching.is_empty())
+            || track.statistics.requests
+                != matching.first().map(|capture| capture.inference_requests)
+        {
+            return Err(Error::Input(
+                "recorded track differs from its capture evidence".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// A report-only summary lacks completion capture receipts. Validate its
+    /// identity and immutable producer association before grouped payload proof.
+    /// This does not establish cleanup or authorize execution continuation.
+    pub fn validate_report_metadata(&self, summary: &serde_json::Value) -> Result<(), Error> {
         self.track
             .validate(Limits::default())
             .map_err(recording_error)?;
         let track = &self.track.track;
         let execution = &summary["execution"];
         if !self.campaign_root.is_absolute()
+            || execution["campaign"].as_str().is_none()
             || self
                 .campaign_root
                 .file_name()
                 .and_then(|name| name.to_str())
-                != Some(self.track.recording_id.as_str())
-            || execution["campaign"] != self.track.recording_id
+                != execution["campaign"].as_str()
+            || (self.generation.is_none() && execution["campaign"] != self.track.recording_id)
             || execution["batch"].as_u64() != Some(track.batch)
             || execution["replica"].as_u64() != Some(track.replica)
             || execution["slot"].as_u64() != Some(track.id)
@@ -71,24 +119,6 @@ impl Evidence {
                 "recorded track does not belong to this execution/producer".into(),
             ));
         }
-        let matching: Vec<_> = captures
-            .iter()
-            .filter(|capture| capture.output == self.producer)
-            .collect();
-        if matching.len() > 1
-            || matching.iter().any(|capture| {
-                capture.bytes != track.bytes
-                    || capture.sha256 != track.sha256
-                    || capture.complete != track.complete
-            })
-            || (track.complete && matching.is_empty())
-            || track.statistics.requests
-                != matching.first().map(|capture| capture.inference_requests)
-        {
-            return Err(Error::Input(
-                "recorded track differs from its capture evidence".into(),
-            ));
-        }
         // Bind the association itself, not just a self-consistent claim copied
         // into a different summary. This immutable receipt precedes completion.
         let association = read_association(&self.track)?;
@@ -100,13 +130,12 @@ impl Evidence {
                 "recording producer/attempt association changed".into(),
             ));
         }
-        self.track
-            .verify(Limits::default())
-            .map_err(recording_error)
+        Ok(())
     }
 }
 
 struct State {
+    capacity_verified: bool,
     journal: Option<RecordingJournal>,
     compatibility: Option<Compatibility>,
     committed: std::collections::BTreeSet<u64>,
@@ -122,19 +151,57 @@ pub(crate) struct Recorder {
     concurrency: usize,
     failed: AtomicBool,
     state: Mutex<State>,
+    planned: Option<Planned>,
+    union: Option<union::Descriptor>,
+    binding: Option<union::Binding>,
+    current_relative: PathBuf,
 }
 
-/// Refuse final/partial destinations before workload/tool preparation. The
-/// journal independently owns the authoritative no-replace publication boundary.
-pub(super) fn preflight(destination: &Path) -> Result<PathBuf, Error> {
+struct Planned {
+    configuration: crate::benchmark::BenchmarkConfig,
+    selection: crate::workloads::TaskSelection,
+    reservation: crate::cassette::RecordingReservation,
+}
+
+/// Read-only destination planning. This observes names, never reserves them.
+/// Activation and the journal must independently recheck no-overwrite conditions.
+pub(super) fn inspect_destination(destination: &Path) -> Result<PathBuf, Error> {
     let absolute = std::path::absolute(destination).map_err(io_error)?;
     let name = absolute
         .file_name()
         .and_then(|name| name.to_str())
         .ok_or_else(|| Error::Input("recording cassette needs a UTF-8 filename".into()))?;
-    let parent = absolute
+    let requested_parent = absolute
         .parent()
         .ok_or_else(|| Error::Input("recording cassette needs a parent".into()))?;
+    // Resolve existing directory/symlink prefixes without creating missing
+    // parents. Parent components after a missing name behave as create_dir_all
+    // followed by canonicalization did, but planning has no filesystem writes.
+    let mut parent = PathBuf::new();
+    for component in requested_parent.components() {
+        match component {
+            std::path::Component::CurDir => (),
+            std::path::Component::ParentDir => {
+                parent.pop();
+            }
+            component => {
+                parent.push(component.as_os_str());
+                match fs::symlink_metadata(&parent) {
+                    Ok(_) => {
+                        parent = parent.canonicalize().map_err(io_error)?;
+                        if !parent.is_dir() {
+                            return Err(Error::Input(
+                                "recording cassette parent must be a directory".into(),
+                            ));
+                        }
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+                    Err(error) => return Err(io_error(error)),
+                }
+            }
+        }
+    }
+    let absolute = parent.join(name);
     for path in [&absolute, &parent.join(format!(".{name}.partial"))] {
         match fs::symlink_metadata(path) {
             Ok(_) => return Err(Error::Input("recording destination or partial artifact already exists; choose a new cassette or explicitly recover it".into())),
@@ -142,8 +209,21 @@ pub(super) fn preflight(destination: &Path) -> Result<PathBuf, Error> {
             Err(error) => return Err(io_error(error)),
         }
     }
-    fs::create_dir_all(parent).map_err(io_error)?;
-    Ok(parent.canonicalize().map_err(io_error)?.join(name))
+    Ok(absolute)
+}
+
+/// Refuse final/partial destinations before workload/tool preparation. The
+/// journal independently owns the authoritative no-replace publication boundary.
+pub(super) fn preflight(destination: &Path) -> Result<PathBuf, Error> {
+    let expected = inspect_destination(destination)?;
+    fs::create_dir_all(expected.parent().expect("inspected parent")).map_err(io_error)?;
+    let observed = inspect_destination(&expected)?;
+    if expected != observed {
+        return Err(Error::Input(
+            "recording cassette parent changed during activation".into(),
+        ));
+    }
+    Ok(observed)
 }
 
 impl Recorder {
@@ -153,6 +233,7 @@ impl Recorder {
         campaign: String,
         repeat: u64,
         concurrency: usize,
+        plan: Option<&super::campaign::Plan>,
     ) -> Self {
         Self {
             destination,
@@ -162,20 +243,156 @@ impl Recorder {
             concurrency,
             failed: AtomicBool::new(false),
             state: Mutex::new(State {
+                capacity_verified: false,
                 journal: None,
                 compatibility: None,
                 committed: Default::default(),
                 association_bytes: 0,
                 raw_identities: Default::default(),
             }),
+            planned: plan.and_then(|plan| {
+                plan.recording_selection
+                    .as_ref()
+                    .zip(plan.recording_reservation.as_ref())
+                    .map(|(selection, reservation)| Planned {
+                        configuration: plan.configuration.clone(),
+                        selection: selection.clone(),
+                        reservation: reservation.clone(),
+                    })
+            }),
+            union: None,
+            binding: None,
+            current_relative: PathBuf::from("recording-current.json"),
         }
+    }
+
+    /// Construct only while the parent holds the admitted generation's owners.
+    pub(crate) fn for_union(
+        root: PathBuf,
+        plan: &super::campaign::Plan,
+        descriptor: union::Descriptor,
+        reference: super::campaign::generation::StartReference,
+        compatibility: Option<Compatibility>,
+        current_relative: PathBuf,
+        staging: union::Staging,
+    ) -> Result<Self, Error> {
+        let journal = match staging {
+            union::Staging::Fresh => {
+                descriptor.stage(compatibility.as_ref(), plan.concurrency, plan.repeat)?
+            }
+            union::Staging::RecoverUnused => {
+                descriptor.recover_unused(compatibility.as_ref(), plan.concurrency)?
+            }
+        };
+        let binding = union::Binding {
+            reference,
+            origins_sha256: descriptor.origins.commitment().map_err(recording_error)?,
+        };
+        let imported = descriptor
+            .origins
+            .imports
+            .iter()
+            .map(|track| track.slot)
+            .collect();
+        let planned = Planned {
+            configuration: plan.configuration.clone(),
+            selection: plan.recording_selection.clone().ok_or_else(|| {
+                Error::Input("union lost its reserved recording selection".into())
+            })?,
+            reservation: descriptor.reservation.clone(),
+        };
+        Ok(Self {
+            destination: descriptor.destination.clone(),
+            root,
+            campaign: plan.campaign.clone(),
+            repeat: plan.repeat,
+            concurrency: plan.concurrency,
+            failed: AtomicBool::new(false),
+            state: Mutex::new(State {
+                capacity_verified: false,
+                journal,
+                compatibility,
+                committed: imported,
+                association_bytes: 0,
+                raw_identities: Default::default(),
+            }),
+            planned: Some(planned),
+            union: Some(descriptor),
+            binding: Some(binding),
+            current_relative,
+        })
     }
 
     /// Called outside the material gate's mutex after all material agrees. These
     /// are recording-slot intents, not claims that a client process was launched.
-    pub fn prepare(&self, compatibility: &Compatibility, batch: u64) -> Result<(), Error> {
+    pub fn prepare(
+        &self,
+        compatibility: &Compatibility,
+        batch: u64,
+        members: &[usize],
+    ) -> Result<(), Error> {
+        if members.is_empty()
+            || members.windows(2).any(|pair| pair[0] >= pair[1])
+            || members
+                .iter()
+                .any(|member| !(1..=self.concurrency).contains(member))
+        {
+            return Err(Error::Input("invalid recording dispatch membership".into()));
+        }
         association_budget(self.repeat, self.concurrency)?;
         self.operation(|state| {
+            if let Some(planned) = &self.planned {
+                compatibility.validate().map_err(recording_error)?;
+                let selected = &planned.configuration;
+                if compatibility.agent != selected.agent
+                    || compatibility.provider != selected.provider
+                    || compatibility.model != selected.model
+                    || compatibility.workload != planned.selection.workload
+                    || compatibility.task != planned.selection.task_id
+                {
+                    return Err(Error::Input(
+                        "prepared recording identity differs from reserved selection".into(),
+                    ));
+                }
+                if !state.capacity_verified {
+                    #[cfg(test)]
+                    tests::CAPACITY_CHECKS.set(tests::CAPACITY_CHECKS.get() + 1);
+                    let shape = crate::cassette::CompatibilityShape {
+                        agent: &compatibility.agent,
+                        provider: &compatibility.provider,
+                        model: &compatibility.model,
+                        workload: &compatibility.workload,
+                        task: &compatibility.task,
+                    };
+                    let actual = if let Some(union) = &self.union {
+                        crate::cassette::RecordingReservation::for_origin_plan(
+                            shape,
+                            &union.physical_id,
+                            &self.destination,
+                            self.concurrency as u64,
+                            &union.origins,
+                            Limits::default(),
+                        )
+                    } else {
+                        crate::cassette::RecordingReservation::for_plan(
+                            shape,
+                            &self.campaign,
+                            &self.destination,
+                            self.repeat,
+                            self.concurrency as u64,
+                            Limits::default(),
+                        )
+                    }
+                    .map_err(recording_error)?;
+                    if actual != planned.reservation {
+                        return Err(Error::Input(
+                            "prepared recording metadata exceeds or differs from reserved capacity"
+                                .into(),
+                        ));
+                    }
+                    state.capacity_verified = true;
+                }
+            }
             if let Some(identity) = &state.compatibility {
                 identity
                     .require_match(compatibility)
@@ -186,10 +403,15 @@ impl Recorder {
                         &self.destination,
                         Manifest {
                             schema_version: crate::cassette::SCHEMA_VERSION,
-                            recording_id: self.campaign.clone(),
+                            recording_id: self
+                                .union
+                                .as_ref()
+                                .map(|union| union.physical_id.clone())
+                                .unwrap_or_else(|| self.campaign.clone()),
                             compatibility: compatibility.clone(),
                             concurrency: self.concurrency as u64,
                             tracks: Vec::new(),
+                            provenance: self.union.as_ref().map(|union| union.origins.clone()),
                         },
                         self.repeat,
                         Limits::default(),
@@ -199,9 +421,9 @@ impl Recorder {
             }
             state.compatibility = Some(compatibility.clone());
             let journal = state.journal.as_mut().expect("initialized journal");
-            for replica in 1..=self.concurrency {
+            for replica in members {
                 journal
-                    .begin(batch, replica as u64)
+                    .begin(batch, *replica as u64)
                     .map_err(recording_error)?;
             }
             Ok(())
@@ -282,6 +504,7 @@ impl Recorder {
                 producer: output,
                 attempt_id: result.task.attempt_id.clone(),
                 track: journal.track_evidence(&track).map_err(recording_error)?,
+                generation: self.binding.clone(),
             };
             let evidence_bytes =
                 serde_json::to_vec(&evidence).map_err(|error| Error::Io(error.to_string()))?;
@@ -334,6 +557,7 @@ impl Recorder {
             if producers_quiescent {
                 let mut cleanup_failures=0;
                 for track in &published.manifest.tracks {
+                    if self.union.as_ref().is_some_and(|union| union.origins.imported(track.id).is_some()) { continue; }
                     let output = producer(&self.root,track.batch,track.replica as usize,self.concurrency);
                     match cleanup_raw(&output,track,state.raw_identities.get(&track.id)) {
                         Ok(()) => (),
@@ -348,6 +572,24 @@ impl Recorder {
             } else { published.cleanup_complete=false; published.warnings.push("published cassette is usable; raw captures retained because producer cleanup is unconfirmed".into()); }
             Ok(Some(published))
         })
+    }
+
+    pub(crate) fn publish_union(&self, publication: &Publication) -> Result<(), Error> {
+        let descriptor = self
+            .union
+            .as_ref()
+            .ok_or_else(|| Error::Input("recorder has no union descriptor".into()))?;
+        let binding = self
+            .binding
+            .as_ref()
+            .ok_or_else(|| Error::Input("recorder has no union generation binding".into()))?;
+        union::publish(
+            &self.root,
+            descriptor,
+            binding,
+            publication,
+            &self.current_relative,
+        )
     }
 
     fn operation<T>(
@@ -379,7 +621,7 @@ impl Recorder {
 pub(super) fn base(root: &Path, batch: u64) -> PathBuf {
     root.join(format!("batch-{batch}/capture.jsonl"))
 }
-fn producer(root: &Path, batch: u64, replica: usize, concurrency: usize) -> PathBuf {
+pub(crate) fn producer(root: &Path, batch: u64, replica: usize, concurrency: usize) -> PathBuf {
     let base = base(root, batch);
     if concurrency == 1 {
         base
@@ -410,19 +652,21 @@ fn association_budget(repeat: u64, concurrency: usize) -> Result<u64, Error> {
         })
 }
 fn association_path(evidence: &TrackEvidence) -> Result<PathBuf, Error> {
-    let name = evidence
-        .destination
+    association_for(&evidence.destination, evidence.track.id)
+}
+
+pub(crate) fn association_for(destination: &Path, slot: u64) -> Result<PathBuf, Error> {
+    if slot == 0 || slot > 65_533 {
+        return Err(Error::Input("invalid recording association slot".into()));
+    }
+    let name = destination
         .file_name()
         .and_then(|name| name.to_str())
         .ok_or_else(|| Error::Input("invalid recording destination".into()))?;
-    let parent = evidence
-        .destination
+    let parent = destination
         .parent()
         .ok_or_else(|| Error::Input("invalid recording parent".into()))?;
-    Ok(parent.join(format!(
-        ".{name}.partial/association-{}.json",
-        evidence.track.id
-    )))
+    Ok(parent.join(format!(".{name}.partial/association-{}.json", slot)))
 }
 fn read_association(evidence: &TrackEvidence) -> Result<Association, Error> {
     let path = association_path(evidence)?;
@@ -517,6 +761,97 @@ fn recording_error(error: crate::cassette::Error) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    std::thread_local! {
+        pub(super) static CAPACITY_CHECKS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
+
+    #[test]
+    fn reserved_capacity_is_checked_once_but_later_material_and_members_remain_strict() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/recording-capacity-cache-tests")
+            .join(crate::workloads::TaskIdentity::local("capacity", None).attempt_id);
+        fs::create_dir_all(&root).unwrap();
+        let configuration: crate::benchmark::BenchmarkConfig = toml::from_str(
+            "agent='fixture'\nprovider='fixture'\nmodel='fixture'\nworkload='fixture'",
+        )
+        .unwrap();
+        let compatibility = Compatibility {
+            agent: "fixture".into(),
+            provider: "fixture".into(),
+            model: "fixture".into(),
+            workload: "fixture".into(),
+            task: "fixture".into(),
+            dataset_sha256: None,
+            prompt_sha256: crate::cassette::digest(b"prompt"),
+            material_sha256: crate::cassette::digest(b"material"),
+            protocol_sha256: None,
+        };
+        for mutation in 0..4 {
+            let destination = root.join(format!("{mutation}.zip"));
+            let mut recorder = Recorder::new(
+                destination.clone(),
+                root.clone(),
+                "campaign".into(),
+                3,
+                1,
+                None,
+            );
+            let reservation = crate::cassette::RecordingReservation::for_plan(
+                crate::cassette::CompatibilityShape {
+                    agent: &compatibility.agent,
+                    provider: &compatibility.provider,
+                    model: &compatibility.model,
+                    workload: &compatibility.workload,
+                    task: &compatibility.task,
+                },
+                "campaign",
+                &destination,
+                3,
+                1,
+                Limits::default(),
+            )
+            .unwrap();
+            recorder.planned = Some(Planned {
+                configuration: configuration.clone(),
+                selection: crate::workloads::TaskSelection {
+                    module: None,
+                    workload: "fixture".into(),
+                    task_id: "fixture".into(),
+                    dataset: None,
+                    evaluation_kind: "fixture".into(),
+                    population_size: None,
+                },
+                reservation,
+            });
+            CAPACITY_CHECKS.set(0);
+            if mutation == 3 {
+                recorder
+                    .planned
+                    .as_mut()
+                    .unwrap()
+                    .reservation
+                    .reference_bytes += 1;
+                assert!(recorder.prepare(&compatibility, 1, &[1]).is_err());
+                assert!(!recorder.state.lock().unwrap().capacity_verified);
+                assert!(recorder.failed.load(Ordering::Acquire));
+            } else {
+                recorder.prepare(&compatibility, 1, &[1]).unwrap();
+                recorder.prepare(&compatibility, 2, &[1]).unwrap();
+                assert!(recorder.state.lock().unwrap().capacity_verified);
+                let mut changed = compatibility.clone();
+                match mutation {
+                    0 => changed.material_sha256 = crate::cassette::digest(b"different material"),
+                    1 => changed.agent = "changed".into(),
+                    _ => (),
+                }
+                let members = if mutation == 2 { &[1, 1][..] } else { &[1][..] };
+                assert!(recorder.prepare(&changed, 3, members).is_err());
+            }
+            assert_eq!(CAPACITY_CHECKS.get(), 1);
+            drop(recorder);
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[cfg(unix)]
     #[test]
@@ -589,6 +924,59 @@ mod tests {
             }
         }
         assert!(failures.is_empty(), "{}", failures.join("; "));
+    }
+
+    #[test]
+    fn destination_inspection_is_read_only_and_activation_rechecks_foreign_outputs() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/recording-destination-fixtures")
+            .join(crate::workloads::TaskIdentity::local("destination", None).attempt_id);
+        fs::create_dir_all(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+        let destination = root.join("missing/nested/recording.asb.zip");
+        assert_eq!(inspect_destination(&destination).unwrap(), destination);
+        assert!(!root.join("missing").exists());
+        assert_eq!(preflight(&destination).unwrap(), destination);
+        assert!(destination.parent().unwrap().is_dir());
+        fs::write(&destination, b"foreign").unwrap();
+        assert!(preflight(&destination).is_err());
+        assert_eq!(fs::read(&destination).unwrap(), b"foreign");
+        let other = root.join("other.asb.zip");
+        inspect_destination(&other).unwrap();
+        let partial = root.join(".other.asb.zip.partial");
+        fs::create_dir(&partial).unwrap();
+        assert!(preflight(&other).is_err());
+        assert!(partial.is_dir());
+        let non_directory = root.join("file");
+        fs::write(&non_directory, b"sentinel").unwrap();
+        assert!(inspect_destination(&non_directory.join("new.zip")).is_err());
+        assert_eq!(fs::read(&non_directory).unwrap(), b"sentinel");
+        let with_parent = root.join("never-created/../next/archive.zip");
+        assert_eq!(
+            inspect_destination(&with_parent).unwrap(),
+            root.join("next/archive.zip")
+        );
+        assert!(!root.join("never-created").exists());
+        assert!(!root.join("next").exists());
+        #[cfg(unix)]
+        {
+            let alias = root.join("alias");
+            std::os::unix::fs::symlink(root.join("missing"), &alias).unwrap();
+            let candidate = alias.join("future/next.zip");
+            assert_eq!(
+                inspect_destination(&candidate).unwrap(),
+                root.join("missing/future/next.zip")
+            );
+            assert!(!root.join("missing/future").exists());
+            let nested_alias = root.join("nested-alias");
+            std::os::unix::fs::symlink(root.join("missing/nested"), &nested_alias).unwrap();
+            assert_eq!(
+                inspect_destination(&nested_alias.join("../sibling/next.zip")).unwrap(),
+                root.join("missing/sibling/next.zip")
+            );
+            assert!(!root.join("missing/sibling").exists());
+        }
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

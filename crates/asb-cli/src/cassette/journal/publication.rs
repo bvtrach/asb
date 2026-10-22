@@ -15,6 +15,10 @@ pub struct Publication {
     pub cleanup_complete: bool,
     /// Cleanup warnings; publication itself is already confirmed and usable.
     pub warnings: Vec<String>,
+    /// Exact confirmed compressed archive length from the prepared receipt.
+    pub archive_bytes: u64,
+    /// Exact confirmed compressed archive digest from the prepared receipt.
+    pub archive_sha256: String,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -27,16 +31,32 @@ struct Prepared {
     sha256: String,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-struct Published {
+pub(super) struct Published {
     recording_id: String,
     manifest_sha256: String,
     archive_sha256: String,
-    archive_bytes: u64,
+    pub(super) archive_bytes: u64,
+}
+
+pub(super) fn publication_capacity(recording_id: &str, limits: Limits) -> Result<u64, Error> {
+    let marker = Published {
+        recording_id: recording_id.into(),
+        manifest_sha256: "f".repeat(64),
+        archive_sha256: "f".repeat(64),
+        archive_bytes: limits.max_archive_bytes,
+    };
+    crate::cassette::serialization::encoded_size(&marker, MAX_RECORD_BYTES)
 }
 
 impl RecordingJournal {
+    /// Whether recovery verified an existing immutable finalization manifest.
+    /// This is publication state, not agent cleanup or retry permission.
+    pub fn publication_is_frozen(&self) -> bool {
+        self.finalization.is_some()
+    }
+
     /// Freeze and publish a verified ZIP, without replacing any destination.
     ///
     /// The caller must first stop/join recording producers. Freezing prevents
@@ -53,6 +73,7 @@ impl RecordingJournal {
                 ));
             }
             let manifest = self.snapshot()?;
+            manifest.validate_imports()?;
             self.recovery_required = true;
             self.publication_fault.check("before-freeze")?;
             self.publish_phase("finalizing.json", &manifest, self.limits.max_manifest_bytes)?;
@@ -242,6 +263,8 @@ impl RecordingJournal {
         self.allow_existing_destination = true;
         if let Err(error) = self.publication_fault.check("after-published") {
             return Ok(Publication {
+                archive_bytes: prepared.bytes,
+                archive_sha256: prepared.sha256.clone(),
                 destination: self.destination.clone(),
                 manifest,
                 cleanup_complete: false,
@@ -252,6 +275,8 @@ impl RecordingJournal {
         }
         let warnings = self.cleanup_payloads(&manifest, &prepared);
         Ok(Publication {
+            archive_bytes: prepared.bytes,
+            archive_sha256: prepared.sha256.clone(),
             destination: self.destination.clone(),
             manifest,
             cleanup_complete: warnings.is_empty(),
@@ -353,10 +378,12 @@ impl RecordingJournal {
 
     fn validate_frozen(&self, manifest: &Manifest) -> Result<(), Error> {
         manifest.validate(self.limits)?;
+        manifest.validate_imports()?;
         let intent = &self.intent.manifest;
         if manifest.recording_id != intent.recording_id
             || manifest.compatibility != intent.compatibility
             || manifest.concurrency != intent.concurrency
+            || manifest.provenance != intent.provenance
             || manifest.tracks.len() != self.starts.len()
         {
             return Err(Error(
@@ -543,19 +570,19 @@ impl RecordingJournal {
     }
 }
 
-/// Read-only selected-entry proof, not a whole-archive integrity assertion.
-pub(super) fn verify_selected_publication(
+/// Prepare one read-only selected-entry proof. Validate every selected metadata
+/// record before decoding any track; this is not a whole-archive hash assertion.
+pub(super) fn open_selected_publication(
     root: &Path,
     expected: &super::TrackEvidence,
+    tracks: &BTreeMap<u64, &Track>,
     limits: Limits,
-) -> Result<(), Error> {
-    let mut remaining = MAX_RECORD_BYTES;
-    let published: Published = read_json(
-        &root.join("published.json"),
-        MAX_RECORD_BYTES,
-        &mut remaining,
-    )?;
+    remaining: &mut u64,
+) -> Result<(Archive, Published), Error> {
+    let published: Published =
+        read_json(&root.join("published.json"), MAX_RECORD_BYTES, remaining)?;
     let file = open_regular(&expected.destination, limits.max_archive_bytes)?;
+    super::evidence::observed("archive-opened");
     if published.recording_id != expected.recording_id
         || !super::super::valid_digest(&published.archive_sha256)
         || published.archive_bytes != file.metadata().map_err(io_error)?.len()
@@ -564,20 +591,31 @@ pub(super) fn verify_selected_publication(
             "published recording target differs from receipt".into(),
         ));
     }
-    let mut archive = Archive::open(&expected.destination, limits)?;
+    let archive = Archive::from_file(
+        file,
+        Limits {
+            max_manifest_bytes: limits.max_manifest_bytes.min(*remaining),
+            ..limits
+        },
+    )?;
     let manifest = archive.manifest();
     if manifest.recording_id != expected.recording_id
         || manifest.compatibility != expected.compatibility
         || manifest.concurrency != expected.concurrency
         || manifest_digest(manifest)? != published.manifest_sha256
-        || manifest.track(expected.track.id)? != &expected.track
     {
         return Err(Error(
             "published manifest differs from immutable track evidence".into(),
         ));
     }
-    archive.read_track(expected.track.id)?;
-    Ok(())
+    for (id, track) in tracks {
+        if manifest.track(*id)? != *track {
+            return Err(Error(
+                "published manifest differs from immutable track evidence".into(),
+            ));
+        }
+    }
+    Ok((archive, published))
 }
 
 fn manifest_digest(manifest: &Manifest) -> Result<String, Error> {

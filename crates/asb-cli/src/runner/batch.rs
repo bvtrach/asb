@@ -4,6 +4,30 @@ use crate::{Error, cassette::Compatibility};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
+pub(crate) fn dataset_fingerprint(
+    dataset: Option<&crate::workloads::session::DatasetIdentity>,
+) -> Result<Option<String>, Error> {
+    dataset
+        .map(|dataset| serde_json::to_vec(dataset).map(|bytes| crate::cassette::digest(&bytes)))
+        .transpose()
+        .map_err(|error| Error::Run(error.to_string()))
+}
+
+pub(crate) fn replay_protocol_fingerprint(
+    module: Option<&crate::workloads::contracts::ModuleDescriptor>,
+    policy: &crate::workloads::outcome::MetricPolicy,
+) -> Result<String, Error> {
+    serde_json::to_vec(&serde_json::json!({
+        "contract":"asb-bundled-replay-v1",
+        "agent_input":crate::agents::REPLAY_INPUT_CONTRACT,
+        "tape_matching":crate::tape::REPLAY_MATCHING_CONTRACT,
+        "material_scope":crate::workloads::session::REPLAY_MATERIAL_CONTRACT,
+        "module":module,"metric_policy":policy
+    }))
+    .map(|bytes| crate::cassette::digest(&bytes))
+    .map_err(|error| Error::Run(error.to_string()))
+}
+
 pub(crate) struct Gate {
     state: Mutex<State>,
     changed: Condvar,
@@ -13,8 +37,154 @@ pub(crate) struct Gate {
 
 type PreparationObserver = dyn Fn(&Compatibility) -> Result<(), Error> + Send + Sync;
 
+/// One actual dispatch owns both rendezvous and its immutable membership.
+/// This runtime object is not deserializable and is not durable resume authority;
+/// the workflow owner must publish/validate its generation before constructing it.
+pub(super) struct Admission {
+    claimed: std::sync::atomic::AtomicBool,
+    material: Gate,
+    launch: Gate,
+    cohort: crate::measurements::ExecutionCohort,
+}
+
+impl Admission {
+    pub(super) fn new(
+        total: usize,
+        participants: Vec<usize>,
+        expected: Option<Compatibility>,
+        policy: crate::planning::BatchAdmissionPolicy,
+    ) -> Result<Self, Error> {
+        Self::from_cohort(Self::fresh_cohort(total, participants)?, expected, policy)
+    }
+
+    /// Retain the workflow's frozen cohort identity. This validates runtime
+    /// shape only; the owning workflow must first verify durable admission.
+    pub(super) fn from_cohort(
+        cohort: crate::measurements::ExecutionCohort,
+        expected: Option<Compatibility>,
+        policy: crate::planning::BatchAdmissionPolicy,
+    ) -> Result<Self, Error> {
+        Self::with_deadlines(
+            cohort,
+            expected,
+            policy.material_timeout(),
+            policy.launch_timeout(),
+        )
+    }
+
+    #[cfg(test)]
+    pub(super) fn for_test(
+        total: usize,
+        participants: Vec<usize>,
+        timeout: Duration,
+    ) -> Result<Self, Error> {
+        Self::with_deadlines(
+            Self::fresh_cohort(total, participants)?,
+            None,
+            timeout,
+            timeout,
+        )
+    }
+
+    fn fresh_cohort(
+        total: usize,
+        mut participants: Vec<usize>,
+    ) -> Result<crate::measurements::ExecutionCohort, Error> {
+        if !(1..=64).contains(&total) || participants.is_empty() || participants.len() > total {
+            return Err(Error::Input("invalid batch admission population".into()));
+        }
+        participants.sort_unstable();
+        let mut cohort = crate::measurements::ExecutionCohort {
+            id: crate::workloads::TaskIdentity::local("execution-cohort", None).attempt_id,
+            selected_replicas: total,
+            admitted_slots: participants,
+            dispatch: None,
+        };
+        cohort.dispatch = Some(cohort.dispatch_for(cohort.admitted_slots[0], total)?);
+        Ok(cohort)
+    }
+
+    fn with_deadlines(
+        cohort: crate::measurements::ExecutionCohort,
+        expected: Option<Compatibility>,
+        material_timeout: Duration,
+        launch_timeout: Duration,
+    ) -> Result<Self, Error> {
+        let total = cohort.selected_replicas;
+        if cohort
+            .admitted_slots
+            .first()
+            .is_none_or(|index| !cohort.admits(*index, total))
+            || cohort.dispatch.is_none()
+        {
+            return Err(Error::Input(
+                "batch admission requires its frozen validated dispatch cohort".into(),
+            ));
+        }
+        let material = Gate::selected(total, &cohort.admitted_slots, expected, material_timeout)?;
+        let launch = Gate::deferred_selected(total, &cohort.admitted_slots, launch_timeout)?;
+        Ok(Self {
+            claimed: std::sync::atomic::AtomicBool::new(false),
+            material,
+            launch,
+            cohort,
+        })
+    }
+
+    pub(super) fn observe(mut self, observer: Arc<PreparationObserver>) -> Self {
+        self.material = self.material.observe(observer);
+        self
+    }
+
+    pub(super) fn material(&self) -> &Gate {
+        &self.material
+    }
+    pub(super) fn launch(&self) -> &Gate {
+        &self.launch
+    }
+    pub(super) fn cohort(&self) -> &crate::measurements::ExecutionCohort {
+        &self.cohort
+    }
+    pub(super) fn count(&self) -> usize {
+        self.cohort.admitted_slots.len()
+    }
+
+    pub(super) fn claim(&self) -> Result<(), Error> {
+        self.claimed
+            .compare_exchange(
+                false,
+                true,
+                std::sync::atomic::Ordering::AcqRel,
+                std::sync::atomic::Ordering::Acquire,
+            )
+            .map(|_| ())
+            .map_err(|_| {
+                Error::Input(
+                    "batch admission was already consumed; do not retry its original slots".into(),
+                )
+            })
+    }
+
+    pub(super) fn matches(
+        &self,
+        total: usize,
+        reused: Option<&std::collections::BTreeMap<usize, serde_json::Value>>,
+    ) -> bool {
+        self.cohort.selected_replicas == total
+            && !reused.is_some_and(|slots| slots.keys().any(|slot| !(1..=total).contains(slot)))
+            && self
+                .cohort
+                .admitted_slots
+                .iter()
+                .copied()
+                .eq((1..=total)
+                    .filter(|slot| !reused.is_some_and(|slots| slots.contains_key(slot))))
+    }
+}
+
 struct State {
     deadline: Option<Instant>,
+    participants: Vec<bool>,
     registered: Vec<bool>,
     ready: Vec<bool>,
     identity: Option<Compatibility>,
@@ -34,10 +204,38 @@ impl Gate {
         expected: Option<Compatibility>,
         timeout: Duration,
     ) -> Result<Self, Error> {
+        if total > 64 {
+            return Err(Error::Input("invalid preparation gate population".into()));
+        }
+        Self::selected(total, &(1..=total).collect::<Vec<_>>(), expected, timeout)
+    }
+
+    /// Wait for actual admitted original slots, never synthetic arrivals for
+    /// reused peers. Identity.total remains the original selected concurrency.
+    pub(crate) fn selected(
+        total: usize,
+        admitted: &[usize],
+        expected: Option<Compatibility>,
+        timeout: Duration,
+    ) -> Result<Self, Error> {
         if !(1..=64).contains(&total) || timeout.is_zero() {
             return Err(Error::Input(
                 "invalid preparation gate population or timeout".into(),
             ));
+        }
+        let mut participants = vec![false; total];
+        if admitted.is_empty() || admitted.len() > total {
+            return Err(Error::Input(
+                "invalid preparation participant population".into(),
+            ));
+        }
+        for slot in admitted {
+            if !(1..=total).contains(slot) || participants[*slot - 1] {
+                return Err(Error::Input(
+                    "invalid or duplicate preparation participant".into(),
+                ));
+            }
+            participants[*slot - 1] = true;
         }
         if let Some(identity) = &expected {
             identity
@@ -52,6 +250,7 @@ impl Gate {
                         .ok_or_else(|| Error::Input("preparation deadline overflows".into()))?,
                 ),
                 registered: vec![false; total],
+                participants,
                 ready: vec![false; total],
                 identity: expected,
                 aborted: None,
@@ -64,8 +263,20 @@ impl Gate {
     }
 
     /// A separate launch budget starts at the first post-material registration.
+    #[cfg(test)]
     pub(crate) fn deferred(total: usize, timeout: Duration) -> Result<Self, Error> {
-        let mut gate = Self::new(total, None, timeout)?;
+        if total > 64 {
+            return Err(Error::Input("invalid preparation gate population".into()));
+        }
+        Self::deferred_selected(total, &(1..=total).collect::<Vec<_>>(), timeout)
+    }
+
+    pub(crate) fn deferred_selected(
+        total: usize,
+        admitted: &[usize],
+        timeout: Duration,
+    ) -> Result<Self, Error> {
+        let mut gate = Self::selected(total, admitted, None, timeout)?;
         gate.state.get_mut().map_err(|_| unavailable())?.deadline = None;
         Ok(gate)
     }
@@ -90,6 +301,7 @@ impl Gate {
         }
         if !replica.valid()
             || replica.total != state.registered.len()
+            || !state.participants[replica.index - 1]
             || state.registered[replica.index - 1]
             || state.released
         {
@@ -151,7 +363,13 @@ impl Arrival<'_> {
         } else {
             state.identity.get_or_insert(identity);
             state.ready[self.index] = true;
-            if state.ready.iter().all(|ready| *ready) && state.aborted.is_none() {
+            if state
+                .ready
+                .iter()
+                .zip(&state.participants)
+                .all(|(ready, selected)| !selected || *ready)
+                && state.aborted.is_none()
+            {
                 // Publication can block: do not hold the coordination mutex while
                 // writing it, so peers can still time out and abort admission.
                 let identity = state.identity.clone().ok_or_else(unavailable)?;
@@ -269,6 +487,128 @@ fn unavailable() -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn owned_admission_keeps_both_gates_on_actual_original_participants() {
+        let observed = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = observed.clone();
+        let admission = Admission::for_test(4, vec![4, 2], Duration::from_secs(5))
+            .unwrap()
+            .observe(Arc::new(move |_| {
+                counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(())
+            }));
+        let reused = std::collections::BTreeMap::from([
+            (1, serde_json::Value::Null),
+            (3, serde_json::Value::Null),
+        ]);
+        assert_eq!(admission.cohort().admitted_slots, vec![2, 4]);
+        assert_eq!(admission.count(), 2);
+        assert!(admission.matches(4, Some(&reused)));
+        assert!(!admission.matches(2, Some(&reused)));
+        assert!(!admission.matches(4, None));
+        for gate in [admission.material(), admission.launch()] {
+            let state = gate.state.lock().unwrap();
+            assert_eq!(state.participants, vec![false, true, false, true]);
+            assert_eq!(state.registered, vec![false; 4]);
+            assert_eq!(state.ready, vec![false; 4]);
+        }
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = [2, 4]
+                .into_iter()
+                .map(|index| {
+                    let admission = &admission;
+                    scope.spawn(move || {
+                        let replica = Identity { index, total: 4 };
+                        admission
+                            .material()
+                            .register(replica)
+                            .unwrap()
+                            .ready(material())
+                            .unwrap();
+                        admission
+                            .launch()
+                            .register(replica)
+                            .unwrap()
+                            .ready(material())
+                            .unwrap();
+                    })
+                })
+                .collect();
+            for handle in handles {
+                handle.join().unwrap();
+            }
+        });
+        assert_eq!(observed.load(std::sync::atomic::Ordering::SeqCst), 1);
+        for gate in [admission.material(), admission.launch()] {
+            let state = gate.state.lock().unwrap();
+            assert_eq!(state.registered, vec![false, true, false, true]);
+            assert_eq!(state.ready, vec![false, true, false, true]);
+            assert!(state.released);
+        }
+        for (total, members) in [
+            (0, vec![1]),
+            (65, vec![1]),
+            (4, vec![]),
+            (4, vec![2, 2]),
+            (4, vec![0, 2]),
+            (4, vec![2, 5]),
+        ] {
+            assert!(Admission::for_test(total, members, Duration::from_secs(1)).is_err());
+        }
+    }
+
+    #[test]
+    fn owned_admission_arms_runtime_gates_without_reminting_frozen_cohort() {
+        let original = Admission::new(
+            4,
+            vec![2, 4],
+            None,
+            crate::planning::BatchAdmissionPolicy::current(),
+        )
+        .unwrap();
+        let frozen = original.cohort().clone();
+        let admission = Admission::from_cohort(
+            frozen.clone(),
+            Some(material()),
+            crate::planning::BatchAdmissionPolicy::current(),
+        )
+        .unwrap();
+        assert_eq!(admission.cohort(), &frozen);
+        assert!(
+            admission
+                .material()
+                .state
+                .lock()
+                .unwrap()
+                .deadline
+                .is_some()
+        );
+        assert!(admission.launch().state.lock().unwrap().deadline.is_none());
+        admission.claim().unwrap();
+        assert!(admission.claim().is_err());
+        // In-memory state belongs to this runtime activation, not the earlier
+        // planner's temporary object with the same frozen metadata.
+        assert!(original.claim().is_ok());
+        for change in ["unknown", "population", "members", "id"] {
+            let mut forged = frozen.clone();
+            match change {
+                "unknown" => forged.dispatch = None,
+                "population" => forged.selected_replicas = 2,
+                "members" => forged.admitted_slots = vec![4, 2],
+                "id" => forged.id = "not/a/cohort".into(),
+                _ => unreachable!(),
+            }
+            assert!(
+                Admission::from_cohort(
+                    forged,
+                    None,
+                    crate::planning::BatchAdmissionPolicy::current()
+                )
+                .is_err(),
+                "{change}"
+            );
+        }
+    }
     use std::sync::mpsc;
 
     fn material() -> Compatibility {
@@ -282,6 +622,80 @@ mod tests {
             prompt_sha256: "a".repeat(64),
             material_sha256: "b".repeat(64),
             protocol_sha256: None,
+        }
+    }
+
+    #[test]
+    fn noncontiguous_original_slots_release_only_after_genuine_subset_arrivals() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        for deferred in [false, true] {
+            let observations = Arc::new(AtomicUsize::new(0));
+            let counter = observations.clone();
+            let gate = if deferred {
+                Gate::deferred_selected(4, &[2, 4], Duration::from_secs(3)).unwrap()
+            } else {
+                Gate::selected(4, &[2, 4], Some(material()), Duration::from_secs(3)).unwrap()
+            }
+            .observe(Arc::new(move |_| {
+                counter.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }));
+            std::thread::scope(|scope| {
+                let mut first = gate.register(Identity { index: 2, total: 4 }).unwrap();
+                let (tx, rx) = mpsc::channel();
+                scope.spawn(move || {
+                    first.ready(material()).unwrap();
+                    tx.send(()).unwrap();
+                });
+                assert!(rx.recv_timeout(Duration::from_millis(30)).is_err());
+                assert_eq!(observations.load(Ordering::SeqCst), 0);
+                gate.register(Identity { index: 4, total: 4 })
+                    .unwrap()
+                    .ready(material())
+                    .unwrap();
+                rx.recv_timeout(Duration::from_secs(1)).unwrap();
+            });
+            assert_eq!(gate.confirmed_identity().unwrap(), material());
+            assert_eq!(observations.load(Ordering::SeqCst), 1);
+            let state = gate.state.lock().unwrap();
+            assert_eq!(state.registered, [false, true, false, true]);
+            assert_eq!(state.ready, [false, true, false, true]);
+        }
+    }
+
+    #[test]
+    fn subset_gate_rejects_nonmembers_duplicate_or_renumbered_original_slots() {
+        for admitted in [vec![], vec![0], vec![5], vec![2, 2]] {
+            assert!(Gate::selected(4, &admitted, None, Duration::from_secs(1)).is_err());
+        }
+        for bad in [
+            Identity { index: 1, total: 4 },
+            Identity { index: 2, total: 2 },
+            Identity { index: 2, total: 4 },
+        ] {
+            let gate = Gate::selected(4, &[2, 4], None, Duration::from_secs(1)).unwrap();
+            let mut first = gate.register(Identity { index: 2, total: 4 }).unwrap();
+            assert!(gate.register(bad).is_err());
+            assert!(first.ready(material()).is_err());
+            assert!(gate.confirmed_identity().is_err());
+        }
+    }
+
+    #[test]
+    fn subset_failure_or_expiry_cannot_release_waiting_original_peers() {
+        for timeout in [false, true] {
+            let gate =
+                Gate::selected(4, &[2, 4], Some(material()), Duration::from_secs(3)).unwrap();
+            let mut first = gate.register(Identity { index: 2, total: 4 }).unwrap();
+            let mut second = gate.register(Identity { index: 4, total: 4 }).unwrap();
+            if timeout {
+                gate.state.lock().unwrap().deadline = Some(Instant::now() - Duration::from_secs(1));
+            } else {
+                second.abort("pending original slot failed before readiness");
+            }
+            assert!(first.ready(material()).is_err());
+            assert!(second.ready(material()).is_err());
+            assert!(gate.confirmed_identity().is_err());
         }
     }
 
@@ -397,6 +811,8 @@ mod tests {
         );
         assert!(Gate::new(0, None, Duration::from_secs(1)).is_err());
         assert!(Gate::new(65, None, Duration::from_secs(1)).is_err());
+        assert!(Gate::new(usize::MAX, None, Duration::from_secs(1)).is_err());
+        assert!(Gate::deferred(usize::MAX, Duration::from_secs(1)).is_err());
         assert!(Gate::new(1, None, Duration::ZERO).is_err());
     }
 

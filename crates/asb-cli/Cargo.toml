@@ -19,6 +19,9 @@ sha2 = "=0.10.9"
 toml = "=1.1.6"
 zip = { version = "=9.0.5", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
+[target.'cfg(unix)'.dependencies]
+errno = "=0.3.14"
+
 [[bin]]
 name = "asb"
 path = "src/main.rs"

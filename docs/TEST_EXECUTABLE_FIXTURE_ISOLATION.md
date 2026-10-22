@@ -405,3 +405,42 @@ historical CI errno26 holder and historical timestamp-collision identity remain
 unproven; only the controlled mechanisms are established. Source/functionality
 is frozen for independent root review. Hosted CI/PR update/merge/release remain
 pending; no worker push or promotion occurred.
+
+## Post-main44 sweep integration follow-up
+
+The exact integration of main `c725266b` into the multi-track sweep branch
+(`aaa0dd9d`) passed Clippy/build but its first full run failed two library
+fixtures; all integration targets, including 50 repeated-run cases, passed.
+`target/continuation-main44-full.log` retains that failed run. The Terminal-Bench
+catalog fixture observed `Text file busy` immediately after replacing its fake
+Python executable in the parallel parent. That observation does not identify
+the historical inherited writer. Both initial fake executables and replacement
+bytes now use the existing isolated writer, an exclusively allocated namespace,
+and custody-aware cleanup. The production runtime checker is unchanged.
+
+The host-capability fixture unwrapped stdin delivery before joining its child.
+Already-enabled host paths legitimately need not consume offered input; parent
+EPIPE could therefore discard the child's actual assertions. The parent now
+always joins and requires child success before accepting only Ok/BrokenPipe.
+Exact-one-test, consent and fake-sudo log assertions remain mandatory. A real
+already-reaped shell child deterministically closes the pipe: exit zero permits
+EPIPE, exit seven still fails, and non-BrokenPipe write errors remain errors.
+No host capability or security policy was changed.
+
+Focused transport, capability and all five Terminal catalog cases plus strict
+Clippy passed. Their logs are `target/continuation-main44-{fixture-input,
+capability,terminal-catalog,fixture-clippy}.log`. An earlier linker Bus error was
+separate: the data disk had only 161 MiB free. A package-scoped Cargo clean of
+this worktree's regenerable ASB outputs reclaimed 2.7 GiB without removing
+source, benchmark evidence, other repositories or the pre-existing untracked
+crate directories. Rebuilt qualification uses a new frozen-binary hash and
+`target/continuation-main44-repaired-full.log`; do not count the failed first
+run as a pass or infer hosted/package/original-SDK qualification from it.
+
+The rebuilt follow-up subsequently completed EXIT0: 1,317 library tests passed
+(13 explicit opt-in ignores), all integration targets passed, including all 50
+repeated-run cases, and the before/after binary hash remained unchanged. Formatting
+and diff checks passed. Rust documentation, UML, complete flow SVGs (5,061
+functions/12,850 edges) and interactive diagrams regenerated successfully;
+Graphviz's straight-edge fallback remained a nonfatal layout diagnostic.
+These are exact local integrated-tree gates, not a packaged/hosted/main release.

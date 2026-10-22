@@ -5,8 +5,187 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use zip::{CompressionMethod, ZipWriter, write::SimpleFileOptions};
 
+#[path = "proof_tests.rs"]
+mod proof;
+#[path = "provenance_tests.rs"]
+mod provenance_tests;
 #[path = "publication_tests.rs"]
 mod publication;
+#[path = "reservation_tests.rs"]
+mod reservation;
+
+#[test]
+fn campaign_inspection_can_select_more_than_256_tracks_from_one_descriptor() {
+    let fixture = Fixture::new();
+    fs::create_dir(fixture.0.join(".asb")).unwrap();
+    fs::write(
+        fixture.0.join(".asb/project.toml"),
+        toml::to_string(&crate::project::ProjectConfig::default()).unwrap(),
+    )
+    .unwrap();
+    let configuration: crate::benchmark::BenchmarkConfig =
+        toml::from_str("agent='pi'\nprovider='local'\nmodel='fixture'\nworkload='bug-fix'\n")
+            .unwrap();
+    let path = fixture.0.join("benchmark.toml");
+    fs::write(&path, toml::to_string(&configuration).unwrap()).unwrap();
+    let names = (1..=257)
+        .map(|id| format!("tracks/{id}.jsonl"))
+        .collect::<Vec<_>>();
+    let payloads = names
+        .iter()
+        .map(|name| (name.as_str(), b"{}\n".as_slice()))
+        .collect::<Vec<_>>();
+    let bundle = fixture.zip(&manifest(257), &payloads);
+    // This is planning/metadata qualification, not material compatibility or a
+    // live replay. A deterministic sample visits all tracks before publication.
+    let inspection = crate::runner::repeated::Inspection::prepare_selected(
+        &path,
+        configuration,
+        4000,
+        crate::runner::RunOptions {
+            mode: Some(crate::tape::Mode::Replay),
+            cassette: Some(bundle.to_str().unwrap()),
+            replay_seed: Some(42),
+            ..Default::default()
+        },
+        None,
+        None,
+    )
+    .unwrap();
+    let cost = inspection.input_cost().unwrap();
+    assert_eq!(cost.inputs, 257);
+    assert_eq!(cost.files, 1);
+    assert_eq!(cost.bytes, 257 * 3);
+    assert_eq!(cost.observed_bytes, 0);
+    assert!(
+        crate::runner::repeated::InputCost::default()
+            .checked_add(cost)
+            .is_ok()
+    );
+    inspection.validate_sources().unwrap();
+    let prepared = inspection.observe().unwrap();
+    assert!(!fixture.0.join("results").exists());
+    let expected = manifest(257).compatibility;
+    let published = crate::runner::repeated::publish_campaign(prepared).unwrap();
+    drop(published);
+    // Publication starts no material gate/client. Move away the original ZIP
+    // before a first batch could observe material: its complete expected
+    // identity must already survive in the checksummed plan/private inputs.
+    fs::rename(&bundle, fixture.0.join("original-bundle-moved-away.zip")).unwrap();
+    let campaigns = fixture.0.join("results/asb-executions");
+    let root = fs::read_dir(campaigns)
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let restored = crate::runner::campaign::reading::Layout::read(&root.join("plan.json")).unwrap();
+    restored
+        .plan
+        .replay_compatibility
+        .as_ref()
+        .unwrap()
+        .require_match(&expected)
+        .unwrap();
+    assert!(!root.join("batch-1").exists());
+    assert!(
+        restored
+            .plan
+            .replay_inputs
+            .iter()
+            .all(|input| root.join(&input.private).is_file())
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn bundle_inspection_decodes_the_probed_descriptor_not_a_replacement_path() {
+    let fixture = Fixture::new();
+    let original = fixture.0.join("original.zip");
+    fs::rename(
+        fixture.zip(&manifest(1), &[("tracks/1.jsonl", b"{}\n")]),
+        &original,
+    )
+    .unwrap();
+    let replacement = fixture.zip(
+        &manifest(2),
+        &[("tracks/1.jsonl", b"{}\n"), ("tracks/2.jsonl", b"{}\n")],
+    );
+    let replacement_bytes = fs::read(&replacement).unwrap();
+    super::source::ADMISSION_REPLACEMENT
+        .with(|value| *value.borrow_mut() = Some((replacement, original.clone())));
+    let mut source = Source::inspect(&original, Limits::default())
+        .unwrap()
+        .observe()
+        .unwrap();
+    assert_eq!(source.manifest().unwrap().tracks.len(), 1);
+    assert_eq!(source.read_track(1).unwrap(), b"{}\n");
+    assert!(source.read_track(2).is_err());
+    assert_eq!(fs::read(original).unwrap(), replacement_bytes);
+    super::source::ADMISSION_REPLACEMENT.with(|value| assert!(value.borrow().is_none()));
+}
+
+#[test]
+fn source_inspection_pins_metadata_without_observing_payloads() {
+    let fixture = Fixture::new();
+    let base = fixture.0.join("inspection.jsonl");
+    for id in [2, 64] {
+        fs::write(crate::benchmark_paths::replica_path(&base, id), b"{}\n").unwrap();
+    }
+    super::source::take_observation_count();
+    let inspection = Source::inspect(&base, Limits::default()).unwrap();
+    assert_eq!(super::source::take_observation_count(), 0);
+    // Path replacement cannot redirect the later observation to different bytes.
+    let original = crate::benchmark_paths::replica_path(&base, 64);
+    fs::rename(&original, fixture.0.join("retained-original")).unwrap();
+    fs::write(original, b"replacement\n").unwrap();
+    let mut observed = inspection.observe().unwrap();
+    assert_eq!(super::source::take_observation_count(), 2);
+    assert_eq!(observed.read_track(64).unwrap(), b"{}\n");
+}
+
+#[test]
+fn source_inspection_checks_all_pinned_lengths_before_first_hash() {
+    for length in [0, 4] {
+        let fixture = Fixture::new();
+        let base = fixture.0.join("inspection.jsonl");
+        for id in [2, 64] {
+            fs::write(crate::benchmark_paths::replica_path(&base, id), b"{}\n").unwrap();
+        }
+        let inspection = Source::inspect(&base, Limits::default()).unwrap();
+        File::options()
+            .write(true)
+            .open(crate::benchmark_paths::replica_path(&base, 64))
+            .unwrap()
+            .set_len(length)
+            .unwrap();
+        super::source::take_observation_count();
+        assert!(
+            inspection
+                .observe()
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("length changed after inspection")
+        );
+        assert_eq!(super::source::take_observation_count(), 0);
+    }
+}
+
+#[test]
+fn late_source_inspection_error_needs_no_earlier_payload_observation() {
+    let fixture = Fixture::new();
+    let source = fixture.0.join("first.jsonl");
+    fs::write(&source, b"{}\n").unwrap();
+    super::source::take_observation_count();
+    let first = Source::inspect(&source, Limits::default()).unwrap();
+    let invalid = fixture.0.join("second.jsonl");
+    fs::write(&invalid, b"PKnot-a-valid-zip").unwrap();
+    assert!(Source::inspect(&invalid, Limits::default()).is_err());
+    assert_eq!(super::source::take_observation_count(), 0);
+    drop(first);
+    assert_eq!(fs::read(source).unwrap(), b"{}\n");
+}
 
 #[test]
 fn source_detection_uses_content_and_preserves_unknown_legacy_metadata() {
@@ -180,6 +359,7 @@ impl Drop for Fixture {
 
 fn manifest(count: u64) -> Manifest {
     Manifest {
+        provenance: None,
         schema_version: SCHEMA_VERSION,
         recording_id: "fixture-recording-1".into(),
         compatibility: Compatibility {

@@ -283,6 +283,15 @@ pub fn available_collectors() -> Vec<String> {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct RunMeasurement<'a> {
+    /// Exact runtime identity inputs; independently usable without a run log.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) planning: Option<&'a crate::planning::ResolvedPlan>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) effective_budgets: Option<crate::planning::EffectiveBudgets>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) execution: Option<&'a crate::runner::campaign::ExecutionIdentity>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) recording: Option<&'a crate::runner::recording::Evidence>,
     #[serde(flatten)]
     pub(crate) observation: crate::process_termination::Observation,
     pub(crate) execution_plan_fingerprint: Option<&'a str>,
@@ -2103,6 +2112,10 @@ mod tests {
             ))
             .unwrap();
         let run = RunMeasurement {
+            planning: None,
+            effective_budgets: None,
+            execution: None,
+            recording: None,
             observation: Default::default(),
             workload_resource_disposition: None,
             workload_artifacts: &[],

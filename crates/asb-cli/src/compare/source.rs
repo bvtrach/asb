@@ -1,6 +1,7 @@
 //! Read-only report inputs and per-record decoding. Never publishes report files.
 use super::*;
 use std::io::Read;
+mod campaign;
 
 /// Open once, reject nonregular sources, and bound the actual read even if the
 /// file grows after metadata inspection. Nonblocking open avoids FIFO hangs.
@@ -93,6 +94,7 @@ pub(super) struct Request {
     pub sweep_results: PathBuf,
     pub comparison_dir: PathBuf,
     pub plan: Option<crate::sweep::plan::SweepPlan>,
+    pub campaign: Option<Value>,
     configurations: BTreeMap<PathBuf, String>,
 }
 pub(super) struct LoadedReport {
@@ -191,6 +193,7 @@ impl Request {
         };
         let comparison_dir = parent.join("results").join(format!("{stem}-comparison"));
         Ok(Request {
+            campaign: None,
             path: path.to_owned(),
             parent: parent.to_path_buf(),
             single,
@@ -204,12 +207,32 @@ impl Request {
 }
 
 pub(super) fn load(path: &str) -> Result<LoadedReport, Error> {
+    if Path::new(path)
+        .file_name()
+        .is_some_and(|name| name == "plan.json")
+    {
+        return campaign::load(path);
+    }
     let request = Request::read(path)?;
+    if request
+        .plan
+        .as_ref()
+        .is_some_and(|plan| plan.execution.is_some())
+    {
+        return load_campaign_sweep(request);
+    }
     let mut rows = Vec::new();
+    let mut proofs = Vec::new();
     for (index, reference) in request.sweep.configs.iter().enumerate() {
         let configuration = load_configuration(&request, index, reference)?;
         for replica in 1..=configuration.concurrency {
-            rows.push(load_attempt(&request, &configuration, replica)?);
+            rows.push(load_attempt(
+                &request,
+                &configuration,
+                replica,
+                &mut proofs,
+                None,
+            )?);
         }
     }
     let mut previews = BTreeMap::new();
@@ -234,6 +257,48 @@ pub(super) fn load(path: &str) -> Result<LoadedReport, Error> {
         previews,
     })
 }
+
+fn load_campaign_sweep(request: Request) -> Result<LoadedReport, Error> {
+    let plan = request.plan.as_ref().expect("campaign sweep plan");
+    let mut layouts = plan.read_campaigns(&request.sweep_results)?;
+    let catalog = plan.generation_catalog(&request.sweep_results, &layouts)?;
+    let budget = std::rc::Rc::new(std::cell::Cell::new(256 * 1024 * 1024));
+    for layout in &mut layouts {
+        layout.share_observation_budget(budget.clone());
+    }
+    let mut primary_bytes = 0u64;
+    for layout in &layouts {
+        primary_bytes = primary_bytes
+            .checked_add(layout.preflight()?)
+            .filter(|bytes| *bytes <= 256 * 1024 * 1024)
+            .ok_or_else(|| {
+                Error::Input("sweep primary observations exceed aggregate 256 MiB limit".into())
+            })?;
+    }
+    let mut rows = Vec::new();
+    let mut previews = BTreeMap::new();
+    let mut proofs = Vec::new();
+    for (index, (entry, layout)) in plan.entries.iter().zip(&layouts).enumerate() {
+        let config = request.parent.join(&entry.reference);
+        let (mut selected, artifacts) = campaign::rows(
+            layout,
+            &request,
+            index,
+            config,
+            Some(&entry.selection),
+            &mut proofs,
+            catalog.as_ref(),
+        )?;
+        rows.append(&mut selected);
+        previews.extend(artifacts);
+    }
+    campaign::verify_proofs(&proofs)?;
+    Ok(LoadedReport {
+        request,
+        rows,
+        previews,
+    })
+}
 struct Configuration {
     index: usize,
     config: PathBuf,
@@ -243,6 +308,10 @@ struct Configuration {
     provider: String,
     model: String,
     concurrency: usize,
+    batch: Option<u64>,
+    expected_execution: Option<Value>,
+    measurement_snapshot: Option<Value>,
+    measurement_override: Option<Option<PathBuf>>,
     standalone: Option<crate::benchmark::BenchmarkConfig>,
     selection: Option<crate::workloads::TaskSelection>,
     outcomes: BTreeMap<usize, outcomes::Recorded>,
@@ -331,6 +400,10 @@ fn load_configuration(
         provider,
         model,
         concurrency,
+        batch: None,
+        expected_execution: None,
+        measurement_snapshot: None,
+        measurement_override: None,
         standalone,
         selection,
         outcomes,
@@ -340,6 +413,8 @@ fn load_attempt(
     request: &Request,
     context: &Configuration,
     replica: usize,
+    proofs: &mut Vec<crate::cassette::TrackEvidence>,
+    recording_owner: Option<&campaign::RecordingContext<'_>>,
 ) -> Result<BenchmarkData, Error> {
     let index = context.index;
     let config = &context.config;
@@ -365,7 +440,9 @@ fn load_attempt(
             benchmark_stem(config)
         )
     };
-    let measurement_dir = if let Some(configuration) = &standalone {
+    let measurement_dir = if let Some(directory) = &context.measurement_override {
+        directory.clone()
+    } else if let Some(configuration) = &standalone {
         let selected = crate::runner::replica::configuration(
             configuration,
             crate::runner::replica::Identity {
@@ -386,7 +463,7 @@ fn load_attempt(
             format!("measurements-concurrency-{replica}")
         }))
     };
-    let measurement_dir = if single {
+    let measurement_dir = if single && context.measurement_override.is_none() {
         outcomes
             .get(&replica)
             .and_then(|record| record.summary.get("measurement_directory"))
@@ -411,7 +488,13 @@ fn load_attempt(
     let outcome = outcomes.get(&replica);
     let grade_only_closed =
         outcome.is_some_and(|record| record.source == "recovered-official-grade");
-    let measured = capture_enabled && run_path.is_file() && !grade_only_closed;
+    let measured = capture_enabled
+        && (if context.expected_execution.is_some() {
+            context.measurement_snapshot.is_some()
+        } else {
+            run_path.is_file()
+        })
+        && !grade_only_closed;
     if !measured && outcome.is_none() {
         let workload_evaluation = selection.as_ref().map_or_else(
             || {
@@ -422,9 +505,11 @@ fn load_attempt(
             |selection| selection.evaluation_kind.clone(),
         );
         return Ok(BenchmarkData {
+            execution: None,
             observation: Default::default(),
             id: RowId {
                 configuration: context.index,
+                batch: context.batch,
                 replica,
             },
             legacy_evaluation_provenance: None,
@@ -459,8 +544,12 @@ fn load_attempt(
             artifact_sources,
         });
     }
-    let run_value = if measured {
-        let measured = read_json(&run_path)?;
+    let mut run_value = if measured {
+        let measured = if let Some(snapshot) = &context.measurement_snapshot {
+            snapshot.clone()
+        } else {
+            read_json(&run_path)?
+        };
         if let Some(outcome) = outcome {
             outcome.check_measurement(&measured)?;
         }
@@ -470,6 +559,19 @@ fn load_attempt(
         run_path = outcome.path.clone();
         outcome.summary.clone()
     };
+    // Measurement agreement above binds the same task/execution/cohort before
+    // borrowing optional historical policy objects. Never consult today's
+    // configuration/defaults or a different/older attempt for hash inputs.
+    let planning = outcomes::recorded_object(&run_value, outcome, "planning")?;
+    let effective_budgets = outcomes::recorded_object(&run_value, outcome, "effective_budgets")?;
+    for (field, value) in [
+        ("planning", &planning),
+        ("effective_budgets", &effective_budgets),
+    ] {
+        if let Some(value) = value {
+            run_value[field] = value.clone();
+        }
+    }
     let DecodedRecord {
         task,
         replica_index,
@@ -487,6 +589,9 @@ fn load_attempt(
             outcome,
         },
     )?;
+    if context.expected_execution.is_some() {
+        campaign::collect_summary_recording(&run_value, proofs, recording_owner)?;
+    }
     let mut metrics = BTreeMap::new();
     let legacy_evaluation_provenance: Option<
         crate::workloads::outcome::LegacyEvaluationProvenance,
@@ -609,8 +714,6 @@ fn load_attempt(
         .iter()
         .any(|prefix| key.starts_with(prefix))
     });
-    let planning = outcomes::recorded_object(&run_value, outcome, "planning")?;
-    let effective_budgets = outcomes::recorded_object(&run_value, outcome, "effective_budgets")?;
     if let Some(outcome) = &benchmark_outcome
         && crate::workloads::resolution_eligible(&workload_evaluation)
         && let crate::workloads::outcome::EvaluationOutcome::Completed { rewards, .. } =
@@ -653,6 +756,10 @@ fn load_attempt(
     let (series, host_metadata, components) =
         load_collectors(&measurement_dir, measured, &mut metrics)?;
     Ok(BenchmarkData {
+        execution: run_value
+            .get("execution")
+            .filter(|value| !value.is_null())
+            .cloned(),
         observation: if grade_only_closed
             || outcome.is_some_and(|record| record.source == "imported-official-grade")
         {
@@ -662,6 +769,7 @@ fn load_attempt(
         },
         id: RowId {
             configuration: index,
+            batch: context.batch,
             replica,
         },
         planning,
@@ -744,6 +852,13 @@ fn decode_record(run_value: &Value, attempt: &AttemptContext<'_>) -> Result<Deco
         ..
     } = context;
     let concurrency = *concurrency;
+    if let Some(expected) = &context.expected_execution
+        && run_value.get("execution") != Some(expected)
+    {
+        return Err(Error::Input(
+            "campaign result differs from its planned execution identity".into(),
+        ));
+    }
     let single = standalone.is_some();
     let has_plan = selection.is_some();
     if single || has_plan || outcome.is_some() {
@@ -794,6 +909,9 @@ fn decode_record(run_value: &Value, attempt: &AttemptContext<'_>) -> Result<Deco
             run_path.display()
         )));
     }
+    if let Some(cohort) = &execution_cohort {
+        crate::planning::validate_recorded_dispatch(run_value, cohort, replica, concurrency)?;
+    }
     let task = run_value
         .get("task")
         .filter(|value| !value.is_null())
@@ -805,6 +923,13 @@ fn decode_record(run_value: &Value, attempt: &AttemptContext<'_>) -> Result<Deco
                 run_path.display()
             ))
         })?;
+    if context.expected_execution.is_some()
+        && (task.is_none() || replica_index != Some(replica) || execution_cohort.is_none())
+    {
+        return Err(Error::Input(
+            "campaign result lacks its actual task or replica/cohort identity".into(),
+        ));
+    }
     if let Some(configuration) = &standalone
         && task.as_ref().is_some_and(|task| {
             task.workload != *workload

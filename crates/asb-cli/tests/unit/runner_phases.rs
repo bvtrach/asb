@@ -4,6 +4,9 @@ use crate::test_support as support;
 use std::cell::RefCell;
 use std::rc::Rc;
 
+#[path = "runner_recording_capacity.rs"]
+mod recording_capacity;
+
 struct Fixture(PathBuf);
 impl Fixture {
     fn new() -> Self {
@@ -927,10 +930,11 @@ fn recording_association_binds_actual_attempt_and_preserves_uncertain_raw_captur
         "campaign-1".into(),
         1,
         1,
+        None,
     );
     let result = result();
     let identity = recording_identity(&result);
-    recorder.prepare(&identity, 1).unwrap();
+    recorder.prepare(&identity, 1, &[1]).unwrap();
     let producer = super::super::recording::base(&campaign, 1);
     std::fs::write(&producer, b"{}\n").unwrap();
     let capture = crate::proxy::capture::CaptureEvidence {
@@ -1014,8 +1018,11 @@ fn recording_setup_failure_retains_partial_bytes_with_unknown_outcomes() {
         "campaign-1".into(),
         1,
         1,
+        None,
     );
-    recorder.prepare(&recording_identity(&result()), 1).unwrap();
+    recorder
+        .prepare(&recording_identity(&result()), 1, &[1])
+        .unwrap();
     let producer = super::super::recording::base(&campaign, 1);
     std::fs::write(&producer, b"partial trace").unwrap();
     recorder.finalize(false).unwrap().unwrap();
@@ -2160,6 +2167,7 @@ fn full_entry_child(case: &str) {
         id: workloads::TaskIdentity::local("execution-cohort", None).attempt_id,
         selected_replicas: 1,
         admitted_slots: vec![1],
+        dispatch: None,
     };
     let options = RunOptions {
         json: !(case.starts_with("phase-warning-")
@@ -2228,7 +2236,53 @@ fn full_entry_child(case: &str) {
             serde_json::json!({"kind":"code","code":if case.ends_with("code137") {137} else if case.ends_with("code143") {143} else {0}})
         };
         let process_ok = case.ends_with("code0") || case.contains("observation-fault");
+        // These actual entry cases deliberately supply a historical cohort
+        // without dispatch. The consuming pipeline must not retrofit C1/P1
+        // into persisted plans/hashes while reporting unknown dispatch.
+        let saved_config: BenchmarkConfig =
+            toml::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
+        let saved_policy: crate::planning::ResolvedPlan =
+            serde_json::from_value(summary["planning"].clone()).unwrap();
+        let effective: crate::planning::EffectiveBudgets =
+            serde_json::from_value(summary["effective_budgets"].clone()).unwrap();
+        let legacy_fingerprint = crate::planning::protocol_fingerprint_with_admission(
+            &saved_config,
+            &saved_policy,
+            effective,
+            1,
+            None,
+        )
+        .unwrap();
+        let inferred_fingerprint = crate::planning::protocol_fingerprint_with_dispatch(
+            &saved_config,
+            &saved_policy,
+            effective,
+            1,
+            None,
+            Some(crate::planning::Dispatch::new(1, 1).unwrap()),
+        )
+        .unwrap();
+        assert_ne!(legacy_fingerprint, inferred_fingerprint);
+        let plan: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(summary["execution_plan"].as_str().unwrap()).unwrap(),
+        )
+        .unwrap();
+        assert!(plan.get("dispatch").is_none(), "{case}: {plan}");
         for record in [&summary, &log, &measured] {
+            assert_eq!(
+                record["execution_cohort"],
+                serde_json::to_value(&cohort).unwrap(),
+                "{case}"
+            );
+            assert!(
+                record["execution_cohort"].get("dispatch").is_none(),
+                "{case}"
+            );
+            assert_eq!(
+                record["execution_plan_fingerprint"],
+                legacy_fingerprint.as_str(),
+                "{case}"
+            );
             assert_eq!(record["process_termination"], exact, "{case}");
             assert_eq!(record["process_success"], process_ok, "{case}");
             assert_eq!(

@@ -13,6 +13,7 @@ use std::time::Duration;
 use std::time::Instant;
 
 const HELPER: &str = include_str!("../../assets/benchmarks/asb_fingerprint.py");
+pub(super) mod campaigns;
 const MAX_REQUEST: usize = 16 * 1024 * 1024;
 pub(super) mod completed;
 pub(super) use completed::replicas::Observer as ReplicaObserver;
@@ -340,6 +341,37 @@ pub(super) struct Inputs {
     runtime: Option<Vec<crate::runtime_inputs::Dependency>>,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SavedInputSeal {
+    schema_version: u32,
+    status: String,
+    scope: String,
+    roots: Vec<Root>,
+    initial: Fingerprint,
+    r#final: Option<Fingerprint>,
+}
+
+impl SavedInputSeal {
+    fn validate(&self) -> Result<(), Error> {
+        if self.schema_version != 1
+            || self.scope != "input-stability-only-not-a-resume-receipt"
+            || !self.initial.valid()
+            || self.roots.len() > 100000
+            || match self.status.as_str() {
+                "pending" => self.r#final.is_some(),
+                "stable" => self.r#final.as_ref() != Some(&self.initial),
+                _ => true,
+            }
+        {
+            return Err(resume_error(
+                "the previous sweep does not have stable or pending declared inputs",
+            ));
+        }
+        Ok(())
+    }
+}
+
 impl Inputs {
     pub(super) fn begin(
         parent: &Path,
@@ -350,6 +382,9 @@ impl Inputs {
     ) -> Result<Self, Error> {
         let state = Self::build(parent, results, plan, mode, replay_sources)?;
         state.publish("pending", None)?;
+        if plan.execution.is_some() {
+            state.reserve_campaigns(results, plan)?;
+        }
         Ok(state)
     }
 
@@ -363,16 +398,6 @@ impl Inputs {
         mode: Option<crate::tape::Mode>,
         replay_sources: &[PathBuf],
     ) -> Result<Self, Error> {
-        #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct Saved {
-            schema_version: u32,
-            status: String,
-            scope: String,
-            roots: Vec<Root>,
-            initial: Fingerprint,
-            r#final: Option<Fingerprint>,
-        }
         let directory = results.join(".checkpoint");
         if !std::fs::symlink_metadata(&directory).is_ok_and(|metadata| metadata.is_dir())
             || !std::fs::symlink_metadata(directory.join("key"))
@@ -407,21 +432,11 @@ impl Inputs {
                 "the original input seal exceeds its size limit",
             ));
         }
-        let saved: Saved = serde_json::from_slice(&bytes)
+        let saved: SavedInputSeal = serde_json::from_slice(&bytes)
             .map_err(|_| resume_error("the original input seal is malformed"))?;
-        if saved.schema_version != 1
-            || saved.scope != "input-stability-only-not-a-resume-receipt"
-            || !saved.initial.valid()
-            || saved.roots.len() > 100000
-            || match saved.status.as_str() {
-                "pending" => saved.r#final.is_some(),
-                "stable" => saved.r#final.as_ref() != Some(&saved.initial),
-                _ => true,
-            }
-        {
-            return Err(resume_error(
-                "the previous sweep does not have stable or pending declared inputs",
-            ));
+        saved.validate()?;
+        if plan.execution.is_some() {
+            campaigns::verify_private_inputs(results, plan)?;
         }
         let current = Self::build(parent, results, plan, mode, replay_sources)?;
         if current.initial != saved.initial {
@@ -429,7 +444,83 @@ impl Inputs {
                 "the executable, configuration, runtime, environment or replay inputs changed",
             ));
         }
+        if plan.execution.is_some() {
+            current.verify_campaign_reservations(results, plan)?;
+        }
         Ok(current)
+    }
+
+    /// A metadata-only operation, never an Inputs capability returned to workers.
+    /// Current credentials/runtime environment are deliberately not compared to
+    /// the execution seal: no provider, agent or evaluator can be called here.
+    pub(super) fn recover_recordings(
+        parent: &Path,
+        results: &Path,
+        plan: &super::plan::SweepPlan,
+    ) -> Result<Vec<Value>, Error> {
+        Self::recovery_inputs(parent, results, plan)?
+            .recover_recording_publications(parent, results, plan)
+    }
+
+    pub(super) fn recover_continuation(
+        parent: &Path,
+        results: &Path,
+        plan: &super::plan::SweepPlan,
+    ) -> Result<Value, Error> {
+        Self::recovery_inputs(parent, results, plan)?
+            .recover_continuation_link(parent, results, plan)
+    }
+
+    fn recovery_inputs(
+        parent: &Path,
+        results: &Path,
+        plan: &super::plan::SweepPlan,
+    ) -> Result<Self, Error> {
+        use crate::runner::campaign::reading;
+        let directory = results.join(".checkpoint");
+        let saved: SavedInputSeal = serde_json::from_slice(&reading::bounded_relative(
+            &directory,
+            Path::new("inputs.json"),
+            16 * 1024 * 1024,
+        )?)
+        .map_err(|_| resume_error("original input seal is malformed"))?;
+        saved.validate()?;
+        if reading::bounded_relative(&directory, Path::new("key"), 32)?.len() != 32 {
+            return Err(resume_error("original checkpoint key is invalid"));
+        }
+        let first = plan
+            .entries
+            .first()
+            .ok_or_else(|| resume_error("no original configuration"))?;
+        let (root, _) = crate::project::load(&parent.join(&first.reference))?;
+        let candidate = crate::python_runtime::project_python(&root);
+        let python = if candidate.is_file() {
+            candidate
+        } else {
+            PathBuf::from("python3")
+        };
+        let snapshotter = Snapshotter::open(&directory, python)?;
+        // Saved execution roots may include the departed controller's procfs
+        // executable or now-uninstalled runtimes. Publication recovery reads
+        // retained metadata/payloads only; it must not rediscover those tools.
+        let mut roots = campaigns::input_roots(results, plan)?;
+        roots.push(Root::path(
+            "recovery-original-input-seal",
+            directory.join("inputs.json"),
+        ));
+        roots.push(Root::path(
+            "recovery-original-index",
+            results.join("plan.json"),
+        ));
+        roots.push(Root::path("recovery-original-key", directory.join("key")));
+        Ok(Self {
+            directory,
+            snapshotter,
+            roots,
+            context: json!({"protocol":"asb-publication-recovery-file-stability-v1","scope":"not-execution-admission"}),
+            initial: saved.initial,
+            runtime: None,
+        })
     }
 
     fn build(
@@ -449,7 +540,9 @@ impl Inputs {
                 roots.push(Root::path(format!("proxy-execution-file-{index}"), path));
             }
         }
-        if mode == Some(crate::tape::Mode::Replay) {
+        if plan.execution.is_some() {
+            roots.extend(campaigns::input_roots(results, plan)?);
+        } else if mode == Some(crate::tape::Mode::Replay) {
             for (index, path) in replay_sources.iter().enumerate() {
                 roots.push(Root::path(
                     format!("replay-source-{index}"),
@@ -523,25 +616,11 @@ impl Inputs {
     }
 
     pub(super) fn finish(mut self) -> Result<(), Error> {
-        if let Some(runtime) = &self.runtime {
-            let paths = match crate::runtime_inputs::discover(&self.snapshotter.python, runtime) {
-                Ok(paths) => paths,
-                Err(error) => {
-                    let _ = self.publish("unavailable", None);
-                    return Err(error);
-                }
-            };
-            self.roots
-                .retain(|root| !root.name.starts_with("runtime-source-"));
-            for (index, path) in paths.into_iter().enumerate() {
-                self.roots
-                    .push(Root::path(format!("runtime-source-{index}"), path));
-            }
-        }
-        match self
-            .snapshotter
-            .fingerprint(&self.roots, &self.context, true, &[])
-        {
+        self.finish_borrowed()
+    }
+
+    pub(super) fn finish_borrowed(&mut self) -> Result<(), Error> {
+        match self.final_fingerprint() {
             Ok(after) => self.publish(
                 if after.digest == self.initial.digest {
                     "stable"
@@ -555,6 +634,31 @@ impl Inputs {
                 Err(error)
             }
         }
+    }
+
+    /// Completed-only campaign reuse has no newly admitted work to settle.
+    /// Recheck inputs without rewriting the original seal/provenance locators.
+    pub(super) fn verify_stable_borrowed(&mut self) -> Result<(), Error> {
+        if self.final_fingerprint()? != self.initial {
+            return Err(resume_error(
+                "declared inputs changed while reusing completed campaigns",
+            ));
+        }
+        Ok(())
+    }
+
+    fn final_fingerprint(&mut self) -> Result<Fingerprint, Error> {
+        if let Some(runtime) = &self.runtime {
+            let paths = crate::runtime_inputs::discover(&self.snapshotter.python, runtime)?;
+            self.roots
+                .retain(|root| !root.name.starts_with("runtime-source-"));
+            for (index, path) in paths.into_iter().enumerate() {
+                self.roots
+                    .push(Root::path(format!("runtime-source-{index}"), path));
+            }
+        }
+        self.snapshotter
+            .fingerprint(&self.roots, &self.context, true, &[])
     }
 
     fn publish(&self, status: &str, after: Option<&Fingerprint>) -> Result<(), Error> {

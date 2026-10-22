@@ -15,7 +15,15 @@ fn limit(replicas: usize) -> u64 {
 
 impl Output {
     pub(super) fn create(path: &Path, replicas: usize) -> Result<Self, Error> {
-        if !(1..=benchmark::MAX_CONCURRENCY).contains(&replicas) {
+        Self::create_bounded(path, replicas, benchmark::MAX_CONCURRENCY)
+    }
+
+    pub(super) fn create_campaign(path: &Path, executions: usize) -> Result<Self, Error> {
+        Self::create_bounded(path, executions, 65_533)
+    }
+
+    fn create_bounded(path: &Path, replicas: usize, maximum: usize) -> Result<Self, Error> {
+        if !(1..=maximum).contains(&replicas) {
             return Err(Error::Input("invalid output spool replica count".into()));
         }
         let mut options = OpenOptions::new();
@@ -55,7 +63,24 @@ impl Write for Output {
 }
 
 pub(super) fn drain(path: &Path, replicas: usize, output: &mut dyn Write) -> Result<(), Error> {
-    if !(1..=benchmark::MAX_CONCURRENCY).contains(&replicas) {
+    drain_bounded(path, replicas, benchmark::MAX_CONCURRENCY, output)
+}
+
+pub(super) fn drain_campaign(
+    path: &Path,
+    executions: usize,
+    output: &mut dyn Write,
+) -> Result<(), Error> {
+    drain_bounded(path, executions, 65_533, output)
+}
+
+fn drain_bounded(
+    path: &Path,
+    replicas: usize,
+    maximum: usize,
+    output: &mut dyn Write,
+) -> Result<(), Error> {
+    if !(1..=maximum).contains(&replicas) {
         return Err(Error::Input("invalid output spool replica count".into()));
     }
     let metadata = match std::fs::symlink_metadata(path) {
@@ -152,6 +177,26 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn campaign_presentation_counts_every_execution_without_changing_legacy_replica_bounds() {
+        let root = Directory::new();
+        let path = root.0.join("campaign");
+        assert!(Output::create(&path, 65).is_err());
+        assert!(!path.exists());
+        assert!(Output::create_campaign(&path, 65_534).is_err());
+        let mut output = Output::create_campaign(&path, 65).unwrap();
+        assert_eq!(output.remaining, limit(65));
+        output.write_all(b"one campaign block\n").unwrap();
+        output.flush().unwrap();
+        drop(output);
+        let mut bytes = Vec::new();
+        assert!(drain(&path, 65, &mut bytes).is_err());
+        assert!(path.exists());
+        drain_campaign(&path, 65, &mut bytes).unwrap();
+        assert_eq!(bytes, b"one campaign block\n");
+        assert!(!path.exists());
     }
 
     #[test]
