@@ -1,9 +1,9 @@
-# Owned compatibility listener: delivery43 design and focused source proof
+# Owned compatibility listener: staged44 design and focused source proof
 
 Current status: revised same-PID sanitation source and focused proof below are
-green; the first full FAILED and remains invalid. A new full is held for root
-review/current-main integration and final delivery-slot coordination. Staged43
-is not an allocated public release or permission to publish a partial repair.
+green; the first full FAILED and remains invalid. Actual main43 has now been
+integrated and version44 staged. Fresh combined focused qualification and root
+review are required before a new full; no PR, push or release is authorized.
 
 Actual main42 base `32329d76` (PR307), not runner-phase43. Version staged43.
 The initial design checkpoint `e4e82879` contained only signed diagnostic
@@ -398,3 +398,26 @@ reused/kind-mismatched descriptors; sentinel survival; exact >2^53/u64max parsin
 and fixed redacted malformed-control failure. Unrelated objects are not closed.
 All handles are terminal, only own HOME cache used. No live provider/SDK/host
 configuration/privilege change, no full retry, PR/push or release is claimed.
+
+## Actual main43 integration, staged44
+
+Remote main was verified at `66fb5fdafe7af757333900818837e88fa44c7883`
+(PR309); its workspace version is0.2.43. No v0.2.43 tag was present at that
+verification. A normal signed merge brings its reviewed checkpoint/helper
+exchange and shared post-readiness deadline check into this repair, without
+conflicts or any change to those production/test bytes. The only shared source
+merge is the independent `helper_exchange` module declaration beside the owned
+FD helper in lib.rs. Development and architecture documents are unchanged.
+
+Merge `21f770d8` has a valid signature but accidentally inherited the local
+placeholder author label `Your Name <you@example.com>` and its matching
+sign-off. This was immediately reported; root directed retaining the immutable
+merge rather than rewriting it. Local identity is now explicitly Martin Beck
+<martin.beck2@gmx.de>; subsequent signed checkpoints use that identity and DCO.
+
+The staged version is0.2.44, not a release claim. All earlier failed-full,
+controlled RED and focused logs and frozen executables remain intact. Prior
+focused results do not qualify this combined source; a fresh actual build,
+frozen hash, owning checkpoint/runtime/gate and listener/helper/CLI/replay focus,
+strict Clippy and formatting precede renewed independent review. Full remains
+held until that review.
