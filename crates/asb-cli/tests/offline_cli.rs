@@ -4182,6 +4182,126 @@ http.createServer((req,res) => {
     assert_fixture_listener_closed(&port);
 }
 
+/// Repaired contract: the old numeric proposal is irrelevant to a pinned FD.
+#[cfg(target_os = "linux")]
+#[test]
+fn cli2key_compatibility_hop_owns_its_listener_without_a_rebind_window() {
+    use std::os::unix::fs::PermissionsExt;
+    let real_node = std::env::split_paths(&std::env::var_os("PATH").unwrap())
+        .map(|directory| directory.join("node"))
+        .find(|path| path.is_file())
+        .unwrap()
+        .canonicalize()
+        .unwrap();
+    for contend in [false, true] {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/cli2key-startup-diagnostic")
+            .join(format!("{}-{}", std::process::id(), contend));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+        // Retain exact owned evidence, including on assertion failure.
+        let project = std::mem::ManuallyDrop::new(Project(root.canonicalize().unwrap()));
+        project.init();
+        install_fake_bridge(
+            &project,
+            r##"#!/usr/bin/env node
+const http=require('http'),fs=require('fs');
+fs.writeFileSync(process.env.ASB_TEST_PIDFILE,String(process.pid));
+setTimeout(()=>{fs.writeFileSync(process.env.ASB_TEST_EXPIRED,'expired');process.exit(0)},10000).unref();
+http.createServer((req,res)=>{res.writeHead(200,{'content-type':'application/json'});res.end(JSON.stringify({data:[{id:'fixture-model'}]}))})
+.listen({fd:Number(process.env.ASB_TEST_LISTENER_FD)},()=>console.log('Codex Bridge API key: fixture-key'));
+"##,
+        );
+        let wrapper = format!(
+            r#"#!/usr/bin/python3
+import json,os,socket,sys
+real_node={real_node}
+if os.path.basename(sys.argv[1]).startswith('cli2key-proxy-'):
+    root=os.environ['HOME']
+    fd=os.open(root+'/compatibility.stderr',os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
+    os.dup2(fd,2)
+    os.close(fd)
+    inherited=int(sys.argv[sys.argv.index('--listen-fd')+1])
+    listener=socket.fromfd(inherited,socket.AF_INET,socket.SOCK_STREAM)
+    port=listener.getsockname()[1]
+    listener.close()
+    with open(root+'/compatibility.pid','x') as output: output.write(str(os.getpid()))
+    if os.environ['ASB_DIAGNOSTIC_CONTEND']=='yes':
+        owned=socket.socket()
+        # Unlike the historical diagnostic, there IS NO released --port
+        # proposal to claim. A separate occupied port must not disrupt startup.
+        owned.bind(('127.0.0.1',0))
+        owned.listen(1)
+        owned.set_inheritable(True)
+        # Only this admitted child holds the competing socket; exec retains
+        # its identity. Node exit closes it. No helper or outside process kill.
+        with open(root+'/claimed-port','x') as output: output.write(str(owned.getsockname()[1]))
+        contender=socket.socket()
+        try:
+            contender.bind(('127.0.0.1',port))
+            raise RuntimeError('ASB released its listener before Node adoption')
+        except OSError as error:
+            if error.errno!=98: raise
+        finally: contender.close()
+os.execv(real_node,[real_node]+sys.argv[1:])
+"#,
+            real_node = serde_json::to_string(&real_node).unwrap()
+        );
+        project.write("diagnostic-bin/node", &wrapper);
+        std::fs::set_permissions(
+            project.0.join("diagnostic-bin/node"),
+            std::fs::Permissions::from_mode(0o700),
+        )
+        .unwrap();
+        let path = std::env::join_paths(
+            std::iter::once(project.0.join("diagnostic-bin"))
+                .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+        )
+        .unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port().to_string();
+        let pidfile = project.0.join("bridge.pid");
+        let expired = project.0.join("expired");
+        let started = std::time::Instant::now();
+        let result = project.command_with_reserved_bridge(
+            &["provider", "models", "cli2key"],
+            &[
+                ("CODEX_BRIDGE_PORT", &port),
+                ("ASB_TEST_PIDFILE", pidfile.to_str().unwrap()),
+                ("ASB_TEST_EXPIRED", expired.to_str().unwrap()),
+                ("PATH", path.to_str().unwrap()),
+                ("ASB_DIAGNOSTIC_CONTEND", if contend { "yes" } else { "no" }),
+            ],
+            listener,
+        );
+        std::fs::write(project.0.join("asb.stdout"), &result.stdout).unwrap();
+        std::fs::write(project.0.join("asb.stderr"), &result.stderr).unwrap();
+        let bridge_pid: u32 = std::fs::read_to_string(pidfile).unwrap().parse().unwrap();
+        let _wait = wait_for_fixture(&project, bridge_pid);
+        let proxy_pid: u32 = std::fs::read_to_string(project.0.join("compatibility.pid"))
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!(!std::path::Path::new(&format!("/proc/{bridge_pid}")).exists());
+        assert!(!std::path::Path::new(&format!("/proc/{proxy_pid}")).exists());
+        assert_fixture_listener_closed(&port);
+        assert!(!expired.exists());
+        assert!(started.elapsed() < std::time::Duration::from_secs(10));
+        let diagnostic = std::fs::read_to_string(project.0.join("compatibility.stderr")).unwrap();
+        if contend {
+            let claimed = std::fs::read_to_string(project.0.join("claimed-port")).unwrap();
+            assert_fixture_listener_closed(&claimed);
+        }
+        expect_success(&result);
+        assert!(stdout(&result).contains("fixture-model"));
+        assert!(diagnostic.is_empty(), "{diagnostic}");
+        println!(
+            "diagnostic contend={contend}: both owned children gone, listeners closed, evidence={}",
+            project.0.display()
+        );
+    }
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn cli2key_failed_startup_must_stop_its_mock_bridge() {

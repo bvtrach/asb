@@ -122,6 +122,32 @@ impl Drop for Sentinel {
 fn isolated_pipeline_reaps_all_admitted_children_on_every_exit() {
     use std::os::unix::fs::{PermissionsExt, symlink};
     const CASE: &str = "ASB_FLAMEGRAPH_CLEANUP_CASE";
+    const FIXTURE: &str = r#"#!/usr/bin/python3
+import os,sys,time
+from pathlib import Path
+case=os.environ['ASB_FLAMEGRAPH_CLEANUP_CASE']
+role=Path(sys.argv[0]).name
+Path('tool-started').touch()
+if '--help' in sys.argv:
+    if case=='preflight-timeout': time.sleep(60)
+    sys.exit(3 if case=='preflight-nonzero' else 0)
+if role=='perf':
+    if case in ('folded-blocked','collapse-spawn-fails','cleanup-poll-timeout','cleanup-poll-error'): time.sleep(60)
+    sys.stdout.write('fixture perf samples\n');sys.stdout.flush()
+    sys.exit(7 if case=='perf-fails-collapse-blocked' else 0)
+if role=='stackcollapse-perf.pl':
+    if case in ('perf-fails-collapse-blocked','collapse-timeout'): time.sleep(60)
+    sys.stdin.buffer.read()
+    if case=='collapse-fails': sys.exit(8)
+    if case=='folded-unlinked': Path('measurements/flamegraph.folded').unlink()
+    print('fixture;frame 1')
+elif role=='flamegraph':
+    sys.stdin.buffer.read()
+    if case=='render-timeout': time.sleep(60)
+    if case=='render-fails': sys.exit(9)
+    print('<svg xmlns="http://www.w3.org/2000/svg"><text>fixture</text></svg>')
+else: raise AssertionError('unrecognized fixture role')
+"#;
     let Ok(case) = std::env::var(CASE) else {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../target/flamegraph-cleanup-fixtures")
@@ -159,37 +185,6 @@ fn isolated_pipeline_reaps_all_admitted_children_on_every_exit() {
             let directory = root.join(case);
             fs::create_dir_all(directory.join("empty-path")).unwrap();
             let fixture = directory.join("fixture.py");
-            fs::write(
-                &fixture,
-                r#"#!/usr/bin/python3
-import os,sys,time
-from pathlib import Path
-case=os.environ['ASB_FLAMEGRAPH_CLEANUP_CASE']
-role=Path(sys.argv[0]).name
-Path('tool-started').touch()
-if '--help' in sys.argv:
-    if case=='preflight-timeout': time.sleep(60)
-    sys.exit(3 if case=='preflight-nonzero' else 0)
-if role=='perf':
-    if case in ('folded-blocked','collapse-spawn-fails','cleanup-poll-timeout','cleanup-poll-error'): time.sleep(60)
-    sys.stdout.write('fixture perf samples\n');sys.stdout.flush()
-    sys.exit(7 if case=='perf-fails-collapse-blocked' else 0)
-if role=='stackcollapse-perf.pl':
-    if case in ('perf-fails-collapse-blocked','collapse-timeout'): time.sleep(60)
-    sys.stdin.buffer.read()
-    if case=='collapse-fails': sys.exit(8)
-    if case=='folded-unlinked': Path('measurements/flamegraph.folded').unlink()
-    print('fixture;frame 1')
-elif role=='flamegraph':
-    sys.stdin.buffer.read()
-    if case=='render-timeout': time.sleep(60)
-    if case=='render-fails': sys.exit(9)
-    print('<svg xmlns="http://www.w3.org/2000/svg"><text>fixture</text></svg>')
-else: raise AssertionError('unrecognized fixture role')
-"#,
-            )
-            .unwrap();
-            fs::set_permissions(&fixture, fs::Permissions::from_mode(0o700)).unwrap();
             for (tool, executable) in [
                 ("perf", "perf"),
                 ("flamegraph", "stackcollapse-perf.pl"),
@@ -238,6 +233,11 @@ else: raise AssertionError('unrecognized fixture role')
         return;
     };
     let root = PathBuf::from(std::env::var_os("HOME").unwrap());
+    // Create the executable only in this isolated exact-case process, before
+    // any tool admission. Parallel parent threads cannot fork its writable FD.
+    let fixture = root.join("fixture.py");
+    fs::write(&fixture, FIXTURE).unwrap();
+    fs::set_permissions(&fixture, fs::Permissions::from_mode(0o700)).unwrap();
     FAULT.set(match case.as_str() {
         "worker-start-fails" | "preflight-worker-start-fails" => Some(Fault::WorkerCreation),
         "cleanup-poll-timeout" => Some(Fault::CleanupTimeout),
