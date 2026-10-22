@@ -993,7 +993,7 @@ fn publish(path: &Path, value: &impl Serialize) -> Result<(), Error> {
     publish_bytes(path, &encode(value)?)
 }
 
-pub(super) fn publish_bytes(path: &Path, bytes: &[u8]) -> Result<(), Error> {
+pub(crate) fn publish_bytes(path: &Path, bytes: &[u8]) -> Result<(), Error> {
     let directory = path
         .parent()
         .ok_or_else(|| Error::Input("execution metadata needs a parent".into()))?;

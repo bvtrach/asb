@@ -63,4 +63,4 @@ pub(super) fn verify_private_inputs(results: &Path, plan: &SweepPlan) -> Result<
 }
 
 #[cfg(all(test, unix))]
-mod tests;
+pub(in crate::sweep::checkpoint) mod tests;

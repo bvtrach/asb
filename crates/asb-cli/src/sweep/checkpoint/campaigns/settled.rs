@@ -362,7 +362,7 @@ impl Inputs {
         &self,
         candidate: &Candidate,
         remaining: &mut u64,
-    ) -> Result<Receipt, Error> {
+    ) -> Result<(Receipt, (u64, String)), Error> {
         let path = self.campaign_completion_path(candidate.configuration, candidate.slot);
         let bytes = crate::runner::campaign::reading::bounded_relative(
                 &self.directory,
@@ -385,7 +385,8 @@ impl Inputs {
                 "campaign receipt identity or derived evidence roots differ",
             ));
         }
-        Ok(receipt)
+        let identity = (bytes.len() as u64, crate::cassette::digest(&bytes));
+        Ok((receipt, identity))
     }
 
     fn verify_campaign_candidate(

@@ -2,7 +2,7 @@ use super::*;
 use crate::sweep::checkpoint::{Inputs, Snapshotter};
 use serde_json::{Value, json};
 
-fn inputs(results: &Path, plan: &SweepPlan) -> Inputs {
+pub(in crate::sweep::checkpoint) fn inputs(results: &Path, plan: &SweepPlan) -> Inputs {
     let directory = results.join(".checkpoint");
     let roots = input_roots(results, plan).unwrap();
     let snapshotter = Snapshotter::open(&directory, "python3".into()).unwrap();

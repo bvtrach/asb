@@ -7,11 +7,65 @@ const MAX_RECORDS: usize = 65_533;
 const MAX_RECORD: u64 = 1024 * 1024;
 const MAX_BYTES: u64 = 256 * 1024 * 1024;
 
+#[path = "generation.rs"]
+mod generation;
+
+/// A classification cannot be combined with another sweep/input owner, even
+/// when both happen to have the same number of configurations and slots.
+#[derive(Debug, Eq, PartialEq)]
+struct Origin {
+    checkpoint: PathBuf,
+    invocation_parent: PathBuf,
+    run_id: String,
+    input_digest: String,
+    index_bytes: u64,
+    index_sha256: String,
+}
+
+impl Origin {
+    fn read(
+        inputs: &Inputs,
+        parent: &Path,
+        results: &Path,
+        plan: &SweepPlan,
+    ) -> Result<Self, Error> {
+        let bytes = reading::bounded(&results.join("plan.json"), 64 * 1024 * 1024)?;
+        let retained: SweepPlan = serde_json::from_slice(&bytes)
+            .map_err(|_| recovery("original sweep index is malformed"))?;
+        if serde_json::to_value(retained).map_err(|_| recovery("cannot encode original index"))?
+            != serde_json::to_value(plan).map_err(|_| recovery("cannot encode original index"))?
+            || std::path::absolute(results.join(".checkpoint")).map_err(io_error)?
+                != std::path::absolute(&inputs.directory).map_err(io_error)?
+        {
+            return Err(recovery(
+                "classification differs from its original index/input owner",
+            ));
+        }
+        Ok(Self {
+            checkpoint: std::path::absolute(&inputs.directory).map_err(io_error)?,
+            // Path::parent("sweep.toml") is Some(""); unlike join(),
+            // std::path::absolute rejects that valid current-directory parent.
+            invocation_parent: std::path::absolute(if parent.as_os_str().is_empty() {
+                Path::new(".")
+            } else {
+                parent
+            })
+            .map_err(io_error)?,
+            run_id: plan.run_id.clone(),
+            input_digest: inputs.initial.digest.clone(),
+            index_bytes: bytes.len() as u64,
+            index_sha256: crate::cassette::digest(&bytes),
+        })
+    }
+}
+
 /// Locks remain owned until this classification is consumed. Pending slots
 /// still need generation publication and exclusive create-new start admission.
 pub(in crate::sweep) struct Classified {
+    origin: Origin,
     layouts: Vec<Layout>,
     completed: BTreeMap<usize, BTreeMap<u64, Value>>,
+    receipt_bindings: BTreeMap<Key, (u64, String)>,
     pending: BTreeMap<usize, BTreeSet<u64>>,
     _owners: Vec<crate::output_lock::OutputLock>,
 }
@@ -234,6 +288,7 @@ impl Inputs {
         results: &Path,
         plan: &SweepPlan,
     ) -> Result<Classified, Error> {
+        let origin = Origin::read(self, parent, results, plan)?;
         self.verify_campaign_reservations(results, plan)?;
         let layouts = shared_layouts(results, plan)?;
         let mut owners = Vec::with_capacity(layouts.len());
@@ -314,16 +369,20 @@ impl Inputs {
         // observations and receipt identities pass before one grouped proof.
         let inspection = declarations.prove()?;
         let mut completed: BTreeMap<usize, BTreeMap<u64, Value>> = BTreeMap::new();
-        for (candidate, receipt) in inspection.candidates.into_iter().zip(receipts) {
+        let mut receipt_bindings = BTreeMap::new();
+        for (candidate, (receipt, identity)) in inspection.candidates.into_iter().zip(receipts) {
             self.verify_campaign_candidate(&candidate, &receipt)?;
+            receipt_bindings.insert((candidate.configuration, candidate.slot), identity);
             completed
                 .entry(candidate.configuration)
                 .or_default()
                 .insert(candidate.slot, candidate.summary);
         }
         Ok(Classified {
+            origin,
             layouts: inspection.layouts,
             completed,
+            receipt_bindings,
             pending,
             _owners: owners,
         })
@@ -336,6 +395,9 @@ impl Inputs {
         plan: &SweepPlan,
     ) -> Result<crate::sweep::resume::State, Error> {
         let classification = self.classify_campaigns(parent, results, plan)?;
+        if classification.origin != Origin::read(self, parent, results, plan)? {
+            return Err(recovery("classification origin changed before consumption"));
+        }
         if !classification.pending.is_empty() {
             return Err(resume_error(
                 "campaign continuation requires saved-slot validation and generation admission for positively untouched slots",

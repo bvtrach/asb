@@ -873,3 +873,106 @@ remained 9ebf33d77fde78cede0672dc69eecc5392439ed02e129e3b1e28ce6538cc2da2
 during focused runtime checks. Full current-head qualification remains required.
 Actual all-config generation publication/activation/sealing and recording union/
 publication recovery are still pending; this is not completed feature delivery.
+
+The shared-runtime checkpoint 592c564b subsequently passed the full offline
+source suite: 1,275 library tests, 13 explicit opt-in skips, every integration
+target (including 43 repeated-run cases), and doctests. Its runtime executable
+retained the SHA-256 above throughout. Rust documentation, UML, flows and
+interactive diagram generation also completed successfully. This is not
+packaged-install, original-SDK, hosted-PR or release qualification.
+
+### Consuming continuation generation publication
+
+Classification now binds the original literal index bytes, input digest,
+checkpoint owner and original invocation parent. Completed receipt identities
+are captured from the same bounded snapshots that passed strict verification;
+later planning cannot adopt a replacement receipt. Existing completed-only
+reuse also rechecks that origin before consuming a classification.
+
+The new private generation planner consumes Inputs and Classified. It drops
+Layout's non-Send observation budgets and retains owned campaign plans, original
+invocation paths, completed summaries and immutable per-batch cohorts. A parent
+guard owns Inputs and ALL original campaign locks. Per-config manifests bind
+the original plan reference, exact completed-receipt digests and pending cohort
+membership, including configurations with no pending work. Prepared/finished
+paths are derived from generation and batch rather than accepted as arbitrary
+serialized paths. Aggregate slots and all encoded manifest bytes are bounded
+before publication; the final global marker binds every exact manifest and the
+literal original index.
+
+A single derived checkpoint root makes earlier partial publication visible.
+Existing state requires explicit metadata recovery; choosing a fresh random
+directory cannot mint a second authority. Publication rechecks original inputs,
+actual/reference inventory, pending-slot absence, old receipts and grouped
+completion proofs under the held owners, writes every manifest through the
+existing no-clobber/synced repeated-run publisher, verifies exact published
+bytes, repeats whole-population validation, and publishes final admission LAST.
+Only then can it return non-cloneable, non-deserializable Send capabilities.
+Failures retain partial metadata and return none. Original seals, plans,
+preparation records, outcomes, receipts and public archives are not rewritten.
+
+Seven publication tests (27 passing campaign tests together) cover zero-client
+all-config ordering, exact frozen bytes, held locks, interruption after either
+manifest, prior-generation refusal, foreign final-marker preservation,
+manifest/pending mutation, changed index/input/invocation ownership and late
+receipt/actual/workspace mutation. A synthetic mixed C4 fixture retains IDs
+1/3/5..8 (including false grades), admits only original IDs2/4 with frozen C4/P2,
+and includes a wholly completed second configuration. These are strict evidence
+fixtures, not genuine prior agent runs or public partial-resume qualification.
+Strict all-target/all-feature Clippy passed; independent read-only review found
+no publication-foundation defect after the invocation-authority repair and
+publisher deduplication.
+
+The first full source run exposed a real regression in the new origin reader:
+Path::parent("sweep.toml") returns an empty path, which join interprets as cwd
+but std::path::absolute refuses. Origin now normalizes ONLY that empty parent
+to '.', preserving nonempty and symlink invocation authority. The generation
+derives its stored parent and per-entry invocation paths from that one frozen
+origin, without reinterpreting the caller's path. A new pure bare-vs-dot test,
+the actual public bare-name record/replay/resume regression and all 27 campaign
+tests passed after repair. Independent review approved this semantic repair;
+the initial red full-suite log is retained rather than described as passing.
+
+This is deliberately not wired into the public pending-slot route yet. Its
+private module marks unused implementation explicitly until consuming runtime
+activation/sealing is connected; public resume still refuses without publishing
+anything. The next integration must structurally retain the parent guard through
+joins/reporting, resolve typed generation references for starts/prepared evidence,
+verify old receipts while sealing only newly admitted slots, and exercise the
+actual public C4/R2+R4 vertical path. Post-link sync/owner-death fault qualification,
+explicit metadata recovery and recording full-union generations remain required.
+These remaining tasks cannot be replaced by refusal-only tests or described as
+completed feature5 delivery.
+
+#### Reachable public continuation qualification
+
+Independent review rechecked task2 and the actual all-C barriers: a normal
+fresh modern C4 batch cannot complete only R1/R3 while R2/R4 have no preparation
+or start observations. All members must arrive before any client runs. Missing
+outcomes after that point are recovery-required, not untouched retry permission.
+The earlier minimum acceptance paragraph must NOT be interpreted as permission
+to fabricate old fresh-batch receipts or erase peer observations.
+
+The actual public vertical must instead retain genuinely completed batches
+(including false grades) plus a wholly untouched next batch, then resume that
+next batch using saved original IDs/private inputs and preserve all old bytes.
+Use a controlled settled boundary and inspect actual receipts: an abrupt kill
+can correctly leave outcomes without the final completion seals. A second resume
+must run no new clients. Keep the generic noncontiguous C4/P2 dispatcher and
+mixed generation-state fixtures separately qualified. A real subset-authorizing
+recovery/generation workflow could create a legitimate later partial population,
+but that extension is not an explicit task2 prerequisite and synthetic fixtures
+must never be described as proving that public trajectory.
+
+After the empty-parent repair, the full offline source suite completed with exit
+zero: 1,282 library tests, 13 explicit opt-in skips, every integration target
+(including all 43 repeated-run tests) and doctests. The executable stayed
+721a67c98a107ef8550d7902beeccc53add1902f6900d739abe49cb81bc63671.
+The full red and repaired logs are retained under target/campaign-generation-*.
+This remains source qualification, not packaged installation, original SDK
+execution, hosted CI, merge or release evidence.
+
+Rust documentation, UML, data/control flows and interactive diagram generation
+also completed successfully for this source checkpoint, followed by formatting
+and whitespace checks. Generated diagrams remain ignored local artifacts; no
+browser-rendering or native Windows qualification is implied.

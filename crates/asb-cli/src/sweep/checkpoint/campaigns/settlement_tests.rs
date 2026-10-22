@@ -16,8 +16,17 @@ fn fixture_options(
     remote: bool,
     alias: bool,
 ) -> (Fixture, SweepPlan, PathBuf, Inputs) {
+    fixture_concurrency(mode, remote, alias, 1)
+}
+
+pub(in crate::sweep::checkpoint) fn fixture_concurrency(
+    mode: crate::tape::Mode,
+    remote: bool,
+    alias: bool,
+    concurrency: usize,
+) -> (Fixture, SweepPlan, PathBuf, Inputs) {
     use crate::workloads::contracts::{EnvironmentKind, HarnessIdentity, SupportLevel};
-    let (fixture, mut plan, results) = published(mode);
+    let (fixture, mut plan, results) = published_concurrency(mode, concurrency);
     if remote {
         for entry in &mut plan.entries {
             let dataset = crate::workloads::session::DatasetIdentity {
@@ -98,7 +107,7 @@ fn fixture_options(
                     .unwrap(),
                 ),
             };
-            let cohort = json!({"id":format!("abc-{configuration:x}-{:x}", slot.batch),"selected_replicas":1,"admitted_slots":[1]});
+            let cohort = json!({"id":format!("abc-{configuration:x}-{:x}", slot.batch),"selected_replicas":concurrency,"admitted_slots":(1..=concurrency).collect::<Vec<_>>()});
             let execution = layout.plan.execution(slot);
             if remote {
                 let preparation =
@@ -128,26 +137,31 @@ fn fixture_options(
                 )
                 .unwrap();
                 fs::create_dir_all(batch.join("allocations")).unwrap();
-                fs::write(batch.join("allocations/1.json"), serde_json::to_vec(&json!({"schema_version":1,"scope":"allocated-workload-reference-not-outcome","execution":execution,"reference":reference})).unwrap()).unwrap();
+                fs::write(batch.join(format!("allocations/{}.json", slot.replica)), serde_json::to_vec(&json!({"schema_version":1,"scope":"allocated-workload-reference-not-outcome","execution":execution,"reference":reference})).unwrap()).unwrap();
                 workload_evidence.push(artifacts);
             }
-            fs::write(batch.join("starts/1.json"), serde_json::to_vec(&json!({"schema_version":1,"scope":"execution-start-intent-not-actual-attempt","execution":execution,"execution_cohort":cohort})).unwrap()).unwrap();
+            fs::write(batch.join(format!("starts/{}.json", slot.replica)), serde_json::to_vec(&json!({"schema_version":1,"scope":"execution-start-intent-not-actual-attempt","execution":execution,"execution_cohort":cohort})).unwrap()).unwrap();
             fs::write(batch.join("prepared.json"), serde_json::to_vec(&json!({"schema_version":1,"scope":"verified-prepared-material","compatibility":compatibility})).unwrap()).unwrap();
             let value = json!({"schema_version":2,"scope":"task-outcome-not-yet-a-resume-receipt",
-                "replica":{"index":1,"total":1},"outputs":[workspace,layout.root.join(&slot.log)],
+                "replica":{"index":slot.replica,"total":concurrency},"outputs":[workspace,layout.root.join(&slot.log)],
                 "workload_cleanup_confirmed":true,"proxy_cleanup_confirmed":true,"workload_evidence":workload_evidence,
                 "summary":{"schema_version":2,"agent":"pi","provider":"local","model":"fixture","workload":"bug-fix",
-                    "task":task,"execution":execution,"execution_cohort":cohort,"replica_index":1,
+                    "task":task,"execution":execution,"execution_cohort":cohort,"replica_index":slot.replica,
                     "module":entry.selection.module,"process_success":false,"workload_success":false,
                     "workload_evaluation":entry.selection.evaluation_kind,"workload_baseline":{"kind":"measured","passed":false}}});
             let bytes = serde_json::to_vec(&value).unwrap();
             let relative = PathBuf::from(format!(
-                "batch-{}/.asb-completions/fixture.json",
-                slot.batch
+                "batch-{}/.asb-completions/{}.json",
+                slot.batch,
+                if concurrency == 1 {
+                    "fixture".into()
+                } else {
+                    format!("fixture-{}", slot.replica)
+                }
             ));
             fs::write(layout.root.join(&relative), &bytes).unwrap();
             fs::write(
-                batch.join("outcomes/1.json"),
+                batch.join(format!("outcomes/{}.json", slot.replica)),
                 serde_json::to_vec(&json!({
                     "schema_version":1,"execution":execution,"path":relative,"bytes":bytes.len(),
                     "sha256":crate::cassette::digest(&bytes),"task":task
@@ -157,11 +171,15 @@ fn fixture_options(
             .unwrap();
         }
     }
-    let state = inputs(&plan, &results);
+    let state = inputs_environment(&plan, &results, concurrency > 1);
     (fixture, plan, results, state)
 }
 
 fn inputs(plan: &SweepPlan, results: &Path) -> Inputs {
+    inputs_environment(plan, results, false)
+}
+
+fn inputs_environment(plan: &SweepPlan, results: &Path, environment: bool) -> Inputs {
     let directory = results.join(".checkpoint");
     let mut roots = input_roots(results, plan).unwrap();
     roots.push(crate::sweep::checkpoint::Root::path(
@@ -171,7 +189,7 @@ fn inputs(plan: &SweepPlan, results: &Path) -> Inputs {
     let context = json!({"scope":"settlement-test-not-runtime-closure"});
     let snapshotter = Snapshotter::open(&directory, "python3".into()).unwrap();
     let initial = snapshotter
-        .fingerprint(&roots, &context, false, &[])
+        .fingerprint(&roots, &context, environment, &[])
         .unwrap();
     let state = Inputs {
         directory,

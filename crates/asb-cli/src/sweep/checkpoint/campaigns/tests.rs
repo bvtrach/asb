@@ -3,19 +3,28 @@ use crate::sweep::{Options, SweepFile, campaigns, plan};
 use std::{fs, path::PathBuf};
 
 #[path = "reservations_tests.rs"]
-mod reservations_tests;
+pub(in crate::sweep::checkpoint) mod reservations_tests;
 
 #[path = "settlement_tests.rs"]
-mod settlement_tests;
+pub(in crate::sweep::checkpoint) mod settlement_tests;
 
-struct Fixture(PathBuf);
+pub(in crate::sweep::checkpoint) struct Fixture(pub(in crate::sweep::checkpoint) PathBuf);
 impl Drop for Fixture {
     fn drop(&mut self) {
         fs::remove_dir_all(&self.0).unwrap();
     }
 }
 
-fn published(mode: crate::tape::Mode) -> (Fixture, SweepPlan, PathBuf) {
+pub(in crate::sweep::checkpoint) fn published(
+    mode: crate::tape::Mode,
+) -> (Fixture, SweepPlan, PathBuf) {
+    published_concurrency(mode, 1)
+}
+
+pub(in crate::sweep::checkpoint) fn published_concurrency(
+    mode: crate::tape::Mode,
+    concurrency: usize,
+) -> (Fixture, SweepPlan, PathBuf) {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../target/campaign-seal-fixtures")
         .join(crate::workloads::TaskIdentity::local("inputs", None).attempt_id);
@@ -32,7 +41,7 @@ fn published(mode: crate::tape::Mode) -> (Fixture, SweepPlan, PathBuf) {
         let reference = format!("benchmark-{index}.toml");
         fs::write(
             root.join(&reference),
-            "agent='pi'\nprovider='local'\nmodel='fixture'\nworkload='bug-fix'\n",
+            format!("agent='pi'\nprovider='local'\nmodel='fixture'\nworkload='bug-fix'\nconcurrency={concurrency}\n"),
         )
         .unwrap();
         let directory = tapes.join(format!("{index:03}-benchmark-{index}/cassettes"));
