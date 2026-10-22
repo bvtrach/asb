@@ -801,3 +801,37 @@ outcome references/logs, requires successful reporting from measurements alone,
 and refuses missing hash inputs without guessing them. Both focused regressions
 passed after independent review. Full repaired-head gates remain required; the
 initial failed full run is not counted as qualification.
+
+At repaired checkpoint 07f3f4a8, formatting, strict all-target/all-feature Clippy,
+build, the complete offline source suite, private Rust documentation, UML,
+dataflow/control-flow SVGs and interactive diagrams passed. Library results were
+1,271 passed and 13 explicit opt-in ignores; every integration target and
+doctest passed, including all 43 repeated-run tests. Actual executable SHA-256
+stayed 035aa042b4ba73ec213cb9958053809046a2a24131a319d1ebb0640859fa22a3
+through the full runtime suite. Logs remain under target/campaign-dispatch-*,
+including the initial red run. This does not qualify packaging, native Windows,
+installed original-SDK sweeps, hosted CI, merge or release.
+
+The independently reviewed next vertical slice must consume Classified into a
+parent-held continuation guard (all original ownership locks through reporting)
+and owned non-cloneable Send worker/batch capabilities. Do not send Layout's
+Rc/Cell observation budgets or borrowed RunOptions across scheduler threads.
+Derive/stage exact saved replay bytes, publish every per-configuration generation
+manifest and global final admission, then construct executable capabilities.
+An internal selected-run path alone can compose reused summaries with verified
+fresh preparation; do not broadly remove the existing rejection. Both gates
+require only genuine pending participants. Newly completed batch accounting
+compares against P, while campaign totals, IDs and final failure include reused
+observations. Original prepared/finished files remain immutable; a shared bounded
+generation-reference resolver binds new starts to their authorized manifest,
+cohort and derived preparation path.
+
+The minimum actual acceptance is original C=4 with genuine completed R1/R3
+(including a false grade) and positively untouched R2/R4. Public resume must
+launch exactly R2/R4 once, require both real arrivals, retain old bytes, report
+four original rows with honest P=2 and return failure for the retained false
+grade. A second resume launches zero clients. Late corrupt/orphan metadata
+prevents all generation admission. Replay keeps saved choices/private inputs
+when its original archive is absent. Full-union recording generations and
+zero-client publication recovery remain required, not an unsupported-mode
+refusal presented as completed feature delivery.
