@@ -835,3 +835,41 @@ prevents all generation admission. Replay keeps saved choices/private inputs
 when its original archive is absent. Full-union recording generations and
 zero-client publication recovery remain required, not an unsupported-mode
 refusal presented as completed feature delivery.
+
+### Shared runtime dispatch admission
+
+Fresh repeated batches now exercise the same internal admitted-batch dispatcher
+that can execute a pending subset. One non-deserializable Admission owns material
+and launch gates plus the actual immutable cohort. It validates bounded original
+C and membership, derives fresh C/P once, or preserves an already frozen cohort
+without changing its ID. Both gates use exactly those participants; launch stays
+deferred until real registration. Material time starts at runtime construction,
+not future generation publication. Gate budgets still come from the unchanged
+typed operational policy; a shorter constructor exists only in test builds.
+
+The dispatcher requires the default outer replica, exact complement of retained
+slots, and no competing raw gates/cohort. Its one-shot atomic runtime claim
+precedes tool/environment preparation and is not reset after failure. This is
+per-instance defensive ownership, not durable protection against reconstruction.
+Legacy/public loaded execution still rejects retained slots combined with fresh
+verified preparation. Admission is runtime coordination, never a substitute for
+the pending consuming generation owner, final admission marker or strict receipts.
+
+The real native inner-dispatch test uses the registered Pi adapter with a local
+Node fixture, embedded replay and synthetic retained summaries R1=false/R3=true.
+Only R2/R4 start, both real clients rendezvous, both gates confirm, original IDs
+and C4/P2 survive in summaries, and retained workspaces/logs stay byte-identical
+with no new retained-slot measurements. The result remains failed for R1, and
+reusing the same runtime admission produces no extra client or output. This is
+not a claim of original prior receipts, installed Pi, public partial resume or
+original-SDK qualification. Pure tests additionally check both gates' exact
+registered/ready bitsets, one material publication, frozen identity, unknown/
+contradictory cohort rejection and no-side-effect competing-option failures.
+
+Independent read-only review approved the runtime boundary and tests. Focused
+gates passed: 15 batch tests, eight runner-boundary tests and all 43 repeated-run
+tests, strict all-target/all-feature Clippy, formatting and build. The executable
+remained 9ebf33d77fde78cede0672dc69eecc5392439ed02e129e3b1e28ce6538cc2da2
+during focused runtime checks. Full current-head qualification remains required.
+Actual all-config generation publication/activation/sealing and recording union/
+publication recovery are still pending; this is not completed feature delivery.

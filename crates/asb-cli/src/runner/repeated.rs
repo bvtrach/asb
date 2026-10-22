@@ -635,7 +635,7 @@ pub(crate) fn execute(
         });
         let prepared = batch_root.join("prepared.json");
         let batch_recorder = recording.clone();
-        let gate = batch::Gate::new(config.concurrency, reference.clone(), admission.material_timeout())?.observe(Arc::new(move |compatibility| {
+        let dispatch = batch::Admission::new(config.concurrency, (1..=config.concurrency).collect(), reference.clone(), admission)?.observe(Arc::new(move |compatibility| {
             publish(&prepared, &json!({"schema_version":1,"scope":"verified-prepared-material","compatibility":compatibility}))?;
             if let Some(recorder) = &batch_recorder { recorder.prepare(compatibility,number)?; }
             Ok(())
@@ -652,7 +652,6 @@ pub(crate) fn execute(
         if let Some(saved) = &options.policy {
             policy.task_requirements = saved.task_requirements.clone();
         }
-        let launch_gate = batch::Gate::deferred(config.concurrency, admission.launch_timeout())?;
         selected.workspace = path_text(&batch_root.join("workspace"))?;
         selected.log_file = path_text(&batch_root.join("run.jsonl"))?;
         let measures = measurement_root
@@ -681,7 +680,7 @@ pub(crate) fn execute(
         } else {
             private_cassette.clone()
         };
-        let result = super::run_loaded(
+        let result = super::run_admitted_batch(
             &config_path,
             selected,
             RunOptions {
@@ -691,19 +690,17 @@ pub(crate) fn execute(
                 respect_record_timings: plan.respect_record_timings,
                 policy: Some(&policy),
                 batch: Some(&identity),
-                preparation_gate: Some(&gate),
-                launch_gate: Some(&launch_gate),
-                verify_initial_material: true,
                 measurement_dir: override_measurements.as_deref(),
                 cassette: batch_cassette.as_deref(),
                 recording: recording.as_deref(),
                 on_completion: Some(observer.as_ref()),
                 ..Default::default()
             },
+            &dispatch,
             output,
             warnings,
         );
-        let prepared = gate.confirmed_identity();
+        let prepared = dispatch.material().confirmed_identity();
         let completed = observer
             .completed
             .lock()
@@ -711,13 +708,13 @@ pub(crate) fn execute(
             .len();
         let batch_failed = result.is_err();
         producers_quiescent &=
-            completed == config.concurrency && observer.cleanup_confirmed.load(Ordering::Acquire);
+            completed == dispatch.count() && observer.cleanup_confirmed.load(Ordering::Acquire);
         // A published outcome for every admitted slot distinguishes ordinary
         // completed failures from setup, output or evidence-publication failure.
         stopped = must_stop(
             &result,
             completed,
-            config.concurrency,
+            dispatch.count(),
             prepared.is_ok(),
             observer.cleanup_confirmed.load(Ordering::Acquire),
         );

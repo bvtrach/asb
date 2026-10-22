@@ -221,6 +221,49 @@ fn run_loaded(
         execution_cohort: Some(&cohort),
         ..options
     };
+    run_dispatched(config_path, config, options, output, warnings)
+}
+
+/// Consume the workflow's selected runtime admission, rather than replacing its
+/// cohort or manufacturing gate arrivals for retained peers. Only the workflow
+/// owner, not CLI/deserialized options, can supply this internal runtime object.
+fn run_admitted_batch(
+    config_path: &Path,
+    config: BenchmarkConfig,
+    options: RunOptions<'_>,
+    admission: &batch::Admission,
+    output: &mut dyn Write,
+    warnings: &Mutex<BTreeSet<String>>,
+) -> Result<(), Error> {
+    crate::planning::resolve_snapshot(&config, options.measurement_dir.is_some(), options.policy)?;
+    if options.replica != replica::Identity::default()
+        || !admission.matches(config.concurrency, options.reused)
+        || options.execution_cohort.is_some()
+        || options.preparation_gate.is_some()
+        || options.launch_gate.is_some()
+    {
+        return Err(Error::Input(
+            "batch admission differs from original pending replica population".into(),
+        ));
+    }
+    admission.claim()?;
+    let options = RunOptions {
+        execution_cohort: Some(admission.cohort()),
+        preparation_gate: Some(admission.material()),
+        launch_gate: Some(admission.launch()),
+        verify_initial_material: true,
+        ..options
+    };
+    run_dispatched(config_path, config, options, output, warnings)
+}
+
+fn run_dispatched(
+    config_path: &Path,
+    config: BenchmarkConfig,
+    options: RunOptions<'_>,
+    output: &mut dyn Write,
+    warnings: &Mutex<BTreeSet<String>>,
+) -> Result<(), Error> {
     if let Some(measures) = config.measurements.as_ref().filter(|value| value.enabled) {
         // Parallel sweep configurations can share project-local tool paths.
         // Serialize dependency publication, not benchmark execution.
