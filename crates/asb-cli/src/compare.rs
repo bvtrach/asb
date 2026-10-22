@@ -1112,8 +1112,10 @@ mod tests {
             observation: Default::default(),
             id: RowId {
                 configuration: 0,
+                batch: None,
                 replica: 1,
             },
+            execution: None,
             planning: None,
             effective_budgets: None,
             legacy_evaluation_provenance: None,

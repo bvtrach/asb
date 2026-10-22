@@ -16,11 +16,9 @@ const ADAPTER: TerminalBenchAdapter = TerminalBenchAdapter {
 struct Fixture(PathBuf);
 impl Fixture {
     fn new() -> Self {
-        let root = crate::fixture_namespace::allocate(
-            &std::env::temp_dir(),
-            "asb-terminal-catalog-",
-        )
-        .unwrap();
+        let root =
+            crate::fixture_namespace::allocate(&std::env::temp_dir(), "asb-terminal-catalog-")
+                .unwrap();
         fs::create_dir_all(root.join(".asb")).unwrap();
         fs::write(
             root.join(".asb/project.toml"),

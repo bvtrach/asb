@@ -277,6 +277,10 @@ pub(super) fn saved_batch_choices(plan: &Plan, batch: u64) -> Option<BatchChoice
             .as_ref()
             .map(|selection| selection.algorithm.clone()),
         tracks,
+        // Saved plans retain selected track identities but not a source handle
+        // or a copied manifest. Statistics remain unavailable until a fresh
+        // replay source is inspected.
+        statistics: vec![None; plan.concurrency],
     })
 }
 
