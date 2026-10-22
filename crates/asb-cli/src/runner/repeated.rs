@@ -60,6 +60,11 @@ impl BatchIdentity {
             total: self.repeat * self.concurrency as u64,
         }
     }
+    pub(super) fn replay_statistics(&self, replica: usize) -> Option<crate::cassette::Statistics> {
+        self.replay
+            .as_ref()
+            .and_then(|replay| replay.statistics.get(replica.checked_sub(1)?)?.clone())
+    }
 }
 
 pub(super) fn run(

@@ -18,8 +18,10 @@ tracepoint:syscalls:sys_exit_futex /@asb_futex_start[tid]/ {
 
 // Emit cumulative interval samples without clearing the final aggregate maps.
 interval:s:1 {
+  printf("ASB_BPFTRACE_SNAPSHOT %llu\n", nsecs(monotonic));
   print(@asb_futex_calls);
   print(@asb_futex_wait_events);
   print(@asb_futex_wait_total_ns);
   print(@asb_futex_wait_max_ns);
+  printf("ASB_BPFTRACE_SNAPSHOT_END\n");
 }

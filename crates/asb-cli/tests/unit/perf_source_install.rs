@@ -3,6 +3,7 @@
 use super::*;
 use sha2::{Digest, Sha256};
 use std::os::unix::fs::PermissionsExt;
+use std::process::Command;
 
 const CASE: &str = "ASB_PERF_SOURCE_UNIT_FIXTURE";
 const PAYLOAD: &[u8] = b"offline perf source fixture";
@@ -59,23 +60,33 @@ fn source_build_checks_real_fixture_digest_before_running_build_tools() {
         fs::write(&file, script).unwrap();
         fs::set_permissions(file, fs::Permissions::from_mode(0o700)).unwrap();
     }
+    let context = OperationContext::new(&root, &crate::project::ProjectConfig::default()).unwrap();
     let valid = root.join("valid");
     fs::create_dir(&valid).unwrap();
+    let owner = ProducerDirectory::open(&valid).unwrap();
+    let mut scope = owner.scope(&context);
     let checksum = format!("{:x}", Sha256::digest(PAYLOAD));
     let binary = build_perf_from_source(
+        &context,
+        &mut scope,
         &valid,
         &mut |_, _| {},
         "https://fixture.invalid/perf.tar.gz",
         &checksum,
     )
     .unwrap();
-    assert!(runnable(&binary));
+    assert!(runnable(&mut scope, &binary).unwrap());
+    owner.consume(scope.finish().unwrap()).unwrap();
     assert_eq!(fs::read(root.join("build-called")).unwrap(), b"tarmake");
     assert!(!root.join("external-hasher-called").exists());
     fs::remove_file(root.join("build-called")).unwrap();
     let invalid = root.join("invalid");
     fs::create_dir(&invalid).unwrap();
+    let owner = ProducerDirectory::open(&invalid).unwrap();
+    let mut scope = owner.scope(&context);
     let error = build_perf_from_source(
+        &context,
+        &mut scope,
         &invalid,
         &mut |_, _| {},
         "https://fixture.invalid/perf.tar.gz",

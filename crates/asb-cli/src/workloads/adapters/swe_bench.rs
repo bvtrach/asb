@@ -98,7 +98,7 @@ impl WorkloadAdapter for SweBenchAdapter {
         context: &InstallationContext<'_>,
         output: &mut dyn std::io::Write,
         progress: &mut dyn FnMut(u8, crate::install::ProgressStage),
-    ) -> Result<bool, crate::Error> {
+    ) -> crate::install::InstallResult<bool> {
         catalog::install(self, context, output, progress)?;
         Ok(true)
     }

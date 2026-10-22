@@ -216,6 +216,7 @@ impl PreparedNative {
         show_output: bool,
         output: &mut dyn Write,
         launch: Option<&dyn workloads::session::LaunchReadiness>,
+        progress: progress::Context,
     ) -> Result<(ExecutionEvidence, AttemptIssues), Error> {
         // The process gate must execute the fully prepared command, not the
         // adapter's original executable. Some adapters (for example OpenJiuwen)
@@ -223,13 +224,14 @@ impl PreparedNative {
         // bypassing it at the gate would silently undo those fixes while still
         // appearing to attach collectors correctly.
         let target = self.route.target(&self.command);
-        let child = run_measured_agent_with_launch(
+        let child = run_measured_agent_with_launch_progress(
             &mut self.command,
             &target,
             Some(self.route),
             measurements,
             show_output,
             output,
+            progress,
             NativeLaunch {
                 readiness: launch,
                 runtime: self.execution_budget,

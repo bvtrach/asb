@@ -13,6 +13,8 @@ pub(super) struct BatchChoices {
     pub seed: Option<u64>,
     pub algorithm: Option<String>,
     pub tracks: Vec<u64>,
+    #[serde(skip)]
+    pub statistics: Vec<Option<crate::cassette::Statistics>>,
 }
 
 /// Own the opened source until all selected entries have been verified/staged.
@@ -217,16 +219,27 @@ impl Prepared {
 
     pub fn batch_choices(&self, plan: &Plan, batch: u64, concurrency: usize) -> BatchChoices {
         let start = (batch as usize - 1) * concurrency;
+        let tracks: Vec<_> = plan.slots[start..start + concurrency]
+            .iter()
+            .map(|slot| slot.replay_track.expect("planned replay slot"))
+            .collect();
+        let statistics = tracks
+            .iter()
+            .map(|id| {
+                self.source
+                    .manifest()
+                    .and_then(|manifest| manifest.track(*id).ok())
+                    .map(|track| track.statistics.clone())
+            })
+            .collect();
         BatchChoices {
             seed: self.selection.as_ref().map(|selection| selection.seed),
             algorithm: self
                 .selection
                 .as_ref()
                 .map(|selection| selection.algorithm.clone()),
-            tracks: plan.slots[start..start + concurrency]
-                .iter()
-                .map(|slot| slot.replay_track.expect("planned replay slot"))
-                .collect(),
+            tracks,
+            statistics,
         }
     }
 }

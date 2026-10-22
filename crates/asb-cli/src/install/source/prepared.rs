@@ -3,6 +3,18 @@ use super::*;
 use sha2::{Digest, Sha256};
 use std::io::{Seek, SeekFrom};
 
+/// Keep the caller's admission failure typed and out of ordinary cleanup or
+/// candidate-fallback handling. Only the core's own failures are core errors.
+pub(super) enum PublicationFailure<E> {
+    CorePublication(Error),
+    Check(E),
+}
+impl<E> From<Error> for PublicationFailure<E> {
+    fn from(error: Error) -> Self {
+        Self::CorePublication(error)
+    }
+}
+
 #[derive(Debug)]
 pub(in crate::install) enum Input {
     Remote(String),
@@ -61,7 +73,7 @@ pub(in crate::install) fn same_object(first: &fs::Metadata, second: &fs::Metadat
     }
 }
 
-pub(super) struct Staging {
+pub(in crate::install) struct Staging {
     pub(super) directory: PathBuf,
     pub(super) file: PathBuf,
     handle: fs::File,
@@ -69,9 +81,27 @@ pub(super) struct Staging {
     directory_handle: fs::File,
     settled: bool,
     published: bool,
+    producer: crate::install::process::ProducerState,
+    producer_quiet: std::sync::atomic::AtomicBool,
+    monitor: std::sync::OnceLock<ProducerMonitor>,
+    // Last field: test receipt follows the Drop body AND all resource fields.
+    #[cfg(test)]
+    drop_completion: DropCompletion,
+}
+#[cfg(test)]
+struct DropCompletion(std::sync::Arc<std::sync::atomic::AtomicBool>);
+#[cfg(test)]
+impl Drop for DropCompletion {
+    fn drop(&mut self) {
+        self.0.store(true, std::sync::atomic::Ordering::Release);
+    }
+}
+struct ProducerMonitor {
+    kind: String,
+    bytes: u64,
 }
 impl Staging {
-    pub(super) fn new(destination: &Path) -> Result<Self, Error> {
+    pub(in crate::install) fn new(destination: &Path) -> Result<Self, Error> {
         let parent = destination
             .parent()
             .filter(|path| !path.as_os_str().is_empty())
@@ -124,6 +154,13 @@ impl Staging {
                 directory_handle,
                 settled: false,
                 published: false,
+                producer: crate::install::process::ProducerState::default(),
+                producer_quiet: std::sync::atomic::AtomicBool::new(true),
+                monitor: std::sync::OnceLock::new(),
+                #[cfg(test)]
+                drop_completion: DropCompletion(std::sync::Arc::new(
+                    std::sync::atomic::AtomicBool::new(false),
+                )),
             })
         })();
         created.map_err(|error: io::Error| {
@@ -218,6 +255,7 @@ impl Staging {
     pub(super) fn published(&mut self) {
         self.published = true;
     }
+    #[cfg(test)]
     pub(super) fn publish_copy(
         &mut self,
         destination: &Path,
@@ -225,6 +263,23 @@ impl Staging {
         validated: &Snapshot,
         publication: Publication,
     ) -> Result<(), Error> {
+        match self.publish_copy_checked(destination, options, validated, publication, || {
+            Ok::<(), std::convert::Infallible>(())
+        }) {
+            Ok(()) => Ok(()),
+            Err(PublicationFailure::CorePublication(error)) => Err(error),
+            Err(PublicationFailure::Check(never)) => match never {},
+        }
+    }
+    pub(super) fn publish_copy_checked<E>(
+        &mut self,
+        destination: &Path,
+        options: &Options<'_>,
+        validated: &Snapshot,
+        publication: Publication,
+        check: impl FnOnce() -> Result<(), E>,
+    ) -> Result<(), PublicationFailure<E>> {
+        self.require_quiet_producer().map_err(crate::io_error)?;
         // The probe knows the original pathname (and may retain its directory
         // handle). Move that entry out before trusting a commit pathname.
         let quiet = Quarantined::take(
@@ -240,7 +295,8 @@ impl Staging {
             if !validated.same_payload(&detached) {
                 return Err(Error::Input(
                     "validated installation bytes changed during detachment".into(),
-                ));
+                )
+                .into());
             }
             // Never publish from any pathname supplied to a downloader/probe.
             // Copy the admitted handle into a NEW quiet namespace; a retained
@@ -259,7 +315,8 @@ impl Staging {
                 if count != detached.metadata.len() {
                     return Err(Error::Input(
                         "validated installation changed during commit copying".into(),
-                    ));
+                    )
+                    .into());
                 }
                 output
                     .set_permissions(detached.metadata.permissions())
@@ -272,11 +329,20 @@ impl Staging {
                 {
                     return Err(Error::Input(
                         "validated installation changed before publication".into(),
-                    ));
+                    )
+                    .into());
                 }
                 // Fault hooks deliberately receive only the old exposed name,
                 // never the private commit namespace.
                 checkpoint(FaultPoint::CommitRename, &self.file)?;
+                // Admission is checked after the last fault hook and directly
+                // before BOTH commit variants. This does not make the clock
+                // check and the following filesystem syscall atomic.
+                if let Err(error) = check() {
+                    self.retain_producer_scratch();
+                    commit.retain_producer_scratch();
+                    return Err(PublicationFailure::Check(error));
+                }
                 match publication {
                     Publication::Replace => fs::rename(&commit.file, destination),
                     Publication::NoClobber => match fs::hard_link(&commit.file, destination) {
@@ -303,11 +369,26 @@ impl Staging {
                 commit.published();
                 Ok(())
             })();
-            commit.finish(copied)
+            match copied {
+                Ok(()) => commit.finish(Ok(())).map_err(Into::into),
+                Err(PublicationFailure::CorePublication(error)) => {
+                    commit.finish(Err(error)).map_err(Into::into)
+                }
+                Err(PublicationFailure::Check(error)) => Err(PublicationFailure::Check(error)),
+            }
         })();
-        quiet.finish(result)
+        match result {
+            Ok(()) => quiet.finish(Ok(())).map_err(Into::into),
+            Err(PublicationFailure::CorePublication(error)) => {
+                quiet.finish(Err(error)).map_err(Into::into)
+            }
+            // Quarantined has no destructive Drop. Both actual staging owners
+            // above were disarmed before this typed rejection escapes.
+            Err(PublicationFailure::Check(error)) => Err(PublicationFailure::Check(error)),
+        }
     }
     fn settle(&self) -> io::Result<()> {
+        self.require_quiet_producer()?;
         checkpoint(FaultPoint::Cleanup, &self.file)
             .map_err(|error| io::Error::other(error.to_string()))?;
         self.directory_owned()?;
@@ -551,6 +632,126 @@ impl Drop for Staging {
             self.settled = true;
             let _ = self.settle();
         }
+    }
+}
+
+impl crate::install::process::ProducerOwner for Staging {
+    #[cfg(test)]
+    fn drop_completion(&self) -> Option<std::sync::Arc<std::sync::atomic::AtomicBool>> {
+        Some(std::sync::Arc::clone(&self.drop_completion.0))
+    }
+    fn producer_state(&self) -> &crate::install::process::ProducerState {
+        &self.producer
+    }
+    fn producer_started(&self) {
+        self.producer_quiet
+            .store(false, std::sync::atomic::Ordering::Release);
+    }
+    fn observation(
+        self: std::sync::Arc<Self>,
+    ) -> Option<crate::install::process::ObservationCheck> {
+        self.monitor.get()?;
+        Some(Box::new(move || {
+            let policy = self.monitor.get().expect("fixed source observation policy");
+            self.file_owned().map_err(|error| error.to_string())?;
+            let metadata = self.handle.metadata().map_err(|error| {
+                format!(
+                    "cannot inspect staged {} at {}: {error}",
+                    policy.kind,
+                    self.file.display()
+                )
+            })?;
+            if !metadata.is_file() {
+                return Err(format!(
+                    "staged {} at {} is not a regular file",
+                    policy.kind,
+                    self.file.display()
+                ));
+            }
+            if metadata.len() > policy.bytes {
+                return Err(format!(
+                    "staged {} at {} exceeds the installation size limit ({} bytes); raw evidence was retained",
+                    policy.kind,
+                    self.file.display(),
+                    policy.bytes
+                ));
+            }
+            Ok(())
+        }))
+    }
+}
+
+impl Staging {
+    pub(in crate::install) fn monitor_producer(&self, kind: &str, bytes: u64) -> Result<(), Error> {
+        self.monitor
+            .set(ProducerMonitor {
+                kind: kind.to_owned(),
+                bytes,
+            })
+            .map_err(|_| {
+                Error::Input(
+                    "source observation policy was already fixed for this staging owner".into(),
+                )
+            })
+    }
+    fn require_quiet_producer(&self) -> io::Result<()> {
+        if self
+            .producer_quiet
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            Ok(())
+        } else {
+            Err(io::Error::other(
+                "installation producer settlement is unavailable; private staging is retained",
+            ))
+        }
+    }
+    pub(in crate::install) fn producer_scope(
+        self: &std::sync::Arc<Self>,
+        context: &crate::install::process::OperationContext,
+    ) -> crate::install::process::ProcessScope {
+        let lease = crate::install::process::ProducerLease::new(
+            std::sync::Arc::clone(self),
+            &self.directory,
+        );
+        crate::install::process::ProcessScope::new(context, lease)
+    }
+    pub(in crate::install) fn accept_producer_permission(
+        &self,
+        permission: crate::install::process::ProducerPermission,
+    ) -> crate::install::process::InstallResult<crate::install::process::ConsumedPermission> {
+        self.producer_quiet
+            .store(false, std::sync::atomic::Ordering::Release);
+        let guard = permission.consume_guard_for(&self.producer)?;
+        self.producer_quiet
+            .store(true, std::sync::atomic::Ordering::Release);
+        Ok(guard)
+    }
+    pub(in crate::install) fn retain_producer_scratch(&self) {
+        self.producer.invalidate_settlement();
+        self.producer_quiet
+            .store(false, std::sync::atomic::Ordering::Release);
+    }
+    #[cfg(all(test, target_os = "linux"))]
+    pub(in crate::install) fn producer_path(&self) -> &Path {
+        &self.file
+    }
+    #[cfg(all(test, target_os = "linux"))]
+    pub(in crate::install) fn publish_with_permission_for_test(
+        mut self,
+        permission: crate::install::process::ProducerPermission,
+        destination: &Path,
+    ) -> crate::install::process::InstallResult<()> {
+        self.accept_producer_permission(permission)?;
+        let options = Options {
+            kind: "producer custody fixture",
+            limit: 1024 * 1024,
+            checksum: None,
+            executable: false,
+        };
+        let snapshot = self.snapshot(&options)?;
+        let result = self.publish_copy(destination, &options, &snapshot, Publication::Replace);
+        self.finish(result).map_err(Into::into)
     }
 }
 

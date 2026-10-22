@@ -1,124 +1,86 @@
-//! Deterministic custody faults; fake curl never opens a network connection.
-#![allow(unsafe_code)] // pidfd and waitpid only assert owned-child identity/reaping.
+//! Actual Source entry composition; historical raw-Child faults remain in Git.
 use super::*;
-use crate::process_cleanup::test_support;
-use std::cell::{Cell, RefCell};
-use std::os::fd::{AsRawFd, FromRawFd};
-use std::os::unix::fs::PermissionsExt;
+use crate::launch::ProcessLaunch;
+use crate::process_gate::{Admission, ManagedGate};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+    mpsc,
+};
+use std::time::{Duration, Instant};
 
-#[derive(Clone, Copy)]
-enum Fault {
-    Pending,
-    PollError,
-}
-struct Admission {
-    pid: u32,
-    identity: fs::File,
-}
-thread_local! {
-    static FAULT: Cell<Option<Fault>> = const { Cell::new(None) };
-    static ADMISSIONS: RefCell<Option<Vec<Admission>>> = const { RefCell::new(None) };
-}
-
-pub(super) fn record_admission(pid: u32) {
-    ADMISSIONS.with_borrow_mut(|admissions| {
-        if let Some(admissions) = admissions {
-            // SAFETY: pin this just-spawned direct child without signalling it.
-            let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) } as i32;
-            assert!(
-                fd >= 0,
-                "cannot pin child: {}",
-                std::io::Error::last_os_error()
-            );
-            admissions.push(Admission {
-                pid,
-                identity: unsafe { fs::File::from_raw_fd(fd) },
-            });
-        }
-    });
-}
-
-pub(super) fn cleanup_poll_override() -> Option<std::io::Result<Option<std::process::ExitStatus>>> {
-    match FAULT.get() {
-        Some(Fault::Pending) => Some(Ok(None)),
-        Some(Fault::PollError) => Some(Err(std::io::Error::other("fixture cleanup poll failure"))),
-        None => None,
+struct Sentinel(Option<ManagedGate>);
+impl Sentinel {
+    fn start() -> Self {
+        let binary = std::env::current_exe()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("asb");
+        let (mut command, route) = ProcessLaunch::new("/bin/sleep").native(Some(&binary));
+        command
+            .arg("30")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let mut gate = Admission::new(route.validate_gate(&mut command).unwrap())
+            .unwrap()
+            .spawn()
+            .unwrap();
+        gate.resume().unwrap();
+        Self(Some(gate))
+    }
+    fn alive(&mut self) -> bool {
+        self.0.as_mut().unwrap().try_wait().unwrap().is_none()
+    }
+    fn settle(&mut self) -> bool {
+        self.0.take().unwrap().stop().is_ok()
     }
 }
-
-pub(super) fn cleanup_timeout_override() -> Option<Duration> {
-    FAULT.get().map(|_| Duration::ZERO)
-}
-
-struct Observer(test_support::Scope);
-impl Observer {
-    fn new() -> Self {
-        ADMISSIONS.with_borrow_mut(|admissions| {
-            assert!(admissions.is_none());
-            *admissions = Some(Vec::new());
-        });
-        Self(test_support::Scope::new())
-    }
-    fn assert_reaped(&self, count: usize) {
-        self.0.wait_finished();
-        ADMISSIONS.with_borrow(|admissions| {
-            let admissions = admissions.as_ref().unwrap();
-            assert_eq!(admissions.len(), count);
-            for admission in admissions {
-                let mut poll = libc::pollfd {
-                    fd: admission.identity.as_raw_fd(),
-                    events: libc::POLLIN,
-                    revents: 0,
-                };
-                // SAFETY: observe the pinned child; waitpid queries only its exit custody.
-                assert_eq!(
-                    unsafe { libc::poll(&mut poll, 1, 0) },
-                    1,
-                    "child survived cleanup"
-                );
-                assert_ne!(poll.revents & libc::POLLIN, 0);
-                assert_eq!(
-                    unsafe {
-                        libc::waitpid(admission.pid as i32, std::ptr::null_mut(), libc::WNOHANG)
-                    },
-                    -1
-                );
-                assert_eq!(
-                    std::io::Error::last_os_error().raw_os_error(),
-                    Some(libc::ECHILD)
-                );
-            }
-        });
-    }
-}
-impl Drop for Observer {
-    fn drop(&mut self) {
-        FAULT.set(None);
-        ADMISSIONS.with_borrow_mut(|admissions| *admissions = None);
-    }
-}
-struct Sentinel(std::process::Child);
 impl Drop for Sentinel {
     fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
+        if let Some(mut gate) = self.0.take() {
+            let _ = gate.stop();
+        }
+    }
+}
+struct Cancel(OperationContext);
+impl Drop for Cancel {
+    fn drop(&mut self) {
+        self.0.cancel();
+    }
+}
+struct Unhold(Arc<AtomicBool>);
+impl Drop for Unhold {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
+fn wait_for(mut observed: impl FnMut() -> bool) -> bool {
+    let until = Instant::now() + Duration::from_secs(5);
+    while !observed() && Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    observed()
+}
+fn options() -> Options<'static> {
+    Options {
+        kind: "actual Source lifecycle fixture",
+        limit: 4096,
+        checksum: None,
+        executable: true,
     }
 }
 
 #[test]
-fn isolated_installation_custody_faults_preserve_original_errors_and_published_bytes() {
+fn actual_source_lifecycle_preserves_abort_and_ordinary_resource_contracts() {
     for case in [
-        "download-worker-creation",
-        "probe-worker-creation",
-        "spawn-failure",
-        "download-pending",
-        "download-poll-error",
-        "probe-pending",
-        "probe-poll-error",
-        "drop-pending",
-        "unwind-poll-error",
-        "finish-success-pending",
-        "finish-error-poll-error",
+        "download-worker-start",
+        "caught-abort-ok",
+        "caught-abort-ordinary",
+        "unwind-after-abort",
         "normal-success",
     ] {
         publication_tests::Fixture::new().run(&format!("lifecycle-{case}"));
@@ -127,180 +89,160 @@ fn isolated_installation_custody_faults_preserve_original_errors_and_published_b
 
 pub(super) fn run_case(root: &Path, destination: &Path, case: &str) {
     let case = case.strip_prefix("lifecycle-").unwrap();
-    let observer = Observer::new();
-    let mut sentinel = Sentinel(Command::new("/bin/sleep").arg("30").spawn().unwrap());
-    if case.ends_with("pending") {
-        FAULT.set(Some(Fault::Pending));
+    let context = OperationContext::load(root).unwrap();
+    let mut sentinel = Sentinel::start();
+    if case == "download-worker-start" {
+        // Only this operation's next Download preparation is affected. If the
+        // hook regresses, the inherited fixture PATH still selects inert curl.
+        let observed = context.fail_next_worker_for_test(Purpose::Download);
+        let mut validated = false;
+        let result = install_input_in(
+            &context,
+            &Input::Remote("https://fixture.invalid/success".into()),
+            destination,
+            options(),
+            |_, _| {
+                validated = true;
+                Ok(())
+            },
+            Publication::Replace,
+        );
+        let (raw_directory, completion) = observed.recv_timeout(Duration::from_secs(1)).unwrap();
+        let dropped = completion.load(Ordering::Acquire);
+        let alive = sentinel.alive();
+        let settled = sentinel.settle();
+        assert!(alive && settled);
+        assert!(dropped, "actual never-admitted Stage destructor is pending");
+        let Err(InstallFailure::Ordinary(error)) = result else {
+            panic!("pre-admission failure lost ordinary classification");
+        };
+        assert!(error.to_string().contains("custody worker"), "{error}");
+        assert!(
+            !validated && !root.join("download-path").exists(),
+            "downloader or validator was admitted"
+        );
+        assert!(
+            !raw_directory.exists(),
+            "known-never-admitted Stage cleanup was withheld"
+        );
+        publication_tests::assert_old_ready(root, destination);
+        return;
     }
-    if case.ends_with("poll-error") {
-        FAULT.set(Some(Fault::PollError));
+    if case == "normal-success" {
+        let mut owner = None;
+        let result = install_input_in(
+            &context,
+            &Input::pin_local(root.join("new-source")).unwrap(),
+            destination,
+            options(),
+            |path, scope| {
+                owner = Some((path.to_owned(), scope.fixture_drop_completion().unwrap()));
+                check_version_in(scope, path, "healthy lifecycle fixture")
+            },
+            Publication::Replace,
+        );
+        let (raw, completion) = owner.unwrap();
+        let dropped = completion.load(Ordering::Acquire);
+        let alive = sentinel.alive();
+        let settled = sentinel.settle();
+        assert!(alive && settled);
+        result.unwrap();
+        assert!(dropped && !raw.exists());
+        assert_eq!(
+            fs::read(destination).unwrap(),
+            b"#!/bin/sh\nprintf 'new tool\\n'\n"
+        );
+        return;
     }
-    if case.ends_with("worker-creation") {
-        test_support::set_creation_failure(true);
+    enum Outcome {
+        Returned(InstallResult<()>),
+        Unwound,
     }
-    let started = Instant::now();
-    match case {
-        "download-worker-creation" | "download-pending" | "download-poll-error" => {
-            let error = install_with_timeout(
-                "https://fixture.invalid/timeout",
-                destination,
-                Options {
-                    kind: "fixture download",
-                    limit: 1024,
-                    checksum: None,
-                    executable: true,
+    let held = Arc::new(AtomicBool::new(true));
+    let release = Unhold(Arc::clone(&held));
+    let _cancel = Cancel(context.clone());
+    let (resources, receipt) = mpsc::sync_channel(1);
+    let (send, receive) = mpsc::sync_channel(1);
+    let worker_context = context.clone();
+    let worker_root = root.to_owned();
+    let worker_destination = destination.to_owned();
+    let worker_case = case.to_owned();
+    std::thread::spawn(move || {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            install_input_in(
+                &worker_context,
+                &Input::pin_local(worker_root.join("new-source")).unwrap(),
+                &worker_destination,
+                options(),
+                |path, scope| {
+                    let _ =
+                        resources.send((path.to_owned(), scope.fixture_drop_completion().unwrap()));
+                    let mut step = scope.prepare(
+                        "/bin/sh",
+                        Purpose::Version,
+                        "uncertain lifecycle producer",
+                    )?;
+                    step.command_mut()
+                        .current_dir(&worker_root)
+                        .env("PATH", "/usr/bin:/bin")
+                        .args(["-c", "printf ready > lifecycle-ready; sleep 30"])
+                        .stdin(Stdio::null());
+                    step.hold_observation_for_test(held);
+                    let failure = scope.run(step);
+                    // The caller may catch its step failure, but cannot erase
+                    // the same scope's sticky Abort or mint settlement proof.
+                    if !matches!(failure, Err(InstallFailure::Abort(_))) {
+                        return Err(
+                            Error::Input("fixture producer did not return Abort".into()).into()
+                        );
+                    }
+                    match worker_case.as_str() {
+                        "caught-abort-ok" => Ok(()),
+                        "caught-abort-ordinary" => {
+                            Err(Error::Input("specific lifecycle primary reason".into()).into())
+                        }
+                        "unwind-after-abort" => {
+                            panic!("static fixture unwind after uncertain producer")
+                        }
+                        _ => unreachable!(),
+                    }
                 },
-                |_| Ok(()),
-                Duration::ZERO,
+                Publication::Replace,
             )
-            .unwrap_err()
-            .to_string();
-            if case.ends_with("worker-creation") {
-                assert!(
-                    error.contains("cannot establish installation cleanup worker"),
-                    "{error}"
-                );
-                assert!(!root.join("download-path").exists());
-                assert_eq!(observer.0.count(), 0);
-            } else {
-                assert!(
-                    error.contains(
-                        "fixture download download timed out; previous installation was preserved"
-                    ),
-                    "{error}"
-                );
-                assert_cleanup_diagnostic(&error, case);
-            }
-        }
-        "probe-worker-creation" | "probe-pending" | "probe-poll-error" => {
-            let candidate = root.join("version-candidate");
-            fs::write(
-                &candidate,
-                b"#!/bin/sh\nprintf started > version-started\nexec /bin/sleep 60\n",
-            )
-            .unwrap();
-            fs::set_permissions(&candidate, fs::Permissions::from_mode(0o755)).unwrap();
-            let error = install(
-                candidate.to_str().unwrap(),
-                destination,
-                Options {
-                    kind: "fixture version",
-                    limit: 1024,
-                    checksum: None,
-                    executable: true,
-                },
-                |staged| check_version_with_timeout(staged, "fixture version", Duration::ZERO),
-            )
-            .unwrap_err()
-            .to_string();
-            if case.ends_with("worker-creation") {
-                assert!(
-                    error.contains("cannot establish installation cleanup worker"),
-                    "{error}"
-                );
-                assert!(
-                    error.contains("previous installation was preserved"),
-                    "{error}"
-                );
-                assert!(!root.join("version-started").exists());
-                assert_eq!(observer.0.count(), 0);
-            } else {
-                assert!(error.contains("staged fixture version version probe timed out; previous installation was preserved"), "{error}");
-                assert_cleanup_diagnostic(&error, case);
-            }
-        }
-        "spawn-failure" => {
-            let error = DownloadChild::spawn(
-                &mut Command::new(root.join("missing-curl")),
-                "fixture download",
-                Some("curl"),
-            )
-            .err()
-            .unwrap()
-            .to_string();
-            assert!(error.contains("needs `curl`"), "{error}");
-            assert_eq!(observer.0.count(), 1);
-        }
-        "drop-pending" | "unwind-poll-error" => {
-            let result = std::panic::catch_unwind(|| {
-                let child = DownloadChild::spawn(
-                    Command::new("/bin/sleep").arg("30"),
-                    "fixture sleep",
-                    None,
-                )
-                .unwrap();
-                if case.starts_with("unwind") {
-                    panic!("fixture installation unwind");
-                }
-                drop(child);
-            });
-            assert_eq!(result.is_err(), case.starts_with("unwind"));
-        }
-        "finish-success-pending" | "finish-error-poll-error" => {
-            let mut child =
-                DownloadChild::spawn(Command::new("/bin/sleep").arg("30"), "fixture sleep", None)
-                    .unwrap();
-            let original = if case.starts_with("finish-error") {
-                Err(Error::Input("specific original installation error".into()))
-            } else {
-                Ok("fixture successful value")
-            };
-            let error = child.finish(original).unwrap_err().to_string();
-            assert_cleanup_diagnostic(&error, case);
-            if case.starts_with("finish-error") {
-                assert!(
-                    error.contains("specific original installation error"),
-                    "{error}"
-                );
-            }
-            drop(child);
-        }
-        "normal-success" => {
-            let mut child =
-                DownloadChild::spawn(&mut Command::new("/bin/true"), "fixture true", None).unwrap();
-            child.child().wait().unwrap();
-            assert_eq!(
-                child.finish(Ok("fixture successful value")).unwrap(),
-                "fixture successful value"
-            );
-            drop(child);
-        }
-        _ => panic!("unexpected fixture case"),
-    }
+        }));
+        let outcome = match result {
+            Ok(result) => Outcome::Returned(result),
+            Err(_) => Outcome::Unwound,
+        };
+        let _ = send.send(outcome);
+    });
+    let (raw, completion) = receipt.recv_timeout(Duration::from_secs(5)).unwrap();
+    let ready = wait_for(|| root.join("lifecycle-ready").is_file());
+    context.cancel();
+    let outcome = receive.recv_timeout(Duration::from_secs(8)).unwrap();
+    let retained_before = raw.is_file();
+    let held_before = !completion.load(Ordering::Acquire);
+    let alive_before = sentinel.alive();
+    drop(release); // Only now allow matching guardian observation/owner release.
+    let dropped = wait_for(|| completion.load(Ordering::Acquire));
+    let alive_after = sentinel.alive();
+    let settled = sentinel.settle();
+    // All resource and outcome assertions follow explicit owned settlement.
+    assert!(ready && alive_before && alive_after && settled);
+    assert!(held_before && retained_before && dropped);
     assert!(
-        started.elapsed() < Duration::from_secs(4),
-        "{case}: caller cleanup was not bounded"
-    );
-    observer.assert_reaped(
-        if case.ends_with("worker-creation") || case == "spawn-failure" {
-            0
-        } else {
-            1
-        },
-    );
-    assert!(
-        sentinel.0.try_wait().unwrap().is_none(),
-        "unrelated sentinel was killed"
+        raw.is_file(),
+        "late actual Stage Drop deleted retained evidence"
     );
     publication_tests::assert_old_ready(root, destination);
-    publication_tests::no_scratch(destination);
-}
-
-fn assert_cleanup_diagnostic(error: &str, case: &str) {
-    assert!(
-        error.contains("installation process cleanup was not confirmed"),
-        "{error}"
-    );
-    assert!(
-        error.contains("an owned reaper retains the child"),
-        "{error}"
-    );
-    assert!(
-        error.contains(if case.ends_with("pending") {
-            "child did not exit within five seconds"
-        } else {
-            "fixture cleanup poll failure"
-        }),
-        "{error}"
-    );
+    match (case, outcome) {
+        ("unwind-after-abort", Outcome::Unwound) => {}
+        ("caught-abort-ok", Outcome::Returned(Err(InstallFailure::Abort(_)))) => {}
+        ("caught-abort-ordinary", Outcome::Returned(Err(InstallFailure::Abort(error)))) => {
+            let text = error.to_string();
+            assert_eq!(text.matches("specific lifecycle primary reason").count(), 1);
+        }
+        _ => panic!("actual Source erased a caught Abort/unwind or allowed publication"),
+    }
+    fs::write(root.join("actual-source-settlement"), "actual Stage Drop completed after matching observation release; unrelated sentinel settled separately").unwrap();
 }

@@ -1,12 +1,12 @@
 use super::{StaticTool, ToolKind};
 use crate::Error;
 use crate::install::{
-    LoggedStatus, Recipe, command_output, install_verified_source, make_executable,
+    InstallFailure, InstallResult, OperationContext, ProcessScope, ProducerDirectory, Purpose,
+    Recipe, command_output_in, install_verified_source_in, make_executable,
 };
 use std::{
     fs,
     path::{Path, PathBuf},
-    process::Command,
 };
 
 // Kernel.org's standalone perf source release. The digest is pinned from its
@@ -27,225 +27,258 @@ pub(super) static ADAPTER: StaticTool = StaticTool::new(
 );
 
 fn install_perf(
+    context: &OperationContext,
     root: &Path,
     progress: &mut dyn FnMut(u8, crate::install::ProgressStage),
-) -> Result<PathBuf, Error> {
+) -> InstallResult<PathBuf> {
     if !cfg!(target_os = "linux") {
-        return Err(Error::Input("perf requires Linux".into()));
+        return Err(Error::Input("perf requires Linux".into()).into());
     }
-    fs::create_dir_all(root)
-        .map_err(|e| Error::Io(format!("cannot create {}: {e}", root.display())))?;
-    let stage = root.join(format!(
-        ".install-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos()
-    ));
-    fs::create_dir(&stage)
-        .map_err(|e| Error::Io(format!("cannot create {}: {e}", stage.display())))?;
-    let result = (|| {
+    fs::create_dir_all(root).map_err(crate::io_error)?;
+    let stage = root.join(format!(".install-{}", super::runtime::unique_id()));
+    fs::create_dir(&stage).map_err(crate::io_error)?;
+    let owner = ProducerDirectory::open(&stage)?;
+    let mut scope = owner.scope(context);
+    let prepared = (|| -> InstallResult<(PathBuf, PathBuf)> {
         progress(20, crate::install::ProgressStage::Downloading);
-        let source = match distribution_perf(&stage) {
+        let source = match distribution_perf(&mut scope, &stage) {
             Ok(path) => path,
-            Err(package_error) => {
+            Err(InstallFailure::Abort(abort)) => return Err(InstallFailure::Abort(abort)),
+            Err(InstallFailure::Ordinary(package_error)) => {
                 progress(35, crate::install::ProgressStage::Building);
-                build_perf(&stage, progress).map_err(|build_error| Error::Io(format!("could not obtain a working distribution perf: {package_error}\nCould not build upstream perf: {build_error}\nInstall the compiler, make, flex, bison, libelf and libssl development packages, curl, tar and sha256sum, then retry `asb tool install perf`. See .asb/install.log for build details.")))?
+                build_perf(context, &mut scope, &stage, progress).map_err(|failure| match failure {
+                    InstallFailure::Abort(abort) => InstallFailure::Abort(abort),
+                    InstallFailure::Ordinary(build_error) => InstallFailure::Ordinary(Error::Io(format!(
+                        "could not obtain a working distribution perf: {package_error}\nCould not build upstream perf: {build_error}\nInstall the compiler, make, flex, bison, libelf and libssl development packages, curl and tar, then retry `asb tool install perf`. Inspect the installation diagnostics for build details."))),
+                })?
             }
         };
         let bin = root.join("bin");
-        fs::create_dir_all(&bin)
-            .map_err(|e| Error::Io(format!("cannot create {}: {e}", bin.display())))?;
-        let staged_binary = bin.join(format!(
-            ".perf-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos()
-        ));
-        if let Err(error) = fs::copy(&source, &staged_binary) {
-            let _ = fs::remove_file(&staged_binary);
-            return Err(Error::Io(format!(
+        fs::create_dir_all(&bin).map_err(crate::io_error)?;
+        let staged_binary = bin.join(format!(".perf-{}", super::runtime::unique_id()));
+        fs::copy(&source, &staged_binary).map_err(|error| {
+            Error::Io(format!(
                 "cannot copy perf from {}: {error}",
                 source.display()
-            )));
+            ))
+        })?;
+        make_executable(&staged_binary)?;
+        if !runnable(&mut scope, &staged_binary)? {
+            return Err(Error::Io("the project-local perf executable could not run; check its runtime library dependencies".into()).into());
         }
-        let publish = (|| {
-            make_executable(&staged_binary)?;
-            if !runnable(&staged_binary) {
-                return Err(Error::Io("the project-local perf executable could not run; check its runtime library dependencies".into()));
-            }
-            let destination = bin.join("perf");
-            fs::rename(&staged_binary, &destination).map_err(|e| {
+        Ok((staged_binary, bin.join("perf")))
+    })();
+    // Unknown cleanup is never a package fallback, runnable=false, publication
+    // or scratch-removal permission. Leave both stage and exposed binary intact.
+    if let Err(InstallFailure::Abort(abort)) = prepared {
+        return Err(InstallFailure::Abort(abort));
+    }
+    owner.consume(scope.finish()?)?;
+    let result = match prepared {
+        Ok((staged, destination)) => {
+            let result = fs::rename(&staged, &destination).map_err(|error| {
                 Error::Io(format!(
-                    "cannot install perf at {}: {e}",
+                    "cannot install perf at {}: {error}",
                     destination.display()
                 ))
-            })?;
-            Ok(destination)
-        })();
-        if publish.is_err() {
-            let _ = fs::remove_file(staged_binary);
+            });
+            if result.is_err() {
+                let _ = fs::remove_file(&staged);
+            }
+            result.map(|()| destination).map_err(Into::into)
         }
-        publish
-    })();
+        Err(InstallFailure::Ordinary(error)) => Err(InstallFailure::Ordinary(error)),
+        Err(InstallFailure::Abort(_)) => unreachable!("abort returned before settlement"),
+    };
     let _ = fs::remove_dir_all(&stage);
     result
 }
 
-fn runnable(path: &Path) -> bool {
-    Command::new(path)
+fn runnable(scope: &mut ProcessScope, path: &Path) -> InstallResult<bool> {
+    let mut step = scope.prepare(path, Purpose::Version, "perf version")?;
+    step.capture(crate::install::process::Capture::inspection());
+    step.command_mut()
         .arg("--version")
-        .output()
-        .is_ok_and(|output| output.status.success())
+        .stdin(std::process::Stdio::null());
+    Ok(scope.run(step)?.status.success())
 }
 
-// APT validates downloads against its configured, authenticated package indexes.
-// Ubuntu's kernel-specific package is often a metapackage; its dependency holds
-// the executable. Debian instead publishes linux-perf directly.
-fn distribution_perf(stage: &Path) -> Result<PathBuf, String> {
-    let kernel =
-        command_output(Path::new("uname"), &["-r"], "kernel release").map_err(|e| e.to_string())?;
+// APT validates downloads against its configured package indexes; this does not
+// introduce any ASB authorization gate or require network in offline fixtures.
+fn distribution_perf(scope: &mut ProcessScope, stage: &Path) -> InstallResult<PathBuf> {
+    let kernel = command_output_in(scope, Path::new("uname"), &["-r"], "kernel release")?;
     if !kernel
         .bytes()
-        .all(|b| b.is_ascii_alphanumeric() || b".-_+".contains(&b))
+        .all(|byte| byte.is_ascii_alphanumeric() || b".-_+".contains(&byte))
     {
-        return Err("invalid kernel release".into());
+        return Err(Error::Io("invalid kernel release".into()).into());
     }
     let meta = format!("linux-tools-{kernel}");
     let mut packages = vec![meta.clone()];
-    if let Ok(output) = Command::new("apt-cache").args(["depends", &meta]).output()
-        && output.status.success()
-    {
-        for line in String::from_utf8_lossy(&output.stdout).lines() {
-            if let Some(name) = line.trim().strip_prefix("Depends: ")
-                && name.starts_with("linux-")
-                && name.contains("tools")
-                && name
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b".-+".contains(&b))
-            {
-                packages.insert(0, name.to_string());
+    if super::host_executable(Path::new("apt-cache")).is_some() {
+        let mut step = scope.prepare("apt-cache", Purpose::Probe, "perf package dependencies")?;
+        step.capture(crate::install::process::Capture::inspection());
+        step.command_mut()
+            .args(["depends", &meta])
+            .stdin(std::process::Stdio::null());
+        let output = scope.run(step)?;
+        if output.status.success() {
+            for line in String::from_utf8_lossy(&output.stdout).lines() {
+                if let Some(name) = line.trim().strip_prefix("Depends: ")
+                    && name.starts_with("linux-")
+                    && name.contains("tools")
+                    && name
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || b".-+".contains(&byte))
+                {
+                    packages.insert(0, name.to_owned());
+                }
             }
         }
     }
     packages.push("linux-perf".into());
     for (index, package) in packages.iter().enumerate() {
-        let dir = stage.join(format!("package-{index}"));
-        fs::create_dir(&dir).map_err(|e| e.to_string())?;
-        let status = Command::new("apt-get")
+        let directory = stage.join(format!("package-{index}"));
+        fs::create_dir(&directory).map_err(crate::io_error)?;
+        let mut step = scope.prepare(
+            "apt-get",
+            Purpose::Download,
+            "perf distribution package download",
+        )?;
+        step.command_mut()
             .args(["download", package])
-            .current_dir(&dir)
-            .logged_status();
-        if !status.is_ok_and(|s| s.success()) {
+            .current_dir(&directory)
+            .stdin(std::process::Stdio::null());
+        if !scope.run(step)?.status.success() {
             continue;
         }
-        let archive = fs::read_dir(&dir)
-            .map_err(|e| e.to_string())?
+        let archive = fs::read_dir(&directory)
+            .map_err(crate::io_error)?
             .filter_map(Result::ok)
-            .map(|e| e.path())
-            .find(|p| p.extension().is_some_and(|e| e == "deb"));
+            .map(|entry| entry.path())
+            .find(|path| path.extension().is_some_and(|extension| extension == "deb"));
         let Some(archive) = archive else { continue };
-        let extracted = dir.join("extracted");
-        let status = Command::new("dpkg-deb")
+        let extracted = directory.join("extracted");
+        let mut step = scope.prepare(
+            "dpkg-deb",
+            Purpose::Extract,
+            "perf distribution package extraction",
+        )?;
+        step.command_mut()
             .arg("-x")
             .arg(archive)
             .arg(&extracted)
-            .logged_status();
-        if !status.is_ok_and(|s| s.success()) {
+            .stdin(std::process::Stdio::null());
+        if !scope.run(step)?.status.success() {
             continue;
         }
-        if let Some(found) = find_perf(&extracted) {
+        if let Some(found) = find_perf(scope, &extracted)? {
             return Ok(found);
         }
     }
-    Err("no runnable perf was found in the configured APT repositories".into())
+    Err(Error::Io("no runnable perf was found in the configured APT repositories".into()).into())
 }
 
-fn find_perf(dir: &Path) -> Option<PathBuf> {
-    for entry in fs::read_dir(dir).ok()?.filter_map(Result::ok) {
+fn find_perf(scope: &mut ProcessScope, directory: &Path) -> InstallResult<Option<PathBuf>> {
+    let Ok(entries) = fs::read_dir(directory) else {
+        return Ok(None);
+    };
+    for entry in entries.filter_map(Result::ok) {
         let path = entry.path();
-        let ty = entry.file_type().ok()?;
-        if ty.is_file() && entry.file_name() == "perf" && runnable(&path) {
-            return Some(path);
+        let Ok(kind) = entry.file_type() else {
+            continue;
+        };
+        if kind.is_file() && entry.file_name() == "perf" && runnable(scope, &path)? {
+            return Ok(Some(path));
         }
-        if ty.is_dir()
-            && let Some(found) = find_perf(&path)
+        if kind.is_dir()
+            && let Some(found) = find_perf(scope, &path)?
         {
-            return Some(found);
+            return Ok(Some(found));
         }
     }
-    None
+    Ok(None)
 }
 
 fn build_perf(
+    context: &OperationContext,
+    scope: &mut ProcessScope,
     stage: &Path,
     progress: &mut dyn FnMut(u8, crate::install::ProgressStage),
-) -> Result<PathBuf, Error> {
-    build_perf_from_source(stage, progress, SOURCE, SOURCE_SHA256)
+) -> InstallResult<PathBuf> {
+    build_perf_from_source(context, scope, stage, progress, SOURCE, SOURCE_SHA256)
 }
 
 fn build_perf_from_source(
+    context: &OperationContext,
+    scope: &mut ProcessScope,
     stage: &Path,
     progress: &mut dyn FnMut(u8, crate::install::ProgressStage),
     location: &str,
     checksum: &str,
-) -> Result<PathBuf, Error> {
+) -> InstallResult<PathBuf> {
     let archive = stage.join("perf.tar.gz");
-    install_verified_source(
+    install_verified_source_in(
+        context,
         location,
         &archive,
         "Linux perf source",
         checksum,
         false,
-        |_| Ok(()),
+        |_, _| Ok(()),
     )?;
     let source = stage.join("source");
-    fs::create_dir(&source)
-        .map_err(|e| Error::Io(format!("cannot create perf source directory: {e}")))?;
-    let status = Command::new("tar")
+    fs::create_dir(&source).map_err(crate::io_error)?;
+    let mut step = scope.prepare("tar", Purpose::Extract, "perf source extraction")?;
+    step.command_mut()
         .arg("-xzf")
         .arg(&archive)
         .arg("-C")
         .arg(&source)
         .arg("--strip-components=1")
-        .logged_status()
-        .map_err(|e| Error::Io(format!("cannot extract perf source: {e}")))?;
-    if !status.success() {
-        return Err(Error::Io("could not extract perf source".into()));
+        .stdin(std::process::Stdio::null());
+    if !scope.run(step)?.status.success() {
+        return Err(Error::Io("could not extract perf source".into()).into());
     }
     progress(50, crate::install::ProgressStage::Building);
-    let mut make = Command::new("make");
-    make.arg("-C")
-        .arg(source.join("tools/perf"))
-        .arg("JOBS=2")
-        .arg("NO_GTK2=1")
-        .arg("NO_PERL=1")
-        .arg("NO_LIBPYTHON=1")
-        .arg("PYTHON=python3")
-        .arg("PYTHON_CONFIG=true")
-        .arg("NO_LIBAUDIT=1")
-        .arg("NO_LIBBABELTRACE=1")
-        .arg("NO_LIBNUMA=1")
-        .arg("NO_SLANG=1");
-    if !Command::new("pkg-config")
-        .args(["--exists", "libtraceevent"])
-        .status()
-        .is_ok_and(|s| s.success())
-    {
-        make.arg("NO_LIBTRACEEVENT=1");
+    let mut traceevent = false;
+    if super::host_executable(Path::new("pkg-config")).is_some() {
+        let mut step = scope.prepare(
+            "pkg-config",
+            Purpose::Probe,
+            "perf libtraceevent availability",
+        )?;
+        step.command_mut()
+            .args(["--exists", "libtraceevent"])
+            .stdin(std::process::Stdio::null());
+        traceevent = scope.run(step)?.status.success();
     }
-    let status = make
-        .logged_status()
-        .map_err(|e| Error::Io(format!("cannot start perf build: {e}")))?;
-    if !status.success() {
-        return Err(Error::Io("perf compilation failed".into()));
+    let mut step = scope.prepare("make", Purpose::Build, "perf compilation")?;
+    step.command_mut()
+        .arg("-C")
+        .arg(source.join("tools/perf"))
+        .args([
+            "JOBS=2",
+            "NO_GTK2=1",
+            "NO_PERL=1",
+            "NO_LIBPYTHON=1",
+            "PYTHON=python3",
+            "PYTHON_CONFIG=true",
+            "NO_LIBAUDIT=1",
+            "NO_LIBBABELTRACE=1",
+            "NO_LIBNUMA=1",
+            "NO_SLANG=1",
+        ])
+        .stdin(std::process::Stdio::null());
+    if !traceevent {
+        step.command_mut().arg("NO_LIBTRACEEVENT=1");
+    }
+    if !scope.run(step)?.status.success() {
+        return Err(Error::Io("perf compilation failed".into()).into());
     }
     let binary = source.join("tools/perf/perf");
-    if !runnable(&binary) {
-        return Err(Error::Io("built perf is not runnable".into()));
+    if !runnable(scope, &binary)? {
+        return Err(Error::Io("built perf is not runnable".into()).into());
     }
     Ok(binary)
 }
@@ -261,11 +294,17 @@ mod tests {
             .join("../../target")
             .join(format!("asb-perf-package-test-{}", std::process::id()));
         fs::create_dir(&root).unwrap();
-        let result = distribution_perf(&root);
-        assert!(
-            result.as_ref().is_ok_and(|path| runnable(path)),
-            "{result:?}"
-        );
+        let context =
+            OperationContext::new(&root, &crate::project::ProjectConfig::default()).unwrap();
+        let owner = ProducerDirectory::open(&root).unwrap();
+        let mut scope = owner.scope(&context);
+        let result = distribution_perf(&mut scope, &root);
+        let valid = match &result {
+            Ok(path) => runnable(&mut scope, path).unwrap(),
+            Err(_) => false,
+        };
+        owner.consume(scope.finish().unwrap()).unwrap();
+        assert!(valid, "{result:?}");
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -276,11 +315,17 @@ mod tests {
             .join("../../target")
             .join(format!("asb-perf-source-test-{}", std::process::id()));
         fs::create_dir(&root).unwrap();
-        let result = build_perf(&root, &mut |_, _| {});
-        assert!(
-            result.as_ref().is_ok_and(|path| runnable(path)),
-            "{result:?}"
-        );
+        let context =
+            OperationContext::new(&root, &crate::project::ProjectConfig::default()).unwrap();
+        let owner = ProducerDirectory::open(&root).unwrap();
+        let mut scope = owner.scope(&context);
+        let result = build_perf(&context, &mut scope, &root, &mut |_, _| {});
+        let valid = match &result {
+            Ok(path) => runnable(&mut scope, path).unwrap(),
+            Err(_) => false,
+        };
+        owner.consume(scope.finish().unwrap()).unwrap();
+        assert!(valid, "{result:?}");
         fs::remove_dir_all(root).unwrap();
     }
 }

@@ -1054,6 +1054,19 @@ The separate ignored `real_trace_processor_verifies_synthetic_marker_capture`
 test uses the same tool path but only reads a synthetic trace; it does not
 start tracing or require tracing privileges.
 
+State-summary tests execute the actual materialized SQL through Python's
+standard-library SQLite: over 5,000 intervals, left/right clipping, unrelated
+roots, runnable versus on-CPU states, unknown I/O classification and excluded
+unfinished intervals. Aggregate totals do not depend on the 4,096-interval/
+64-thread SVG view. Malformed or incomplete aggregate output publishes no
+partial totals. The ignored `installed_processor_aggregates_retained_scoped_trace`
+test accepts `ASB_TEST_PERFETTO_TOOLS`, `ASB_TEST_PERFETTO_SUMMARY_TRACE`,
+`ASB_TEST_PERFETTO_SUMMARY_PID`, and `ASB_TEST_PERFETTO_SUMMARY_ID` for explicit
+local verification against retained native captures. It never starts tracing,
+an agent or a provider, and writes a separate local summary instead of changing
+the retained source results. It expects a fork-heavy qualification trace with
+more than 4,096 observed intervals and unavailable I/O-wait classification.
+
 Each completed run records `process_success` separately from
 `workload_success`. Legacy external workload aliases install a pinned reference
 plus a small deterministic adapter trial and local structural checker, not upstream
@@ -1412,6 +1425,28 @@ preflight rejects a disabled or unavailable host setting with a copyable
 command. Tests never change this host-wide setting.
 
 ### Custom BPFTrace program contract
+
+Built-in cumulative time series use complete timestamp frames. A custom
+interval handler can opt into the same protocol:
+
+```bpftrace
+interval:s:1 {
+  printf("ASB_BPFTRACE_SNAPSHOT %llu\n", nsecs(monotonic));
+  print(@asb_calls);
+  printf("ASB_BPFTRACE_SNAPSHOT_END\n");
+}
+```
+
+Use `nsecs(monotonic)` explicitly: the pinned bpftrace defaults plain `nsecs`
+to the boot clock, which can differ after suspend. Frame timestamps must
+strictly increase. Each key retains only its own observed timestamps; absent
+keys remain gaps. Nested/incomplete/malformed frames fail collection instead
+of publishing partial series. Unframed maps remain scalar-only. bpftrace
+prints maps asynchronously by reference, so these are measured callback
+timestamps, not atomic map snapshots; timing JSON discloses that limitation.
+The ignored socket-profile replay test holds a synthetic local client for
+multiple intervals and checks actual native timestamps, scalar counts and
+comparison graphs. It never contacts a provider and never changes host settings.
 
 Use `ASB_MEASURE_BPFTRACE=1` and
 `ASB_BPFTRACE_PROGRAMS='/absolute/program.bt?ASB_PARAM_LIMIT=12'` when opting into

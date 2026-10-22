@@ -236,6 +236,11 @@ fn symlink_loops_are_inspection_failures_not_false_success_or_missing_outputs() 
 fn generic_install_dispatch_does_not_install_unknown_or_bundled_workloads() {
     let root = Fixture::new();
     let context = InstallationContext {
+        process: &crate::install::OperationContext::new(
+            &root.0,
+            &crate::project::ProjectConfig::default(),
+        )
+        .unwrap(),
         project_root: &root.0,
         tools_root: &root.0,
         workloads_root: &root.0,

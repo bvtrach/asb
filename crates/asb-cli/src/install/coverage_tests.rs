@@ -5,7 +5,7 @@ use std::os::unix::fs::{PermissionsExt, symlink};
 
 const CHILD_CASE: &str = "ASB_INSTALL_FIXTURE_CASE";
 
-struct Fixture(PathBuf);
+struct Fixture(PathBuf, std::cell::Cell<bool>);
 
 impl Fixture {
     fn new() -> Self {
@@ -19,7 +19,7 @@ impl Fixture {
             "tools_dir='tools'\nworkloads_dir='workloads'\nworkspace_dir='workspace'\n",
         )
         .unwrap();
-        Self(root.canonicalize().unwrap())
+        Self(root.canonicalize().unwrap(), std::cell::Cell::new(true))
     }
 
     fn script(&self, name: &str, contents: &str) -> PathBuf {
@@ -30,37 +30,101 @@ impl Fixture {
         path
     }
 
-    fn run(&self, case: &str) {
-        let mut command = Command::new(std::env::current_exe().unwrap());
-        command
-            .env_clear()
-            .env(CHILD_CASE, case)
-            .env("PATH", self.0.join("bin"))
-            .env("HOME", &self.0)
-            .env("ASB_FIXTURE_ROOT", &self.0)
-            .current_dir(&self.0)
-            .args([
-                "--exact",
-                "install::coverage_tests::installation_fixture_child",
-                "--nocapture",
-            ]);
-        // Child processes must retain instrumentation, never inherited keys.
-        if let Some(profile) = std::env::var_os("LLVM_PROFILE_FILE") {
-            command.env("LLVM_PROFILE_FILE", profile);
+    fn owned_step(
+        &self,
+        program: impl AsRef<std::ffi::OsStr>,
+        label: &str,
+        configure: impl FnOnce(&mut Command),
+    ) -> process::CompletedStep {
+        self.1.set(false);
+        let (_, mut config) = project::load(&self.0).unwrap();
+        config.installation.operation_timeout_seconds = 20;
+        let context = OperationContext::new(&self.0, &config).unwrap();
+        struct Cancel(OperationContext);
+        impl Drop for Cancel {
+            fn drop(&mut self) {
+                self.0.cancel();
+            }
         }
-        let output = command.output().unwrap();
+        let _cancel = Cancel(context.clone());
+        let owner = ProducerDirectory::open(&self.0).unwrap();
+        let mut scope = owner.scope(&context);
+        let mut step = scope.prepare(program, Purpose::Probe, label).unwrap();
+        step.capture(process::Capture::Inspect {
+            stream_bytes: 1024 * 1024,
+            total_bytes: 2 * 1024 * 1024,
+        });
+        configure(step.command_mut());
+        let (send, receive) = std::sync::mpsc::sync_channel(1);
+        std::thread::spawn(move || {
+            let result = scope.run(step).and_then(|output| {
+                owner.consume(scope.finish()?)?;
+                Ok(output)
+            });
+            let _ = send.send(result);
+        });
+        let output = receive
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .unwrap_or_else(|error| {
+                panic!(
+                    "{label}: owned fixture remains uncertain: {error}; retained {}",
+                    self.0.display()
+                )
+            })
+            .unwrap_or_else(|error| {
+                panic!(
+                    "{label}: fixture did not settle: {error}; retained {}",
+                    self.0.display()
+                )
+            });
+        // Actual same-owner proof is consumed before interpreting child status.
         assert!(
             output.status.success(),
-            "{case}: {}\n{}",
+            "{label}: {}\n{}; retained {}",
             String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
+            String::from_utf8_lossy(&output.stderr),
+            self.0.display()
+        );
+        self.1.set(true);
+        output
+    }
+
+    fn run(&self, case: &str) {
+        let output = self.owned_step(std::env::current_exe().unwrap(), case, |command| {
+            command
+                .env_clear()
+                .env(CHILD_CASE, case)
+                .env("PATH", self.0.join("bin"))
+                .env("HOME", &self.0)
+                .env("ASB_FIXTURE_ROOT", &self.0)
+                .current_dir(&self.0)
+                .args([
+                    "--exact",
+                    "install::coverage_tests::installation_fixture_child",
+                    "--nocapture",
+                    "--test-threads=1",
+                ])
+                .stdin(Stdio::null());
+            // Child processes must retain instrumentation, never inherited keys.
+            if let Some(profile) = std::env::var_os("LLVM_PROFILE_FILE") {
+                command.env("LLVM_PROFILE_FILE", profile);
+            }
+        });
+        assert!(
+            String::from_utf8_lossy(&output.stdout).lines().any(|line| {
+                line.starts_with("test result: ok. 1 passed; 0 failed; 0 ignored;")
+            }),
+            "{case}: exact child did not execute its one fixture test; retained {}",
+            self.0.display()
         );
     }
 }
 
 impl Drop for Fixture {
     fn drop(&mut self) {
-        crate::fixture_writer::cleanup(&self.0).unwrap();
+        if self.1.get() && !std::thread::panicking() {
+            crate::fixture_writer::cleanup(&self.0).unwrap();
+        }
     }
 }
 
@@ -92,10 +156,27 @@ printf '%s\n' "$5" >> "$ASB_FIXTURE_ROOT/npm-invocations"
 case "$5" in
  fixture-success@1) /bin/mkdir -p "$3/node_modules/.bin"; printf '#!/bin/sh\nexit 0\n' > "$3/node_modules/.bin/fixture-client" ;;
  fixture-fail@1) exit 41 ;;
+ fixture-exit127@1) printf started > "$ASB_FIXTURE_ROOT/npm127-started"; exit 127 ;;
  *) exit 99 ;;
 esac"#,
     );
     fixture.run("npm");
+}
+
+#[test]
+fn npm_recipe_uses_project_local_only_runtime_path() {
+    let fixture = Fixture::new();
+    fixture.script("node", "printf 'v22.20.0\\n'");
+    let npm = fixture.0.join("tools/node/bin/npm");
+    fs::create_dir_all(npm.parent().unwrap()).unwrap();
+    crate::write_test_file(
+        &fixture.0,
+        &npm,
+        b"#!/bin/sh\nset -eu\nprintf local > \"$ASB_FIXTURE_ROOT/local-npm-started\"\n/bin/mkdir -p \"$3/node_modules/.bin\"\nprintf fixture > \"$3/node_modules/.bin/fixture-client\"\n",
+    )
+    .unwrap();
+    fs::set_permissions(npm, fs::Permissions::from_mode(0o755)).unwrap();
+    fixture.run("npm-local");
 }
 
 #[test]
@@ -133,15 +214,15 @@ fn local_bundle_extract_reuse_and_corrupt_installation_are_distinguished() {
         "retained upstream fixture source",
     )
     .unwrap();
-    let status = Command::new("/usr/bin/tar")
-        .args(["-czf"])
-        .arg(fixture.0.join("fixture.tar.gz"))
-        .arg("-C")
-        .arg(&fixture.0)
-        .arg("upstream-fixture")
-        .status()
-        .unwrap();
-    assert!(status.success());
+    fixture.owned_step("/usr/bin/tar", "create local bundle fixture", |command| {
+        command
+            .args(["-czf"])
+            .arg(fixture.0.join("fixture.tar.gz"))
+            .arg("-C")
+            .arg(&fixture.0)
+            .arg("upstream-fixture")
+            .stdin(Stdio::null());
+    });
     fixture.run("bundle");
 }
 
@@ -168,7 +249,7 @@ printf '%s %s\n' "$bounded" "$source" >> "$ASB_FIXTURE_ROOT/download-invocations
 case "$source" in
  https://fixture.invalid/success) printf 'fixture data' > "$destination" ;;
  https://fixture.invalid/oversize) test "$bounded" = 1; printf 'too large' > "$destination" ;;
- https://fixture.invalid/failure) exit 22 ;;
+ https://fixture.invalid/failure|'https://fixture-user:fixture-password@fixture.invalid/failure?token=fixture-query-secret') exit 22 ;;
  *) exit 99 ;;
 esac"#,
     );
@@ -227,6 +308,25 @@ fn installation_fixture_child() {
         }
         "host" => host_contract(&root),
         "npm" => npm_contract(&root),
+        "npm-local" => {
+            assert!(!root.join("bin/npm").exists());
+            install_recipe(
+                Recipe::Npm {
+                    package: "fixture-success@1",
+                    executable: "fixture-client",
+                },
+                &root.join("tools/npm-local"),
+                &root,
+                &mut Vec::new(),
+                &mut |_, _| {},
+            )
+            .unwrap();
+            assert_eq!(fs::read(root.join("local-npm-started")).unwrap(), b"local");
+            assert_eq!(
+                fs::read(root.join("tools/npm-local/node_modules/.bin/fixture-client")).unwrap(),
+                b"fixture"
+            );
+        }
         "python" => python_contract(&root),
         "bundle" => bundle_contract(&root),
         "diagnostics" => diagnostics_contract(&root),
@@ -397,17 +497,56 @@ fn guest_bootstrap_contract(root: &Path) {
 
 fn download_contract(root: &Path) {
     let destination = root.join("downloaded");
-    install_source("https://fixture.invalid/success", &destination, "fixture").unwrap();
+    install_source(
+        root,
+        "https://fixture.invalid/success",
+        &destination,
+        "fixture",
+    )
+    .unwrap();
     assert_eq!(fs::read(&destination).unwrap(), b"fixture data");
-    let error =
-        install_source("https://fixture.invalid/failure", &destination, "fixture").unwrap_err();
+    let error = install_source(
+        root,
+        "https://fixture.invalid/failure",
+        &destination,
+        "fixture",
+    )
+    .unwrap_err();
+    assert_eq!(fs::read(&destination).unwrap(), b"fixture data");
+    let error = error.to_string();
+    assert!(error.contains("could not download fixture"), "{error}");
     assert!(
-        error
-            .to_string()
-            .contains("could not download fixture from https://fixture.invalid/failure")
+        error.contains("curl exited with exit status: 22"),
+        "{error}"
     );
+    assert!(
+        error.contains("previous installation was preserved"),
+        "{error}"
+    );
+    let (_, log) = error
+        .split_once("; inspect ")
+        .expect("owned diagnostic path");
+    assert!(Path::new(log).is_file(), "missing diagnostic log: {log}");
+    let private_source =
+        "https://fixture-user:fixture-password@fixture.invalid/failure?token=fixture-query-secret";
+    let private_error = install_source(root, private_source, &destination, "fixture")
+        .unwrap_err()
+        .to_string();
     assert_eq!(fs::read(&destination).unwrap(), b"fixture data");
+    assert!(private_error.contains("curl exited with exit status: 22"));
+    for private in [
+        "fixture-user",
+        "fixture-password",
+        "fixture-query-secret",
+        "token=",
+    ] {
+        assert!(
+            !private_error.contains(private),
+            "source detail leaked: {private_error}"
+        );
+    }
     let error = install_source_with_limit(
+        root,
         "https://fixture.invalid/oversize",
         &root.join("oversize"),
         "fixture",
@@ -417,11 +556,18 @@ fn download_contract(root: &Path) {
     assert!(error.to_string().contains("installation size limit"));
     assert_eq!(
         fs::read_to_string(root.join("download-invocations")).unwrap(),
-        "1 https://fixture.invalid/success\n1 https://fixture.invalid/failure\n1 https://fixture.invalid/oversize\n"
+        format!(
+            "1 https://fixture.invalid/success\n1 https://fixture.invalid/failure\n1 {private_source}\n1 https://fixture.invalid/oversize\n"
+        )
     );
     fs::remove_file(root.join("bin/curl")).unwrap();
-    let error =
-        install_source("https://fixture.invalid/success", &destination, "fixture").unwrap_err();
+    let error = install_source(
+        root,
+        "https://fixture.invalid/success",
+        &destination,
+        "fixture",
+    )
+    .unwrap_err();
     assert!(error.to_string().contains("needs `curl`"));
     assert!(error.to_string().contains("sudo apt-get install -y curl"));
 }
@@ -532,6 +678,19 @@ fn npm_contract(root: &Path) {
             .to_string()
             .contains("agent package installation failed")
     );
+    let exit127 = install_recipe(
+        package("fixture-exit127@1"),
+        &root.join("tools/npm-exit127"),
+        root,
+        &mut Vec::new(),
+        &mut |_, _| {},
+    )
+    .unwrap_err();
+    assert_eq!(fs::read(root.join("npm127-started")).unwrap(), b"started");
+    let exit127 = exit127.to_string();
+    assert!(exit127.contains("exit status: 127"), "{exit127}");
+    assert!(!exit127.contains("needs `npm`"), "{exit127}");
+    assert!(!exit127.contains("fnm install --lts"), "{exit127}");
     fs::remove_file(root.join("bin/npm")).unwrap();
     let missing = install_recipe(
         package("fixture-success@1"),
@@ -541,14 +700,20 @@ fn npm_contract(root: &Path) {
         &mut |_, _| {},
     )
     .unwrap_err();
-    assert!(missing.to_string().contains("npm"));
-    assert!(missing.to_string().contains("fnm install --lts"));
     assert_eq!(
         fs::read_to_string(root.join("npm-invocations"))
             .unwrap()
             .lines()
             .count(),
-        3
+        4
+    );
+    assert!(
+        missing.to_string().contains("npm"),
+        "actual missing npm failure: {missing}"
+    );
+    assert!(
+        missing.to_string().contains("fnm install --lts"),
+        "actual missing npm repair: {missing}"
     );
 }
 
@@ -751,23 +916,29 @@ fn diagnostics_contract(root: &Path) {
             .contains("checksum mismatch: expected wrong")
     );
     assert_eq!(fs::read(&source).unwrap(), b"hello");
+    let context = OperationContext::load(root).unwrap();
+    let owner = ProducerDirectory::open(root).unwrap();
+    let mut scope = owner.scope(&context);
     for (args, expected) in [
         (["-c", "exit 7"], "command exited"),
         (["-c", "exit 0"], "command returned no output"),
     ] {
         assert!(
-            command_output(Path::new("/bin/sh"), &args, "fixture")
+            command_output_in(&mut scope, Path::new("/bin/sh"), &args, "fixture")
                 .unwrap_err()
+                .into_public()
                 .to_string()
                 .contains(expected)
         );
     }
+    owner.consume(scope.finish().unwrap()).unwrap();
     let destination = root.join("destination");
-    let error = install_source(root.to_str().unwrap(), &destination, "fixture").unwrap_err();
+    let error = install_source(root, root.to_str().unwrap(), &destination, "fixture").unwrap_err();
     assert!(error.to_string().contains("source is not a file"));
     fs::write(&source, "fixture").unwrap();
     fs::create_dir(&destination).unwrap();
-    let error = install_source(source.to_str().unwrap(), &destination, "fixture").unwrap_err();
+    let error =
+        install_source(root, source.to_str().unwrap(), &destination, "fixture").unwrap_err();
     assert!(error.to_string().contains("cannot install fixture at"));
     assert!(make_executable(&root.join("missing")).is_err());
     assert_eq!(json_string("quoted\"\nvalue"), "\"quoted\\\"\\nvalue\"");

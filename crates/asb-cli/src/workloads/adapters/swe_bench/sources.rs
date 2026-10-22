@@ -1,12 +1,13 @@
 //! Shared pinned original source archive for all three SWE-bench populations.
 use super::SweBenchAdapter;
 use crate::Error;
-use crate::install::LoggedStatus;
+use crate::install::{
+    InstallResult, ProcessScope, ProducerDirectory, Purpose, install_source_bounded_in,
+};
 use crate::workloads::{InstallationContext, TaskIdentity};
 use std::fs;
 use std::io::Write;
 use std::path::Path;
-use std::process::Command;
 
 const ARCHIVE: &str = "swe-bench-tasks-3d07b464b7b311a0cbfb5ed5b2d8a3b96f84a33d.tar.gz";
 const URL: &str = "https://codeload.github.com/SWE-bench/swe-bench-tasks/tar.gz/3d07b464b7b311a0cbfb5ed5b2d8a3b96f84a33d";
@@ -16,36 +17,55 @@ pub(super) fn install(
     context: &InstallationContext<'_>,
     output: &mut dyn Write,
     progress: &mut dyn FnMut(u8, crate::install::ProgressStage),
-) -> Result<(), Error> {
+) -> InstallResult<()> {
     let tool = context.tools_root.join("swebench");
     let catalog = context.workloads_root.join(adapter.id).join("catalog.json");
-    let verify = |archive: &Path, catalog: Option<&Path>| -> Result<bool, Error> {
-        let mut command = Command::new(tool.join("venv/bin/python"));
-        command
+    let owner = ProducerDirectory::open(&tool)?;
+    let mut scope = owner.scope(context.process);
+    let verify = |scope: &mut ProcessScope,
+                  archive: &Path,
+                  catalog: Option<&Path>|
+     -> InstallResult<bool> {
+        let python = tool.join("venv/bin/python");
+        #[cfg(target_os = "linux")]
+        let python = {
+            let python = std::path::absolute(python).map_err(crate::io_error)?;
+            context
+                .process
+                .check_before_admission("original SWE-bench source validation", &python)?;
+            let selected = crate::tools::host_executable(&python);
+            context
+                .process
+                .check_before_admission("original SWE-bench source validation", &python)?;
+            selected.ok_or_else(|| Error::Io(format!(
+                    "cannot validate original SWE-bench source: installed evaluator runtime {} is not currently executable; run `asb tool install swebench`",
+                    python.display()
+                )))?
+        };
+        let mut step = scope.prepare(
+            python,
+            Purpose::Probe,
+            "original SWE-bench source validation",
+        )?;
+        step.command_mut()
             .arg(tool.join("asb_swebench_sources.py"))
             .arg("--archive")
             .arg(archive)
             .env("PYTHONDONTWRITEBYTECODE", "1");
         if let Some(catalog) = catalog {
-            command.arg("--catalog").arg(catalog);
+            step.command_mut().arg("--catalog").arg(catalog);
         }
-        Ok(command
-            .logged_status()
-            .map_err(|error| {
-                Error::Io(format!(
-                    "cannot validate original SWE-bench source: {error}"
-                ))
-            })?
-            .success())
+        Ok(scope.run(step)?.status.success())
     };
     let destination = tool.join(ARCHIVE);
-    if destination.is_file() && verify(&destination, Some(&catalog))? {
+    if destination.is_file() && verify(&mut scope, &destination, Some(&catalog))? {
+        owner.consume(scope.finish()?)?;
         return Ok(());
     }
     let cache = context.project_root.join(".asb-cache/workload-sources");
     fs::create_dir_all(&cache).map_err(crate::io_error)?;
     let archive = cache.join(ARCHIVE);
-    if fs::symlink_metadata(&archive).is_ok() && !verify(&archive, None)? {
+    if fs::symlink_metadata(&archive).is_ok() && !verify(&mut scope, &archive, None)? {
         preserve(&archive, output)?;
     }
     if !archive.is_file() {
@@ -54,28 +74,15 @@ pub(super) fn install(
             "part-{}",
             TaskIdentity::local(adapter.id, None).attempt_id
         ));
-        let status = Command::new("curl")
-            .args([
-                "--fail",
-                "--location",
-                "--silent",
-                "--show-error",
-                "--max-time",
-                "90",
-                "--max-filesize",
-                "67108864",
-                "--output",
-            ])
-            .arg(&temporary)
-            .arg(URL)
-            .logged_status()
-            .map_err(|error| {
-                Error::Io(format!(
-                    "cannot download original SWE-bench Dockerfiles: {error}"
-                ))
-            })?;
-        if !status.success() || !verify(&temporary, None)? {
-            return Err(Error::Input("original SWE-bench source download failed or did not match its pinned checksum; inspect .asb/install.log, check network/proxy access and retry workload installation".into()));
+        install_source_bounded_in(
+            context.process,
+            URL,
+            &temporary,
+            "original SWE-bench Dockerfiles",
+            64 * 1024 * 1024,
+        )?;
+        if !verify(&mut scope, &temporary, None)? {
+            return Err(Error::Input("original SWE-bench source download failed or did not match its pinned checksum; inspect installation diagnostics, check network/proxy access and retry workload installation".into()).into());
         }
         #[cfg(unix)]
         {
@@ -86,9 +93,10 @@ pub(super) fn install(
         fs::rename(&temporary, &archive).map_err(crate::io_error)?;
     }
     progress(90, crate::install::ProgressStage::Validating);
-    if !verify(&archive, Some(&catalog))? {
-        return Err(Error::Input("original SWE-bench source definitions do not match the installed dataset; reinstall the pinned workload and inspect .asb/install.log".into()));
+    if !verify(&mut scope, &archive, Some(&catalog))? {
+        return Err(Error::Input("original SWE-bench source definitions do not match the installed dataset; reinstall the pinned workload and inspect installation diagnostics".into()).into());
     }
+    owner.consume(scope.finish()?)?;
     if fs::symlink_metadata(&destination).is_ok() {
         preserve(&destination, output)?;
     }

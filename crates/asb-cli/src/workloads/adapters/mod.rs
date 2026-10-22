@@ -100,7 +100,7 @@ pub(super) trait WorkloadAdapter: Sync {
         _context: &super::InstallationContext<'_>,
         _output: &mut dyn std::io::Write,
         _progress: &mut dyn FnMut(u8, crate::install::ProgressStage),
-    ) -> Result<bool, crate::Error> {
+    ) -> crate::install::InstallResult<bool> {
         Ok(false)
     }
     fn installed_available(&self, _directory: &Path) -> Option<bool> {

@@ -259,7 +259,7 @@ fn collect_artifacts(path: &Path, depth: usize, output: &mut Vec<PathBuf>) {
 /// Render the process-tree accounting captured for every agent execution.
 /// The bars are accounting composition, not a chronological thread timeline:
 /// a concurrent process tree can execute and sleep simultaneously.
-fn composition_rows(benchmarks: &[BenchmarkData]) -> Vec<(&str, [f64; 7])> {
+fn composition_rows(benchmarks: &[BenchmarkData]) -> Vec<(&str, [f64; 6], f64, bool)> {
     let mut rows = Vec::new();
     for benchmark in benchmarks {
         let Some(component) = benchmark
@@ -280,8 +280,16 @@ fn composition_rows(benchmarks: &[BenchmarkData]) -> Vec<(&str, [f64; 7])> {
         let runnable = state("runnable_ms");
         let sleeping = state("interruptible_sleep_ms");
         let blocked = state("uninterruptible_sleep_ms");
-        let io_wait = state("io_wait_ms");
+        let io_wait = benchmark
+            .metrics
+            .get("perfetto-state-summary.io_wait_observed_ms")
+            .copied()
+            .unwrap_or_else(|| state("io_wait_ms"));
         let other_state = state("other_scheduler_state_ms");
+        let has_states = benchmark
+            .metrics
+            .keys()
+            .any(|key| key.starts_with("perfetto-state-summary.") && key.ends_with("_ms"));
         let wall = component
             .get("wall_ms")
             .and_then(Value::as_f64)
@@ -289,19 +297,11 @@ fn composition_rows(benchmarks: &[BenchmarkData]) -> Vec<(&str, [f64; 7])> {
         if running + runnable + sleeping + blocked + io_wait + other_state <= 0.0 && wall <= 0.0 {
             continue;
         }
-        let other =
-            (wall - running - runnable - sleeping - blocked - io_wait - other_state).max(0.0);
         rows.push((
             benchmark.label.as_str(),
-            [
-                running,
-                runnable,
-                sleeping,
-                blocked,
-                io_wait,
-                other_state,
-                other,
-            ],
+            [running, runnable, sleeping, blocked, io_wait, other_state],
+            wall,
+            has_states,
         ));
     }
     rows
@@ -312,32 +312,38 @@ fn write_execution_timeline_svg(path: &Path, benchmarks: &[BenchmarkData]) -> Re
     if rows.is_empty() {
         return Ok(false);
     }
-    let height = 100 + rows.len() * 44;
+    let height = 140 + rows.len() * 60;
     let colors = [
-        "#1976d2", "#c62828", "#78909c", "#6a1b9a", "#ef6c00", "#b0bec5", "#eceff1",
+        "#1976d2", "#c62828", "#78909c", "#6a1b9a", "#ef6c00", "#b0bec5",
     ];
     let labels = [
         "running",
         "runnable",
         "interruptible sleep",
-        "uninterruptible sleep",
-        "I/O wait",
+        "uninterruptible (I/O may be unknown)",
+        "I/O wait (observed)",
         "other scheduler state",
-        "unclassified elapsed wall time",
     ];
     let mut svg = format!(
-        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"980\" height=\"{height}\" viewBox=\"0 0 980 {height}\"><title>Agent execution time composition</title><rect width=\"100%\" height=\"100%\" fill=\"#fff\"/><text x=\"24\" y=\"30\" font-family=\"sans-serif\" font-size=\"18\" font-weight=\"bold\">Agent execution time composition</text><text x=\"24\" y=\"51\" font-family=\"sans-serif\" font-size=\"12\" fill=\"#52606d\">Process-tree accounting; CPU categories may overlap wall time for concurrent children.</text>"
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"980\" height=\"{height}\" viewBox=\"0 0 980 {height}\"><title>Agent execution time composition</title><rect width=\"100%\" height=\"100%\" fill=\"#fff\"/><text x=\"24\" y=\"30\" font-family=\"sans-serif\" font-size=\"18\" font-weight=\"bold\">Observed scheduler thread-time composition</text><text x=\"24\" y=\"51\" font-family=\"sans-serif\" font-size=\"12\" fill=\"#52606d\">Concurrent thread-time totals are not additive wall-time categories. Elapsed wall is a separate reference, never a residual.</text>"
     );
     for (index, label) in labels.iter().enumerate() {
-        let x = 250 + index * 135;
-        svg.push_str(&format!("<rect x=\"{x}\" y=\"65\" width=\"10\" height=\"10\" fill=\"{}\"/><text x=\"{}\" y=\"75\" font-family=\"sans-serif\" font-size=\"11\">{}</text>", colors[index], x + 14, escape(label)));
+        let x = 24 + (index % 3) * 310;
+        let y = 68 + (index / 3) * 20;
+        svg.push_str(&format!("<rect x=\"{x}\" y=\"{y}\" width=\"10\" height=\"10\" fill=\"{}\"/><text x=\"{}\" y=\"{}\" font-family=\"sans-serif\" font-size=\"11\">{}</text>", colors[index], x + 14,y+10, escape(label)));
     }
-    for (row, (name, values)) in rows.iter().enumerate() {
+    for (row, (name, values, wall, has_states)) in rows.iter().enumerate() {
         svg.push_str(&format!("<g data-benchmark=\"{}\">", escape(name)));
-        let y = 94 + row * 44;
+        let y = 118 + row * 60;
         let total: f64 = values.iter().sum();
         svg.push_str(&format!("<text x=\"24\" y=\"{}\" font-family=\"sans-serif\" font-size=\"12\">{}</text><rect x=\"250\" y=\"{}\" width=\"690\" height=\"22\" rx=\"3\" fill=\"#edf1f4\"/>", y + 15, escape(name), y));
         let mut x = 250.0;
+        let state_text = if *has_states {
+            format!("Observed thread-time: {total:.2} ms")
+        } else {
+            "Scheduler thread-time unavailable".into()
+        };
+        svg.push_str(&format!("<text x=\"250\" y=\"{}\" font-family=\"sans-serif\" font-size=\"11\">{state_text}; elapsed wall reference: {wall:.2} ms</text>",y+38));
         for (i, value) in values.iter().enumerate() {
             if *value > 0.0 {
                 let width = 690.0 * value / total;
@@ -1092,9 +1098,59 @@ mod pipeline_tests;
 mod tests {
     use super::GraphNames;
     use super::run;
+    use super::{ResultSource, RowId};
     use serde_json::{Value, json};
     use std::collections::{BTreeMap, BTreeSet};
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn missing_scheduler_states_are_unavailable_not_observed_zero_thread_time() {
+        let root = std::env::temp_dir()
+            .join(crate::workloads::TaskIdentity::local("missing-states", None).attempt_id);
+        std::fs::create_dir(&root).unwrap();
+        let benchmark = super::BenchmarkData {
+            observation: Default::default(),
+            id: RowId {
+                configuration: 0,
+                replica: 1,
+            },
+            planning: None,
+            effective_budgets: None,
+            legacy_evaluation_provenance: None,
+            execution_plan_fingerprint: None,
+            module: None,
+            benchmark_outcome: None,
+            result_source: ResultSource::Measurements,
+            reconciled: false,
+            replica_index: None,
+            execution_cohort: None,
+            label: "no-perfetto".into(),
+            directory: root.clone(),
+            agent: "pi".into(),
+            workload: "bug-fix".into(),
+            task: None,
+            selection: None,
+            evaluation_completed: false,
+            workload_evaluation: "unknown".into(),
+            provider: "local".into(),
+            model: "fixture".into(),
+            metrics: BTreeMap::new(),
+            series: BTreeMap::new(),
+            host_metadata: None,
+            components: Some(json!({"components":{"agent.execute":{"wall_ms":12}}})),
+            status: None,
+            artifacts: Vec::new(),
+            artifact_sources: BTreeMap::new(),
+        };
+        let path = root.join("timeline.svg");
+        assert!(super::write_execution_timeline_svg(&path, &[benchmark]).unwrap());
+        let svg = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            svg.contains("Scheduler thread-time unavailable; elapsed wall reference: 12.00 ms")
+        );
+        assert!(!svg.contains("Observed thread-time: 0.00"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn dispatch_provenance_is_not_a_numeric_measurement() {
@@ -1242,6 +1298,10 @@ mod tests {
         )
         .unwrap();
         std::fs::write(
+            root.join("sweep-results/000-one/measurements/perfetto-state-summary.json"),
+            r#"{"schema_version":2,"metrics":{"running_ms":8,"runnable_ms":4,"interruptible_sleep_ms":20,"io_wait_ms":null,"io_wait_observed_ms":2}}"#,
+        ).unwrap();
+        std::fs::write(
             root.join("sweep-results/000-one/measurements/bpftrace-sched-latency.json"),
             r#"{"metrics":{"bpftrace.sched-latency.wakeup_latency_events":7}}"#,
         )
@@ -1284,6 +1344,12 @@ mod tests {
         assert!(timeline_svg.contains("Agent execution time composition"));
         assert!(timeline_svg.contains("<g data-benchmark=\"000-one\">"));
         assert!(timeline_svg.contains("I/O wait"));
+        assert!(
+            timeline_svg
+                .contains("Observed thread-time: 34.00 ms; elapsed wall reference: 12.00 ms")
+        );
+        assert!(!timeline_svg.contains("unclassified elapsed wall time"));
+        assert!(timeline_svg.contains("not additive wall-time categories"));
         assert!(
             root.join("results/sweep-comparison/metric-host.logical_cpus.svg")
                 .is_file()

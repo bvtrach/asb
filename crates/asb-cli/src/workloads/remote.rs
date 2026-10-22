@@ -1182,6 +1182,7 @@ mod tests {
                 workspace_dir: "host-workspace".into(),
                 cgroup_parent: Some("/host-only/cgroup".into()),
                 perfetto_instances: instances.clone(),
+                installation: crate::project::InstallationConfig::default(),
                 proxy: crate::project::NetworkProxy {
                     http: Some("http://localhost:1234/proxy".into()),
                     ..Default::default()
