@@ -7,7 +7,7 @@ const CHILD: &str = "ASB_SOURCE_PUBLICATION_CHILD";
 const OLD: &[u8] = b"#!/bin/sh\nprintf 'old tool\\n'\n";
 const NEW: &[u8] = b"#!/bin/sh\nprintf 'new tool\\n'\n";
 
-pub(super) struct Fixture(pub(super) PathBuf);
+pub(super) struct Fixture(pub(super) PathBuf, std::cell::Cell<bool>);
 impl Fixture {
     pub(super) fn new() -> Self {
         let path = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -20,7 +20,7 @@ impl Fixture {
             "tools_dir='tools'\nworkloads_dir='workloads'\nworkspace_dir='workspace'\n",
         )
         .unwrap();
-        let fixture = Self(path.canonicalize().unwrap());
+        let fixture = Self(path.canonicalize().unwrap(), std::cell::Cell::new(true));
         symlink("/usr/bin/sha256sum", fixture.0.join("bin/sha256sum")).unwrap();
         fixture.write_executable("tools/fixture/bin/fixture", OLD);
         fixture.write_executable("tools/perf/bin/perf", OLD);
@@ -66,9 +66,35 @@ esac
         fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
     }
 
-    fn command(&self, case: &str) -> Command {
-        let mut command = Command::new(std::env::current_exe().unwrap());
-        command
+    fn run_observed<T>(&self, case: &str, observe: impl FnOnce(&Path) -> T) -> T {
+        // A failed/uncertain fixture must not recursively remove a namespace
+        // that its actual producer may still own. Only matching consumed proof
+        // and a successful exact child re-enable ordinary test cleanup.
+        self.1.set(false);
+        let (_, mut config) = project::load(&self.0).unwrap();
+        config.installation.operation_timeout_seconds = 20;
+        let context = OperationContext::new(&self.0, &config).unwrap();
+        struct Cancel(OperationContext);
+        impl Drop for Cancel {
+            fn drop(&mut self) {
+                self.0.cancel();
+            }
+        }
+        let _cancel = Cancel(context.clone());
+        let owner = ProducerDirectory::open(&self.0).unwrap();
+        let mut scope = owner.scope(&context);
+        let mut step = scope
+            .prepare(
+                std::env::current_exe().unwrap(),
+                Purpose::Probe,
+                "exact source publication fixture",
+            )
+            .unwrap();
+        step.capture(super::super::process::Capture::Inspect {
+            stream_bytes: 1024 * 1024,
+            total_bytes: 2 * 1024 * 1024,
+        });
+        step.command_mut()
             .env_clear()
             .current_dir(&self.0)
             .env("PATH", self.0.join("bin"))
@@ -79,26 +105,57 @@ esac
                 "--exact",
                 "install::source::publication_tests::publication_fixture_child",
                 "--nocapture",
-            ]);
+                "--test-threads=1",
+            ])
+            .stdin(Stdio::null());
         if let Some(profile) = std::env::var_os("LLVM_PROFILE_FILE") {
-            command.env("LLVM_PROFILE_FILE", profile);
+            step.command_mut().env("LLVM_PROFILE_FILE", profile);
         }
-        command
+        let (send, receive) = std::sync::mpsc::sync_channel(1);
+        std::thread::spawn(move || {
+            let result = scope.run(step).and_then(|output| {
+                owner.consume(scope.finish()?)?;
+                Ok(output)
+            });
+            let _ = send.send(result);
+        });
+        let observed = observe(&self.0);
+        let output = receive
+            .recv_timeout(Duration::from_secs(30))
+            .unwrap_or_else(|error| {
+                panic!(
+                    "{case}: owned source fixture remains uncertain: {error}; retained {}",
+                    self.0.display()
+                )
+            })
+            .unwrap_or_else(|error| {
+                panic!(
+                    "{case}: source fixture did not settle: {error}; retained {}",
+                    self.0.display()
+                )
+            });
+        // Both scope.finish and owner.consume completed before status/output
+        // interpretation. No direct-child exit substitutes for tree proof.
+        assert!(
+            output.status().success(),
+            "{case}: {}\n{}; retained {}",
+            String::from_utf8_lossy(output.stdout()),
+            String::from_utf8_lossy(output.stderr()),
+            self.0.display()
+        );
+        self.1.set(true);
+        observed
     }
 
     pub(super) fn run(&self, case: &str) {
-        let output = self.command(case).output().unwrap();
-        assert!(
-            output.status.success(),
-            "{case}: {}\n{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
+        self.run_observed(case, |_| ());
     }
 }
 impl Drop for Fixture {
     fn drop(&mut self) {
-        crate::fixture_writer::cleanup(&self.0).unwrap();
+        if self.1.get() {
+            crate::fixture_writer::cleanup(&self.0).unwrap();
+        }
     }
 }
 
@@ -125,53 +182,54 @@ fn staged_version_probe_failure_and_timeout_preserve_the_ready_installation() {
 #[test]
 fn source_installation_publishes_complete_bytes_and_modes_only_after_download() {
     let fixture = Fixture::new();
-    let mut child = fixture
-        .command("blocked")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while !fixture.0.join("download-ready").is_file() {
-        if Instant::now() >= deadline {
-            let _ = child.kill();
-            let output = child.wait_with_output().unwrap();
-            panic!(
-                "download never became ready: {} {}",
-                String::from_utf8_lossy(&output.stdout),
-                String::from_utf8_lossy(&output.stderr)
-            );
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
     let destination = fixture.0.join("tools/fixture/bin/fixture");
-    assert_old_ready(&fixture.0, &destination);
-    let staged = PathBuf::from(
-        fs::read_to_string(fixture.0.join("download-path"))
-            .unwrap()
-            .trim(),
-    );
+    struct Observation {
+        ready: bool,
+        old_bytes: Option<Vec<u8>>,
+        old_mode: Option<u32>,
+        old_ready: bool,
+        staged: Option<PathBuf>,
+        directory_mode: Option<u32>,
+        file_mode: Option<u32>,
+        released: bool,
+    }
+    let observed = fixture.run_observed("blocked", |root| {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !root.join("download-ready").is_file() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let staged = fs::read_to_string(root.join("download-path"))
+            .ok()
+            .map(|name| PathBuf::from(name.trim()));
+        let mode = |path: &Path| {
+            fs::metadata(path)
+                .ok()
+                .map(|metadata| metadata.permissions().mode() & 0o777)
+        };
+        let mut observed = Observation {
+            ready: root.join("download-ready").is_file(),
+            old_bytes: fs::read(&destination).ok(),
+            old_mode: mode(&destination),
+            old_ready: super::super::tool_installed_locally("perf", &root.join("tools")),
+            directory_mode: staged.as_deref().and_then(Path::parent).and_then(mode),
+            file_mode: staged.as_deref().and_then(mode),
+            staged,
+            released: false,
+        };
+        observed.released = fs::write(root.join("download-release"), "continue").is_ok();
+        observed
+    });
+    // Every assertion follows actual matching child-tree settlement, including
+    // failed readiness/metadata observations. There is no raw kill/wait path.
+    assert!(observed.ready, "download never became ready");
+    assert_eq!(observed.old_bytes.as_deref(), Some(OLD));
+    assert_eq!(observed.old_mode, Some(0o755));
+    assert!(observed.old_ready && observed.released);
+    let staged = observed.staged.unwrap();
     assert_ne!(staged, destination);
     assert!(staged.starts_with(destination.parent().unwrap()));
-    assert_eq!(
-        fs::metadata(staged.parent().unwrap())
-            .unwrap()
-            .permissions()
-            .mode()
-            & 0o777,
-        0o700
-    );
-    assert_eq!(
-        fs::metadata(&staged).unwrap().permissions().mode() & 0o777,
-        0o600
-    );
-    fs::write(fixture.0.join("download-release"), "continue").unwrap();
-    let output = child.wait_with_output().unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    assert_eq!(observed.directory_mode, Some(0o700));
+    assert_eq!(observed.file_mode, Some(0o600));
     assert_eq!(fs::read(&destination).unwrap(), NEW);
     assert_eq!(
         fs::metadata(destination).unwrap().permissions().mode() & 0o777,
