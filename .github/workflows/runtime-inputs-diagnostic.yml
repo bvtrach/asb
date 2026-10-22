@@ -1,0 +1,32 @@
+name: Temporary hosted runtime-input diagnostics
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  runtime-inputs-diagnostic:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build the actual executable before diagnostics
+        run: cargo build --locked
+      - name: Inspect only benign fixture declarations with production definitions
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          timeout --signal=TERM --kill-after=5s 120s python3 scripts/diagnose_runtime_inputs_host.py
+      - name: Retain exact bounded loader output and private fixture tracebacks
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: runtime-inputs-host-diagnostic
+          path: target/runtime-host-diagnostic-*
+          retention-days: 3

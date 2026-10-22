@@ -62,3 +62,37 @@ No new tool dependency/skip is imposed on ordinary CI and no product environment
 or executable policy changes. This proves the relevant dispatch mechanism, not
 the historical hosted uutils image identity. The other four failing cases remain
 unrepaired and unqualified pending actual helper-operation diagnostics.
+
+## Executed local focus and next hosted evidence (source only)
+
+Actual ASB built FIRST13.04s in this diagnostic checkout's own HOME target,
+seeded only with verified-idle hotfix debug dependencies (original untouched).
+Actual/frozen target/qualification/hosted-diagnosis-d9921fc8-asb SHA256:
+`0c174b0fc766af6b0545f377febfcb5f10aa58a4c6b6dec2e315ef7bcbfd7462`.
+Before/after hashes match; no source edit/relink occurred during runtime.
+Default launch and the SAME test with actual /usr/bin/busybox copied as echo
+both passed1/0/0, including descriptor/raw argument/explicit-arg0 assertions.
+This controls a real multicall mechanism, not the historical uutils image.
+Each other exact owning filter also passed1/0/0: perfetto path shadowing,
+runtime discovery, unmeasured capture sweep and sweep presentation failures.
+All six logs use target/hosted-diagnosis-*; all handles are terminal. Thus the
+four hosted failures are NOT reproduced or solved on this Ubuntu24 local host.
+
+The new temporary diagnostic workflow is additive; normal CI stays intact.
+It builds actual ASB first on ubuntu-latest, then uses a120s owned command-group
+watchdog with5s TERM-to-KILL escalation and a5min outer job bound. The static
+script imports unchanged actual production definitions, not main's catch/redaction
+wrapper, and tests nine fixed benign declarations with a shared90s probe budget.
+Actual probe IO caps/pre-established child custody remain production-owned;
+the command-group watchdog covers only this diagnostic's descendant subprocesses,
+which do not request new sessions. Exact loader output is captured BEFORE its
+unchanged production parser, bounded at1MiB, into private mode0600 files under
+an owned mode0700 target fixture. Public rows include only fixed labels, stages,
+exception classes, lengths and hashes; full tracebacks remain fixture files.
+No provider/config/credential/environment values are dumped. Artifacts retain
+only this benign diagnostic fixture for3days; no host source tree is uploaded.
+The Process probe observes the actual diagnostic Python, while the built-ASB
+program probe observes ASB file metadata, not a running Rust libtest; that scope
+limitation is explicitly emitted, and original owning tests remain required.
+The workflow/script have NOT run yet. Source review precedes any push/hosted
+execution; no runner pin, skip, limit relaxation or production change is proposed.
