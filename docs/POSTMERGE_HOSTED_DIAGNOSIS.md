@@ -171,3 +171,41 @@ Logs/digests use target/hosted-owned-*. This is focused harness qualification,
 not a full suite or Ubuntu26 diagnosis. No revised-source compile/runtime failure
 occurred; the historical postmerge five-failure log remains preserved. Independent
 review precedes any push/temporary hosted diagnostic execution or repair claim.
+
+## Actual Ubuntu26 evidence and parser regression candidate (not yet run)
+
+Draft PR312 exact c58bb894 ran diagnostic39714125840 job119612076264 on actual
+Ubuntu26.04.1 image20261018.168.1. Harness succeeded with matching gate/sentinel
+marker, but six declarations recorded ExecutionError: shell, Python-no-site,
+shebang, current Python process, built ASB and combined. Every private traceback
+ends in unchanged asb_runtime.py217 library_paths rejecting loader metadata.
+Copied true and bare Python program succeeded. All15 retained loader captures
+match their summary's lengths and SHA256 digests. This is actual failing-host
+production-parser evidence, not a generic guessed Python/site issue.
+
+Loader002/010/011/012/013/015 begin with one anonymous mapping line, for example
+tab-space `(0x000072fb98000000)` before valid vDSO/library/loader entries in013.
+The committed fixture loader-ubuntu26-asb.txt is EXACT261-byte013, SHA256
+`2b5ef0db4ee89223c334d3eab68a7a1dbe8c6f503d3426844484153fce59847d`.
+Primary glibc rtld.c1925-1941 can start its trace at main_map and uses the
+name/address output template; the GNU introspection manual explicitly allows
+empty main-executable l_name. This supports treating the header as main-object
+metadata, not inventing a library/path from an address; it does not establish
+which distro change/default introduced the observed output.
+https://raw.githubusercontent.com/bminor/glibc/master/elf/rtld.c
+https://sourceware.org/glibc/manual/latest/html_node/Dynamic-Linker-Introspection.html
+
+Normal PR312 CI39714125778 also failed,1208passed/4failed/13ignored; the launch
+case now passes, while all four original runtime/seal-dependent cases still
+fail. Complete failed log and diagnostic artifact remain under this target.
+No unchanged-head CI retry, downstream-success claim or production edit follows.
+
+Root approved a narrow design: accept only ONE exact first-nonempty anonymous
+header `(0x1..16hex)`, require at least one normal resolved library entry after
+it, never turn it into library identity, and preserve all malformed/unresolved/
+conflicting/named/population checks. The source-only regression checkpoint adds
+the exact captured positive golden, allowed-address variants and14 rejecting
+cases; original legacy parser assertions remain unchanged. Independent review
+precedes deterministic pure-Python baseline RED, then any production delta and
+actual Ubuntu26 rerun of all four owning filters. No tests have run on this new
+candidate; PR312 remains draft and no repair qualification is claimed.
