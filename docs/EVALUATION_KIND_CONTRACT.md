@@ -183,3 +183,63 @@ reviewed fixture-repair ancestry will integrate only after this signed source
 checkpoint and focused review; no old-base full run is planned. Class44
 installation callbacks, parked45 publication and other source branches remain
 out of scope.
+
+## Executed extraction focus, source `9a80e867`
+
+Root independently reviewed the complete `972e7f37` producer/reader extraction
+and approved its exact wire/extension preservation and unchanged policy. The
+first owning test compilation exposed three test-only projection misses; no
+test ran in that failed command. Its complete log remains
+`target/evaluation47-972e-evaluation_kind_contract_tests.log`. Signed followup
+`9a80e867` corrects two nested enum paths and projects the remote-session kind
+with `.as_str()` for its existing literal assertion; no product behavior changed.
+
+The actual ASB was built FIRST again at that followup (exit0,14.57s,
+`target/evaluation47-followup-build.log`) before runtime. Actual ASB and frozen
+`target/qualification/evaluation47-9a80e867-asb` share SHA256
+`dd4655759b4082ad0fc3feef3323496890d23ae207a08ffa1b8ef1440c083c9b`.
+The before/after/final `evaluation47-followup-*.sha256` records agree. Original
+d1da6f73 and integrated d57bb98e baseline copies remain unchanged, rechecked in
+`target/evaluation47-followup-baselines-final.sha256`. No source edit or actual
+executable relink occurred during runtime; all handles are terminal.
+
+All following logs are under `target/evaluation47-followup-`:
+
+| Log suffix (without `.log`) | Passed outer tests |
+| --- | ---: |
+| evaluation_kind_contract_tests | 6 |
+| workloads__contracts__baselines | 2 |
+| workloads__session__tests | 9 |
+| workloads__selection__tests | 3 |
+| runner__disposition__tests | 4 |
+| planning__tests | 6 |
+| legacy_smoke_and_unknown_scores_cannot_become_task_resolution | 1 |
+| native_partial_rewards_survive_completion_collection_and_html_report | 1 |
+| unknown_historical_run_categories_remain_display_only_and_unscored | 1 |
+| adapter_layout_tests | 1 |
+| workloads__contracts__tests | 3 |
+| sweep__checkpoint__completed__tests | 16 |
+| workloads__task_protocol__ | 7 |
+| full_runner_entry_disposition_keeps_pending_and_operational_failures_consistent | 1 |
+| actual_unmeasured_sweep_capture_failure_keeps_grades_reporting_only | 1 |
+| workloads__remote__coverage_tests | 5 |
+| workloads__remote__execution_tests | 14 |
+| workloads__adapters__swe_bench__catalog__tests | 2 |
+| workloads__adapters__terminal_bench__tests | 1 |
+
+This is84 passed/0failed/0ignored in19 nonzero focused outer selections, not a
+full suite. Internal runner/sweep scenarios are not added again to that count.
+The remote execution family includes actual local Python task-loop/Rust-session
+transport, not external SDK qualification. The unchanged official five
+descriptor/protocol-fingerprint literal goldens ran again; their file is
+byte-identical to integrated baseline a881645a (golden-parity log exit0), with
+no regenerated expectations. Native Linux x86_64 executed; ARM remains
+calculated/source-only. No provider, SDK, Docker daemon or privilege was used.
+
+Strict workspace/all-target/all-feature Clippy with `-D warnings` passed16.74s
+(`evaluation47-followup-clippy.log`) and final cached verification passed0.06s
+(`evaluation47-followup-final-clippy.log`). Final fmt/diffcheck logs both exit0.
+Only this owned HOME cache was used. Cargo45 remains inherited provisional
+metadata, not an allocated release. Current-main/fixture-stack integration,
+fresh combined qualification and independent delivery review remain pending;
+no full suite, PR, push or release is claimed by this checkpoint.
