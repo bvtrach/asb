@@ -60,6 +60,46 @@ pub(super) fn preflight(tools: Option<&Path>, flag: &str) -> Result<(), String> 
     }
 }
 
+/// Start the shared process-tree pidstat snapshot used by the CPU and I/O
+/// collector adapters. The owning adapter supplies only its metric mode.
+pub(super) fn start_snapshot(
+    session: &mut crate::measurements::Session,
+    name: &str,
+    enabled: bool,
+    pid: u32,
+    mode: &str,
+) -> Result<(), String> {
+    let interval = crate::measurements::measurement_interval_ms()
+        .div_ceil(1_000)
+        .to_string();
+    let runtime =
+        Duration::from_secs(crate::measurements::measurement_interval_ms().div_ceil(1_000) + 5);
+    let executable = executable(session.tool_dir.as_deref());
+    let mode = mode.to_owned();
+    session.start_tree_snapshot(
+        name,
+        enabled,
+        &executable,
+        pid,
+        Box::new(move |pids| crate::measurements::SnapshotCommand {
+            runtime,
+            stream_bytes: 16 * 1024 * 1024,
+            arguments: vec![
+                mode.clone(),
+                "-T".into(),
+                "ALL".into(),
+                "-p".into(),
+                pids.iter()
+                    .map(u32::to_string)
+                    .collect::<Vec<_>>()
+                    .join(","),
+                interval.clone(),
+                "1".into(),
+            ],
+        }),
+    )
+}
+
 fn shell_quote(path: &Path) -> String {
     format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"))
 }

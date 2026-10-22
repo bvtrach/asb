@@ -118,9 +118,11 @@ ASB is deliberately split into a small CLI and a file-backed workload directory:
   qualification is implied by Linux tests. Post-commit
   durability or confirmation errors explicitly report that publication occurred;
 - `measurements`: opt-in process-scoped runtime collection. It writes bounded JSON
-  records for host facts, elapsed time, success rate, and normalized input,
-  output, cached, and total token usage, and
-  dispatches through the `CollectorAdapter` registry in `collectors/adapters/`;
+  records for host facts and process/runtime observations, and dispatches only
+  host/process collection through the `CollectorAdapter` registry in
+  `collectors/adapters/`. Agent adapters parse usage and steps, provider adapters
+  define provider usage semantics, replay provides cassette observations, and
+  workload evaluation owns task success and summary aggregation;
   each registered collector has a concrete stateless type implementing that
   trait. Optional operations use trait defaults, while adapter modules own
   their metadata, lifecycle hooks, processing, and presentation. Mutable state
@@ -295,8 +297,10 @@ ASB is deliberately split into a small CLI and a file-backed workload directory:
   to an exclusive cgroup-v2 leaf when writable delegation is available. All
   children inherit the group, retaining their user/system CPU counters after
   exit. Final cgroup counters replace the sampled CPU fields and set
-  `cpu_accounting_source` to `cgroup-v2`; without delegation the existing
-  process sampler remains available. `cpu-accounting.json` records the source,
+  `cpu_accounting_source` to `cgroup-v2`; without delegation, that same
+  `cpu-accounting` adapter owns the Linux procfs process-tree fallback sampler.
+  `measurements` only publishes its normalized component timing. The
+  `cpu-accounting.json` record contains the source,
   failure reason, and cleanup status. ASB creates no controllers, changes no
   limits, and removes only its own empty leaf; populated groups are retained
   and reported. A supplied `ASB_CGROUP_PARENT` must resolve beneath

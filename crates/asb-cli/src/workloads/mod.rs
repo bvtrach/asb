@@ -59,6 +59,7 @@ mod remote;
 mod selection;
 pub(crate) mod session;
 pub(crate) mod staging;
+pub(crate) mod summary;
 mod task_protocol;
 pub(crate) fn runtime_inputs(
     name: &str,

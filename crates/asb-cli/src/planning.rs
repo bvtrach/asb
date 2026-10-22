@@ -1259,7 +1259,7 @@ mod tests {
     #[test]
     fn snapshot_rejects_changed_collectors_and_repeat_identity_is_independent_of_concurrency() {
         let mut config = config(
-            "concurrency=3\n[planning.repetition]\nindex=2\ntotal=5\n[measurements]\nenabled=true\ndirectory='measurements'\ncollectors=['runtime']",
+            "concurrency=3\n[planning.repetition]\nindex=2\ntotal=5\n[measurements]\nenabled=true\ndirectory='measurements'\ncollectors=['agent-memory']",
         );
         let saved = resolve(&config).unwrap();
         assert_eq!(saved.repetition, Repetition { index: 2, total: 5 });
@@ -1277,7 +1277,7 @@ mod tests {
             .as_mut()
             .unwrap()
             .collectors
-            .push("agent-memory".into());
+            .push("mpstat".into());
         assert!(resolve_snapshot(&config, false, Some(&saved)).is_err());
         assert!(
             Resources {

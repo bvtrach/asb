@@ -113,25 +113,6 @@ impl CollectorStates {
     }
 }
 
-pub(crate) struct UsageContext<'a> {
-    pub provider: &'a str,
-    pub agent: &'a str,
-    pub stdout: &'a str,
-    pub stderr: &'a str,
-    pub cassette: Option<&'a Path>,
-}
-
-pub(crate) struct RunObservation {
-    pub elapsed_ms: u128,
-    pub success: bool,
-}
-
-#[derive(Default)]
-pub(crate) struct RunMetrics {
-    pub elapsed_ms: u128,
-    pub success_rate: f64,
-}
-
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub(crate) enum SharedArtifact {
     StackSamples,
@@ -267,19 +248,6 @@ pub(crate) trait CollectorAdapter: Sync {
         _args: &[String],
     ) {
     }
-    fn usage(&self, _context: &UsageContext<'_>) -> Option<crate::measurements::TokenUsage> {
-        None
-    }
-    fn usage_document(
-        &self,
-        _value: &serde_json::Value,
-    ) -> Option<crate::measurements::TokenUsage> {
-        None
-    }
-    fn steps(&self, _agent: &str, _stdout: &str, _stderr: &str) -> Option<u64> {
-        None
-    }
-    fn observe_run(&self, _observation: &RunObservation, _metrics: &mut RunMetrics) {}
     fn configure(
         &self,
         _session: &mut crate::measurements::Session,
@@ -394,13 +362,6 @@ pub(crate) trait CollectorAdapter: Sync {
 pub(crate) fn all() -> &'static [&'static dyn CollectorAdapter] {
     adapters::REGISTRY
 }
-pub(crate) fn run_metrics(observation: &RunObservation) -> RunMetrics {
-    let mut metrics = RunMetrics::default();
-    for adapter in all() {
-        adapter.observe_run(observation, &mut metrics);
-    }
-    metrics
-}
 pub(crate) fn find(id: &str) -> Option<&'static dyn CollectorAdapter> {
     all().iter().copied().find(|collector| collector.id() == id)
 }
@@ -480,7 +441,6 @@ mod tests {
             ),
             ("cpu-accounting", None, None, true),
             ("system", None, None, false),
-            ("runtime", None, None, false),
             ("mpstat", Some("ASB_MEASURE_MPSTAT"), Some("mpstat"), true),
             ("iostat", Some("ASB_MEASURE_IOSTAT"), Some("iostat"), true),
             ("perf", Some("ASB_MEASURE_PERF"), Some("perf"), true),
@@ -497,9 +457,6 @@ mod tests {
                 Some("bpftrace"),
                 true,
             ),
-            ("token_usage", None, None, false),
-            ("steps", None, None, false),
-            ("success_rate", None, None, false),
         ];
         assert_eq!(all().len(), expected.len());
         for (adapter, (id, environment, tool, pid)) in all().iter().zip(expected) {
@@ -544,32 +501,6 @@ mod tests {
         assert!(!adapter.prioritizes_artifact("artifact.svg"));
         assert!(adapter.display_artifact("artifact.svg").is_none());
         assert!(adapter.graph_section("metric").is_none());
-        assert!(adapter.steps("agent", "output", "error").is_none());
-        assert!(adapter.usage_document(&serde_json::Value::Null).is_none());
-        assert!(
-            adapter
-                .usage(&UsageContext {
-                    provider: "provider",
-                    agent: "agent",
-                    stdout: "",
-                    stderr: "",
-                    cassette: None,
-                })
-                .is_none()
-        );
-        let mut metrics = RunMetrics {
-            elapsed_ms: 42,
-            success_rate: 0.5,
-        };
-        adapter.observe_run(
-            &RunObservation {
-                elapsed_ms: 100,
-                success: true,
-            },
-            &mut metrics,
-        );
-        assert_eq!(metrics.elapsed_ms, 42);
-        assert_eq!(metrics.success_rate, 0.5);
     }
     #[test]
     fn registry_has_unique_names_and_declares_tool_backed_collectors() {
@@ -589,22 +520,6 @@ mod tests {
             );
         }
         assert!(find("perf").unwrap().requires_pid());
-    }
-
-    #[test]
-    fn built_in_run_metrics_are_computed_by_registered_adapters() {
-        let success = run_metrics(&RunObservation {
-            elapsed_ms: 124,
-            success: true,
-        });
-        assert_eq!(success.elapsed_ms, 124);
-        assert_eq!(success.success_rate, 1.0);
-        let failure = run_metrics(&RunObservation {
-            elapsed_ms: 9,
-            success: false,
-        });
-        assert_eq!(failure.elapsed_ms, 9);
-        assert_eq!(failure.success_rate, 0.0);
     }
 
     #[test]

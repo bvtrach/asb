@@ -1,5 +1,6 @@
 //! Optional accounting in an exclusive, delegated cgroup-v2 leaf. The process
 //! gate is moved before it starts the agent; all descendants inherit the leaf.
+use crate::collectors::adapters::process_accounting::Sampler;
 use crate::collectors::{CollectorAdapter, LifecycleEvent, PreflightContext};
 use crate::measurements::{self, Session};
 use std::fs::{self, OpenOptions};
@@ -17,6 +18,7 @@ struct State {
     isolated: bool,
     external: Option<ExternalCounter>,
     external_reason: Option<String>,
+    fallback_sampler: Option<Sampler>,
 }
 
 struct ExternalCounter {
@@ -85,12 +87,14 @@ impl CollectorAdapter for CpuAccounting {
             Ok(leaf) => state.leaf = Some(leaf),
             Err(reason) => state.reason = Some(reason),
         }
+        start_fallback_sampler(session, &mut state, pid);
         Ok(())
     }
 
     fn finish(&self, session: &mut Session) -> Result<(), String> {
         let state = session.state::<State>();
         let mut state = state.borrow_mut();
+        stop_fallback_sampler(session, &mut state);
         let mut values = None;
         let mut source = "proc-sampling";
         let mut cleanup = "not_created";
@@ -174,13 +178,25 @@ impl CollectorAdapter for CpuAccounting {
             Ok(counter) => state.external = Some(counter),
             Err(reason) => state.external_reason = Some(reason),
         }
+        start_fallback_sampler(session, &mut state, pid);
         Ok(())
     }
 
     fn lifecycle_event(&self, session: &mut Session, event: LifecycleEvent) -> Result<(), String> {
-        if event == LifecycleEvent::AgentExecuteEnd {
+        if matches!(
+            event,
+            LifecycleEvent::AgentExecuteEnd | LifecycleEvent::RunFailed
+        ) {
             let state = session.state::<State>();
             let mut state = state.borrow_mut();
+            if let Some(sample) = state.fallback_sampler.take().and_then(Sampler::stop) {
+                session.record_process_tree_accounting(
+                    sample.user_ticks,
+                    sample.system_ticks,
+                    sample.io_delay_ticks,
+                    sample.runqueue_ns,
+                );
+            }
             if let Some(counter) = state.external.as_mut()
                 && let Err(reason) = counter.finish()
             {
@@ -188,6 +204,26 @@ impl CollectorAdapter for CpuAccounting {
             }
         }
         Ok(())
+    }
+}
+
+fn start_fallback_sampler(session: &Session, state: &mut State, pid: u32) {
+    if state.fallback_sampler.is_none() {
+        state.fallback_sampler = session
+            .measurement_target()
+            .or_else(|| measurements::ProcessIdentity::read(pid))
+            .and_then(|root| Sampler::start(root, measurements::measurement_interval_ms()));
+    }
+}
+
+fn stop_fallback_sampler(session: &mut Session, state: &mut State) {
+    if let Some(sample) = state.fallback_sampler.take().and_then(Sampler::stop) {
+        session.record_process_tree_accounting(
+            sample.user_ticks,
+            sample.system_ticks,
+            sample.io_delay_ticks,
+            sample.runqueue_ns,
+        );
     }
 }
 
@@ -356,6 +392,24 @@ mod tests {
         assert_eq!(json["status"], "unavailable");
         assert!(json["metrics"].is_null());
         assert_eq!(json["cleanup"], "not_created");
+        drop(session);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn lifecycle_stops_fallback_sampler_without_waiting_for_its_interval() {
+        let dir = std::env::temp_dir()
+            .join(crate::workloads::TaskIdentity::local("cpu-fallback-lifecycle", None).attempt_id);
+        let mut session =
+            Session::start_with_collectors(&dir, &["cpu-accounting".into()], None).unwrap();
+        session.attach_pid(std::process::id()).unwrap();
+        assert!(session.state::<State>().borrow().fallback_sampler.is_some());
+        session.event(LifecycleEvent::AgentExecuteBegin).unwrap();
+        let started = Instant::now();
+        session.event(LifecycleEvent::AgentExecuteEnd).unwrap();
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert!(session.state::<State>().borrow().fallback_sampler.is_none());
         drop(session);
         fs::remove_dir_all(dir).unwrap();
     }

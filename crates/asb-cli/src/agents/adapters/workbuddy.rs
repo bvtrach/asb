@@ -36,11 +36,7 @@ fn output_usage(stdout: &str, stderr: &str, _: bool) -> crate::measurements::Tok
     serde_json::from_str::<serde_json::Value>(stdout)
         .ok()
         .and_then(|v| result(&v))
-        .unwrap_or_else(|| {
-            crate::collectors::adapters::token_usage::usage_from_text(&format!(
-                "{stdout}\n{stderr}"
-            ))
-        })
+        .unwrap_or_else(|| crate::usage::usage_from_text(&format!("{stdout}\n{stderr}")))
         .with_derived_total()
 }
 fn command(context: &CommandContext<'_>) -> CommandSpec {

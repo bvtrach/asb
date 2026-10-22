@@ -1,5 +1,6 @@
 //! Generic lifecycle/namespace contracts without a live collector or provider.
 use super::*;
+use crate::usage::with_artifact_usage;
 use collectors::{CollectorAdapter, LifecycleEvent};
 use serde_json::{Value, json};
 
@@ -262,9 +263,10 @@ fn namespace_round_trip_attaches_only_verified_identity_and_keeps_cpu_units() {
         [root.pid]
     );
     assert_eq!(session.measurement_target(), Some(root));
-    assert!(
-        session.process_sampler.is_none(),
-        "namespace capture must not sample the host tree"
+    assert_eq!(
+        session.sampled_cpu_accounting(),
+        None,
+        "namespace capture must not receive host process accounting"
     );
     session.record_cpu_accounting(123_000, 456_000, "fixture-exact-accounting");
     assert_eq!(session.sampled_cpu_accounting(), Some((123.0, 456.0)));
@@ -388,48 +390,11 @@ fn incomplete_artifact_usage_fills_missing_fields_without_overwriting_observed_i
 }
 
 #[test]
-fn process_accounting_initializes_once_and_never_underflows_after_counter_reset() {
-    let mut accounting = ProcessAccounting::default();
-    accounting.update(ProcessSample {
-        user_ticks: 10,
-        system_ticks: 20,
-        io_delay_ticks: 3,
-        runqueue_ns: 100,
-    });
-    accounting.update(ProcessSample {
-        user_ticks: 14,
-        system_ticks: 28,
-        io_delay_ticks: 5,
-        runqueue_ns: 160,
-    });
-    let delta = accounting.delta();
-    assert_eq!(
-        (
-            delta.user_ticks,
-            delta.system_ticks,
-            delta.io_delay_ticks,
-            delta.runqueue_ns
-        ),
-        (4, 8, 2, 60)
-    );
-    accounting.update(ProcessSample::default());
-    let delta = accounting.delta();
-    assert_eq!(
-        (
-            delta.user_ticks,
-            delta.system_ticks,
-            delta.io_delay_ticks,
-            delta.runqueue_ns
-        ),
-        (0, 0, 0, 0)
-    );
-}
-
-#[test]
 fn summary_retention_is_bounded_and_unscored_success_is_not_a_resolved_task() {
     let fixture = Fixture::new();
     let path = fixture.0.join("summary.json");
-    let runs = (0..MAX_RUNS)
+    let max_runs = 10_000;
+    let runs = (0..max_runs)
         .map(|index| {
             json!({"run_id":index.to_string(),"workload_evaluation":"unscored",
         "process_success":true,"workload_success":null})
@@ -474,10 +439,11 @@ fn summary_retention_is_bounded_and_unscored_success_is_not_a_resolved_task() {
         steps: None,
         started_unix_ms: 1,
     };
-    update_summary(&fixture.0, &run).unwrap();
+    crate::workloads::summary::update_summary(&fixture.0, serde_json::to_value(&run).unwrap())
+        .unwrap();
     let summary: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
     let runs = summary["runs"].as_array().unwrap();
-    assert_eq!(runs.len(), MAX_RUNS);
+    assert_eq!(runs.len(), max_runs);
     assert_eq!(runs[0]["run_id"], "1");
     assert_eq!(runs.last().unwrap()["run_id"], "latest");
     assert!(
@@ -488,6 +454,6 @@ fn summary_retention_is_bounded_and_unscored_success_is_not_a_resolved_task() {
             .is_null()
     );
     assert_eq!(summary["task_count"], 0);
-    assert_eq!(summary["unscored_count"], MAX_RUNS);
+    assert_eq!(summary["unscored_count"], max_runs);
     assert!(summary["success_rate"].is_null());
 }

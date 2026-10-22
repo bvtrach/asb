@@ -16,7 +16,7 @@ pub(crate) use snapshot::SnapshotCommand;
 #[cfg(test)]
 mod coverage_tests;
 pub use cohort::ExecutionCohort;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
@@ -27,44 +27,14 @@ use std::process::Child;
 use std::process::{Command, Stdio};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+#[cfg(test)]
+use std::time::Duration;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 const MAX_CAPTURE: usize = 256 * 1024;
-const MAX_RUNS: usize = 10_000;
 static NEXT_TRACE_ID: AtomicU64 = AtomicU64::new(0);
 
-#[derive(Debug, Clone, Deserialize, Serialize, Default)]
-pub struct TokenUsage {
-    pub input_tokens: Option<u64>,
-    pub output_tokens: Option<u64>,
-    pub cached_tokens: Option<u64>,
-    pub total_tokens: Option<u64>,
-    pub source: Option<String>,
-}
-
-pub(crate) fn with_artifact_usage(
-    mut usage: TokenUsage,
-    artifact: Option<TokenUsage>,
-) -> TokenUsage {
-    if let Some(artifact) = artifact {
-        let complete = artifact.input_tokens.is_some() && artifact.output_tokens.is_some();
-        match usage.source.as_deref() {
-            Some(source) if source.contains("cassette") => {}
-            None | Some("agent-output") if complete => {
-                usage = TokenUsage::default()
-                    .merge_with_source(artifact, "agent-artifact")
-                    .with_derived_total();
-            }
-            _ => {
-                usage = usage
-                    .merge_with_source(artifact, "agent-artifact")
-                    .with_derived_total()
-            }
-        }
-    }
-    usage
-}
+pub use crate::usage::TokenUsage;
 
 /// Wall-clock and process-accounting measurements for one benchmark component.
 ///
@@ -79,14 +49,6 @@ pub struct ComponentTiming {
     pub io_wait_ms: Option<f64>,
     pub scheduler_wait_ms: Option<f64>,
     pub network_wait_ms: Option<f64>,
-}
-
-#[derive(Clone, Copy, Default, Eq, PartialEq)]
-struct ProcessSample {
-    user_ticks: u64,
-    system_ticks: u64,
-    io_delay_ticks: u64,
-    runqueue_ns: u64,
 }
 
 /// A PID is reusable; samplers bind it to one kernel process generation.
@@ -174,97 +136,7 @@ impl ProcessIdentity {
     }
 }
 
-#[derive(Clone, Copy, Default)]
-struct ProcessAccounting {
-    first: ProcessSample,
-    latest: ProcessSample,
-    initialized: bool,
-}
-
-impl ProcessAccounting {
-    fn update(&mut self, sample: ProcessSample) {
-        if !self.initialized {
-            self.first = sample;
-            self.initialized = true;
-        }
-        self.latest = sample;
-    }
-
-    fn delta(self) -> ProcessSample {
-        ProcessSample {
-            user_ticks: self.latest.user_ticks.saturating_sub(self.first.user_ticks),
-            system_ticks: self
-                .latest
-                .system_ticks
-                .saturating_sub(self.first.system_ticks),
-            io_delay_ticks: self
-                .latest
-                .io_delay_ticks
-                .saturating_sub(self.first.io_delay_ticks),
-            runqueue_ns: self
-                .latest
-                .runqueue_ns
-                .saturating_sub(self.first.runqueue_ns),
-        }
-    }
-}
-
-struct ProcessSampler {
-    stop: std::sync::mpsc::Sender<()>,
-    accounting: Arc<Mutex<ProcessAccounting>>,
-    handle: Option<std::thread::JoinHandle<()>>,
-}
-
 pub(crate) type TreeSnapshotArguments = Box<dyn Fn(&[u32]) -> SnapshotCommand + Send>;
-
-impl ProcessSampler {
-    fn start(root: ProcessIdentity, interval_ms: u64) -> Option<Self> {
-        let initial = read_process_tree_sample(root)?;
-        let (stop, receiver) = std::sync::mpsc::channel();
-        let accounting = Arc::new(Mutex::new(ProcessAccounting {
-            first: initial,
-            latest: initial,
-            initialized: true,
-        }));
-        let thread_accounting = Arc::clone(&accounting);
-        let handle = std::thread::Builder::new()
-            .name("asb-process-timing".into())
-            .spawn(move || {
-                loop {
-                    let Some(sample) = read_process_tree_sample(root) else {
-                        break;
-                    };
-                    if let Ok(mut state) = thread_accounting.lock() {
-                        state.update(sample);
-                    }
-                    if receiver.recv_timeout(Duration::from_millis(interval_ms))
-                        != Err(std::sync::mpsc::RecvTimeoutError::Timeout)
-                    {
-                        break;
-                    }
-                }
-                if let Some(sample) = read_process_tree_sample(root)
-                    && let Ok(mut state) = thread_accounting.lock()
-                {
-                    state.update(sample);
-                }
-            })
-            .ok()?;
-        Some(Self {
-            stop,
-            accounting,
-            handle: Some(handle),
-        })
-    }
-
-    fn stop(mut self) -> Option<ProcessSample> {
-        let _ = self.stop.send(());
-        if let Some(handle) = self.handle.take() {
-            let _ = handle.join();
-        }
-        self.accounting.lock().ok().map(|state| state.delta())
-    }
-}
 
 #[derive(Debug, Serialize)]
 struct ComponentMeasurements {
@@ -450,7 +322,6 @@ struct StoppedCollector {
 /// A measurement session owns all optional collector processes for one run.
 pub struct Session {
     adapters: Vec<&'static dyn collectors::CollectorAdapter>,
-    namespace_only: bool,
     pub(crate) dir: PathBuf,
     pub(crate) project_root: Option<PathBuf>,
     pub(crate) tool_dir: Option<PathBuf>,
@@ -473,7 +344,6 @@ pub struct Session {
     sudo_collectors: BTreeSet<String>,
     component_starts: BTreeMap<String, Instant>,
     component_timings: BTreeMap<String, ComponentTiming>,
-    process_sampler: Option<ProcessSampler>,
     process_identity: Option<ProcessIdentity>,
     incomplete_collectors: BTreeMap<String, String>,
     clock_ticks_per_second: Option<u64>,
@@ -504,7 +374,6 @@ impl Drop for Session {
             let _ = collector.producer.stop_before(deadline);
         }
         self.collectors.clear();
-        self.stop_process_sampler();
         if self.run_started && !self.run_finishing {
             let _ = write_json(&self.dir.join("lifecycle.json"), &self.lifecycle);
         }
@@ -603,7 +472,7 @@ impl Session {
         tool_dir: Option<&Path>,
         cgroup_parent: Option<&Path>,
         adapters: Vec<&'static dyn collectors::CollectorAdapter>,
-        namespace_only: bool,
+        _namespace_only: bool,
         project_root: Option<&Path>,
     ) -> Result<Self, String> {
         let selected = collectors::expand_dependencies(selected);
@@ -623,7 +492,6 @@ impl Session {
         let started_unix_ms = unix_ms();
         let mut session = Self {
             adapters,
-            namespace_only,
             dir: dir.to_path_buf(),
             project_root: project_root.map(Path::to_path_buf),
             tool_dir: tool_dir.map(Path::to_path_buf),
@@ -650,7 +518,6 @@ impl Session {
             sudo_collectors,
             component_starts: BTreeMap::new(),
             component_timings: BTreeMap::new(),
-            process_sampler: None,
             process_identity: None,
             incomplete_collectors: BTreeMap::new(),
             clock_ticks_per_second: clock_ticks_per_second(),
@@ -689,11 +556,9 @@ impl Session {
         if matches!(
             event,
             collectors::LifecycleEvent::AgentExecuteEnd | collectors::LifecycleEvent::RunFailed
-        ) {
-            self.stop_process_sampler();
-            if let Err(error) = self.stop_collector_processes(true) {
-                errors.push(error);
-            }
+        ) && let Err(error) = self.stop_collector_processes(true)
+        {
+            errors.push(error);
         }
         if self.lifecycle.len() < 256 {
             self.lifecycle.push(LifecycleRecord {
@@ -746,39 +611,6 @@ impl Session {
             .wall_ms = now.duration_since(started).as_millis();
     }
 
-    fn start_process_sampler(&mut self, pid: u32) {
-        if self.namespace_only {
-            return;
-        }
-        if self.process_sampler.is_some() {
-            return;
-        }
-        self.process_sampler = self
-            .process_identity
-            .or_else(|| ProcessIdentity::read(pid))
-            .and_then(|root| ProcessSampler::start(root, measurement_interval_ms()));
-    }
-
-    fn stop_process_sampler(&mut self) {
-        let Some(sampler) = self.process_sampler.take() else {
-            return;
-        };
-        let accounting = sampler.stop();
-        let Some(timing) = self.component_timings.get_mut("agent.execute") else {
-            return;
-        };
-        let Some(accounting) = accounting else {
-            return;
-        };
-        if let Some(hz) = self.clock_ticks_per_second {
-            timing.cpu_user_ms = Some(accounting.user_ticks as f64 * 1_000.0 / hz as f64);
-            timing.cpu_system_ms = Some(accounting.system_ticks as f64 * 1_000.0 / hz as f64);
-            timing.cpu_accounting_source = Some("proc-sampling".into());
-            timing.io_wait_ms = Some(accounting.io_delay_ticks as f64 * 1_000.0 / hz as f64);
-        }
-        timing.scheduler_wait_ms = Some(accounting.runqueue_ns as f64 / 1_000_000.0);
-    }
-
     fn write_component_measurements(&self) -> Result<(), String> {
         // RunMeasurement.elapsed_ms is execution-only (guest-observed for
         // isolated workloads). The total must cover preparation, execution,
@@ -821,6 +653,28 @@ impl Session {
         timing.cpu_user_ms = Some(user_usec as f64 / 1_000.0);
         timing.cpu_system_ms = Some(system_usec as f64 / 1_000.0);
         timing.cpu_accounting_source = Some(source.into());
+    }
+
+    /// Record the CPU collector's Linux `/proc` fallback without exposing the
+    /// sampling implementation to orchestration or other adapters.
+    pub(crate) fn record_process_tree_accounting(
+        &mut self,
+        user_ticks: u64,
+        system_ticks: u64,
+        io_delay_ticks: u64,
+        runqueue_ns: u64,
+    ) {
+        let timing = self
+            .component_timings
+            .entry("agent.execute".into())
+            .or_default();
+        if let Some(hz) = self.clock_ticks_per_second {
+            timing.cpu_user_ms = Some(user_ticks as f64 * 1_000.0 / hz as f64);
+            timing.cpu_system_ms = Some(system_ticks as f64 * 1_000.0 / hz as f64);
+            timing.cpu_accounting_source = Some("proc-sampling".into());
+            timing.io_wait_ms = Some(io_delay_ticks as f64 * 1_000.0 / hz as f64);
+        }
+        timing.scheduler_wait_ms = Some(runqueue_ns as f64 / 1_000_000.0);
     }
 
     /// Return process-tree sampler totals when cgroup delegation is absent.
@@ -928,7 +782,6 @@ impl Session {
                 collector.attach_pid(self, pid)?;
             }
         }
-        self.start_process_sampler(pid);
         Ok(())
     }
 
@@ -954,13 +807,11 @@ impl Session {
                 collector.attach_isolated_pid(self, pid)?;
             }
         }
-        self.start_process_sampler(pid);
         Ok(())
     }
 
     /// Finish collectors and write the run record and aggregate summary.
     pub fn finish<'a>(mut self, measurement: RunMeasurement<'a>) -> Result<(), String> {
-        self.stop_process_sampler();
         let mut errors = Vec::new();
         let mut observe = |result: Result<(), String>| {
             if let Err(error) = result {
@@ -980,7 +831,11 @@ impl Session {
             observe(adapter.finish(&mut self));
         }
         observe(self.write_component_measurements());
-        observe(update_summary(&self.dir, &measurement));
+        observe(
+            serde_json::to_value(&measurement)
+                .map_err(|error| error.to_string())
+                .and_then(|record| crate::workloads::summary::update_summary(&self.dir, record)),
+        );
         // Every explicit publication has been attempted. Drop must not silently
         // retry a failed/unconfirmed lifecycle commit or rewrite its evidence.
         self.run_finishing = true;
@@ -1289,98 +1144,6 @@ fn check_measurement_directory(dir: &Path) -> Result<(), String> {
     }
 }
 
-pub fn token_usage_from_sources(
-    provider: &str,
-    agent: &str,
-    stdout: &str,
-    stderr: &str,
-    cassette: Option<&Path>,
-) -> TokenUsage {
-    let context = collectors::UsageContext {
-        provider,
-        agent,
-        stdout,
-        stderr,
-        cassette,
-    };
-    collectors::all()
-        .iter()
-        .find_map(|adapter| adapter.usage(&context))
-        .unwrap_or_default()
-}
-/// Read and normalize usage events from an agent artifact.
-pub fn token_usage_from_document(value: &serde_json::Value) -> TokenUsage {
-    collectors::all()
-        .iter()
-        .find_map(|adapter| adapter.usage_document(value))
-        .unwrap_or_default()
-}
-
-#[cfg(test)]
-#[path = "measurements/token_usage_mock_tests.rs"]
-mod token_usage_mock_tests;
-/// Read an adapter-verified complete-run counter; absent evidence is unknown.
-pub fn steps_from_sources(agent: &str, stdout: &str, stderr: &str) -> Option<u64> {
-    collectors::all()
-        .iter()
-        .find_map(|adapter| adapter.steps(agent, stdout, stderr))
-}
-
-fn update_summary(dir: &Path, run: &RunMeasurement<'_>) -> Result<(), String> {
-    update_summary_value(dir, serde_json::to_value(run).map_err(|e| e.to_string())?)
-}
-
-fn update_summary_value(dir: &Path, run: serde_json::Value) -> Result<(), String> {
-    let path = dir.join("summary.json");
-    crate::evidence::update_json(&path, |old| {
-        let mut document = if let Some(bytes) = old {
-            serde_json::from_slice::<serde_json::Value>(bytes)
-                .map_err(|_| "historical summary JSON is malformed; preserve it before repair")?
-                .as_object()
-                .cloned()
-                .ok_or("historical summary must be an object; preserve it before repair")?
-        } else {
-            serde_json::Map::new()
-        };
-        let mut runs = match document.remove("runs") {
-            Some(serde_json::Value::Array(runs))
-                if runs.iter().all(serde_json::Value::is_object) =>
-            {
-                runs
-            }
-            None if old.is_none() => Vec::new(),
-            _ => return Err(
-                "historical summary runs must be an array of objects; preserve it before repair"
-                    .into(),
-            ),
-        };
-        runs.push(run);
-        if runs.len() > MAX_RUNS {
-            runs.drain(..runs.len() - MAX_RUNS);
-        }
-        let mut resolution = crate::workloads::ResolutionSummary::default();
-        for run in &runs {
-            let kind = run
-                .get("workload_evaluation")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("unknown");
-            let kind = crate::workloads::scored_kind(
-                kind,
-                &crate::workloads::BaselineEvidence::from_record(run),
-            );
-            resolution.observe(
-                kind,
-                run.get("workload_success")
-                    .and_then(serde_json::Value::as_bool)
-                    == Some(true),
-            );
-        }
-        let fields = serde_json::json!({"schema_version": 2, "runs": runs, "success_count": resolution.resolved_count, "failure_count": resolution.unresolved_count, "task_count": resolution.task_count, "unscored_count": resolution.unscored_count, "success_rate": resolution.success_rate, "success_rate_definition": "resolved task attempts / all selected task attempts; smoke exercises excluded; not pass@k"});
-        document.extend(fields.as_object().expect("summary object").clone());
-        Ok(document)
-    })
-}
-
 pub(crate) fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
     crate::evidence::write_json(path, value)
 }
@@ -1458,13 +1221,6 @@ pub(crate) fn measurement_interval_ms() -> u64 {
         .and_then(|value| value.parse::<u64>().ok())
         .unwrap_or(1_000)
         .clamp(100, 60_000)
-}
-
-pub(crate) fn pidstat_interval_seconds() -> String {
-    // pidstat accepts whole-second intervals. Preserve the requested lower
-    // bound while rounding sub-second requests up to the nearest supported
-    // interval; perf stat below supports the full millisecond range.
-    measurement_interval_ms().div_ceil(1_000).to_string()
 }
 
 pub(crate) fn bounded(bytes: &[u8]) -> String {
@@ -1559,12 +1315,6 @@ fn unix_ms() -> u128 {
         .map_or(0, |d| d.as_millis())
 }
 
-fn read_process_sample(pid: u32) -> Option<ProcessSample> {
-    let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    let schedstat = fs::read_to_string(format!("/proc/{pid}/schedstat")).ok();
-    parse_process_sample(&stat, schedstat.as_deref())
-}
-
 /// Return the root process and every live descendant, including descendants
 /// created after the collector attached.  Process-scoped collectors must use
 /// this tree rather than a single PID so bridge/agent helper processes are not
@@ -1612,63 +1362,10 @@ fn descendant_pids(root: u32, children: &BTreeMap<u32, Vec<u32>>) -> Vec<u32> {
     tree
 }
 
-fn read_process_tree_sample(root: ProcessIdentity) -> Option<ProcessSample> {
-    if !root.matches() {
-        return None;
-    }
-    let mut total = ProcessSample::default();
-    let mut observed = false;
-    for pid in process_tree_pids(root.pid) {
-        let Some(identity) = ProcessIdentity::read(pid) else {
-            continue;
-        };
-        if !identity.in_tree(root) {
-            continue;
-        }
-        let Some(sample) = read_process_sample(pid) else {
-            continue;
-        };
-        if !identity.in_tree(root) {
-            continue;
-        }
-        total.user_ticks = total.user_ticks.saturating_add(sample.user_ticks);
-        total.system_ticks = total.system_ticks.saturating_add(sample.system_ticks);
-        total.io_delay_ticks = total.io_delay_ticks.saturating_add(sample.io_delay_ticks);
-        total.runqueue_ns = total.runqueue_ns.saturating_add(sample.runqueue_ns);
-        observed = true;
-    }
-    (observed && root.matches()).then_some(total)
-}
-
 fn parse_process_parent(stat: &str) -> Option<u32> {
     let (_, rest) = stat.rsplit_once(')')?;
     let fields = rest.split_whitespace().collect::<Vec<_>>();
     fields.get(1)?.parse().ok()
-}
-
-fn parse_process_sample(stat: &str, schedstat: Option<&str>) -> Option<ProcessSample> {
-    let fields = stat
-        .rsplit_once(')')?
-        .1
-        .split_whitespace()
-        .collect::<Vec<_>>();
-    let user_ticks = fields.get(11)?.parse().ok()?;
-    let system_ticks = fields.get(12)?.parse().ok()?;
-    // Linux procfs field 42 is delayacct_blkio_ticks. It is zero when
-    // delay accounting is disabled, which is intentionally reported as zero.
-    let io_delay_ticks = fields
-        .get(39)
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(0);
-    let runqueue_ns = schedstat
-        .and_then(|value| value.split_whitespace().nth(1)?.parse().ok())
-        .unwrap_or(0);
-    Some(ProcessSample {
-        user_ticks,
-        system_ticks,
-        io_delay_ticks,
-        runqueue_ns,
-    })
 }
 
 fn clock_ticks_per_second() -> Option<u64> {
@@ -1682,6 +1379,9 @@ fn clock_ticks_per_second() -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::usage::{
+        from_sources as token_usage_from_sources, steps_from_agent as steps_from_sources,
+    };
     use std::io::Write;
 
     fn process_fixture(proc: &Path, pid: u32, parent: u32, start: u64, state: &str) {
@@ -1733,52 +1433,6 @@ mod tests {
         fs::write(proc.join("20/stat"), "partial").unwrap();
         assert!(ProcessIdentity::read_at(&proc, 20).is_none());
         fs::remove_dir_all(proc).unwrap();
-    }
-
-    #[test]
-    #[cfg(target_os = "linux")]
-    fn stale_sampler_or_isolated_target_never_attaches_to_a_reused_pid() {
-        let current = ProcessIdentity::read(std::process::id()).unwrap();
-        let stale = ProcessIdentity {
-            start_time_ticks: current.start_time_ticks + 1,
-            ..current
-        };
-        assert!(ProcessSampler::start(stale, 1000).is_none());
-        let dir = std::env::temp_dir()
-            .join(crate::workloads::TaskIdentity::local("stale-target", None).attempt_id);
-        let mut session = Session::start_with_collectors(&dir, &[], None).unwrap();
-        assert!(
-            session
-                .attach_isolated_pid(stale.pid, stale.start_time_ticks)
-                .is_err()
-        );
-        assert!(session.process_identity.is_none());
-        assert!(session.process_sampler.is_none());
-        assert!(session.collectors.is_empty());
-        drop(session);
-        fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[test]
-    #[cfg(target_os = "linux")]
-    fn agent_end_stops_timing_sampler_without_waiting_for_the_next_interval() {
-        let dir = std::env::temp_dir()
-            .join(crate::workloads::TaskIdentity::local("sampler-end", None).attempt_id);
-        let mut session = Session::start_with_collectors(&dir, &[], None).unwrap();
-        let root = ProcessIdentity::read(std::process::id()).unwrap();
-        session.process_sampler = ProcessSampler::start(root, 10000);
-        assert!(session.process_sampler.is_some());
-        session
-            .event(collectors::LifecycleEvent::AgentExecuteBegin)
-            .unwrap();
-        let start = Instant::now();
-        session
-            .event(collectors::LifecycleEvent::AgentExecuteEnd)
-            .unwrap();
-        assert!(start.elapsed() < Duration::from_secs(2));
-        assert!(session.process_sampler.is_none());
-        drop(session);
-        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -2622,22 +2276,6 @@ mod tests {
         );
         assert_eq!(timestamps, vec![12_000.0, 13_500.0]);
         assert_eq!(values, vec![3.0, 7.0]);
-    }
-
-    #[test]
-    fn process_accounting_separates_cpu_io_and_scheduler_wait() {
-        let stat = "123 (agent) S 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47";
-        let sample = parse_process_sample(stat, Some("100000 250000 1")).expect("sample");
-        assert_eq!(sample.user_ticks, 11);
-        assert_eq!(sample.system_ticks, 12);
-        assert_eq!(sample.io_delay_ticks, 39);
-        assert_eq!(sample.runqueue_ns, 250_000);
-    }
-
-    #[test]
-    fn malformed_process_accounting_is_unavailable_not_zero_guesswork() {
-        assert!(parse_process_sample("not a proc stat", None).is_none());
-        assert!(parse_process_sample("123 (agent) S", None).is_none());
     }
 
     #[test]

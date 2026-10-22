@@ -2352,7 +2352,7 @@ mod tests {
     }
 
     #[test]
-    fn app_marks_missing_agents_and_internal_collectors() {
+    fn app_marks_missing_agents_and_lists_only_real_collectors() {
         let root = std::env::temp_dir().join(format!("asb-tui-status-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
@@ -2367,11 +2367,10 @@ mod tests {
             app.panes[PaneKind::Measurements.index()]
                 .choices
                 .iter()
-                .filter(|choice| matches!(
+                .all(|choice| !matches!(
                     choice.label.as_str(),
-                    "token_usage" | "steps" | "success_rate"
+                    "token_usage" | "steps" | "success_rate" | "runtime"
                 ))
-                .all(|choice| choice.availability == Availability::Available)
         );
         let _ = std::fs::remove_dir_all(root);
     }

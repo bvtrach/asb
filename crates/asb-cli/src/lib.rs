@@ -77,6 +77,7 @@ pub(crate) fn write_test_file(
 }
 mod tools;
 mod tui;
+mod usage;
 mod workloads;
 
 use std::ffi::OsString;
@@ -275,6 +276,7 @@ mod adapter_layout_tests {
                     "selection.rs",  // Generic pre-execution catalog/identity contract.
                     "recovery.rs",   // Generic attempt references and adapter dispatch.
                     "outcome.rs",    // Generic evaluation, metric and lineage contract.
+                    "summary.rs",    // Workload-resolution summary publication.
                     "staging.rs",    // Fixed-prefix guest instrumentation ownership.
                     "controller.rs",
                     "task_protocol.rs", // Generic private task request/event/grade contracts.
@@ -288,7 +290,7 @@ mod adapter_layout_tests {
                 category: "proxy",
                 ids: super::proxy::names().collect(),
                 // Category-wide capture evidence, not a provider/target adapter.
-                root_modules: &["mod.rs", "capture.rs"],
+                root_modules: &["mod.rs", "capture.rs", "usage.rs"],
                 root_directories: &[],
             },
             CategoryLayout {

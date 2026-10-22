@@ -1,7 +1,7 @@
 //! Best-effort interactive progress for one native benchmark attempt.
 
 use super::capture::Progress;
-use crate::{cassette, measurements};
+use crate::{cassette, usage};
 use std::io::{self, Write};
 use std::time::{Duration, Instant};
 
@@ -73,8 +73,8 @@ impl Display {
     fn line(&self, stdout: &[u8], stderr: &[u8]) -> String {
         let stdout = String::from_utf8_lossy(stdout);
         let stderr = String::from_utf8_lossy(stderr);
-        let steps = measurements::steps_from_sources(&self.context.agent, &stdout, &stderr);
-        let tokens = measurements::token_usage_from_sources(
+        let steps = usage::steps_from_agent(&self.context.agent, &stdout, &stderr);
+        let tokens = usage::from_sources(
             &self.context.provider,
             &self.context.agent,
             &stdout,

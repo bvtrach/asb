@@ -43,7 +43,8 @@ impl CollectorAdapter for IostatCollector {
         process(session, context)
     }
     fn attach_pid(&self, session: &mut measurements::Session, pid: u32) -> Result<(), String> {
-        session.start_io_snapshot(pid)
+        let enabled = session.state::<IoState>().borrow().enabled;
+        super::pidstat::start_snapshot(session, "iostat", enabled, pid, "-d")
     }
 }
 
@@ -89,38 +90,6 @@ fn samples(output: &str) -> super::pidstat::Samples {
             )
         },
     )
-}
-
-impl measurements::Session {
-    pub(crate) fn start_io_snapshot(&mut self, pid: u32) -> Result<(), String> {
-        let interval = measurements::pidstat_interval_seconds();
-        let runtime = std::time::Duration::from_secs(
-            measurements::measurement_interval_ms().div_ceil(1000) + 5,
-        );
-        let enabled = self.state::<IoState>().borrow().enabled;
-        self.start_tree_snapshot(
-            "iostat",
-            enabled,
-            &super::pidstat::executable(self.tool_dir.as_deref()),
-            pid,
-            Box::new(move |pids| measurements::SnapshotCommand {
-                runtime,
-                stream_bytes: 16 * 1024 * 1024,
-                arguments: vec![
-                    "-d".into(),
-                    "-T".into(),
-                    "ALL".into(),
-                    "-p".into(),
-                    pids.iter()
-                        .map(u32::to_string)
-                        .collect::<Vec<_>>()
-                        .join(","),
-                    interval.clone(),
-                    "1".into(),
-                ],
-            }),
-        )
-    }
 }
 
 #[derive(Default)]

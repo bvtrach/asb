@@ -1,7 +1,12 @@
 //! Provider-free tests of the upstream workload protocol's pure data layer.
 
 mod support;
+use std::sync::{Mutex, OnceLock};
 use support::IsolatedEnvironment;
+
+/// The Python protocol fixtures exercise shared offline SDK/module seams.
+/// Keep that fixture family exclusive without serializing unrelated Rust tests.
+static PYTHON_PROTOCOL_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 #[test]
 fn original_sweep_qualification_inventory_is_bounded_and_requires_declared_evidence() {
@@ -181,8 +186,17 @@ fn harbor_execution_preserves_official_verification_and_scopes_resources() {
 }
 
 fn python_protocol(test: &str) {
+    let _exclusive = PYTHON_PROTOCOL_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let fixture = std::path::Path::new(test)
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .expect("protocol fixture has a UTF-8 file stem");
     let temporary = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../target/benchmark-protocol-tmp");
+    let temporary = temporary.join(fixture);
     std::fs::create_dir_all(&temporary).expect("create project-local Python test scratch");
     let output = std::process::Command::new("python3")
         .arg(
