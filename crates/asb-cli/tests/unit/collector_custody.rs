@@ -21,10 +21,10 @@ impl Fixture {
     fn wait_for(&self, path: &Path) -> String {
         let deadline = Instant::now() + Duration::from_secs(3);
         loop {
-            if let Ok(value) = fs::read_to_string(path) {
-                if !value.is_empty() {
-                    return value;
-                }
+            if let Ok(value) = fs::read_to_string(path)
+                && !value.is_empty()
+            {
+                return value;
             }
             assert!(
                 Instant::now() < deadline,
