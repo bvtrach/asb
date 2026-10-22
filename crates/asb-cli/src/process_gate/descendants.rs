@@ -337,10 +337,8 @@ mod tests {
             // Real cleanup before publishing observations; the outer guardian
             // still owns any orphan if a fixture assertion/unwind fails.
             denied.kill().unwrap();
-            if !sibling_reaped {
-                if sibling_alive {
-                    sibling.kill().unwrap();
-                }
+            if !sibling_reaped && sibling_alive {
+                sibling.kill().unwrap();
             }
             let sibling_wait = sibling.wait();
             denied.wait().unwrap();
