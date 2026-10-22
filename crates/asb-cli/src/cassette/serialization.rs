@@ -123,6 +123,8 @@ pub(super) struct TrackEvidenceWire<'a, C> {
     pub compatibility: C,
     pub concurrency: u64,
     pub track: &'a Track,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub origin_sha256: Option<&'a str>,
 }
 
 impl Serialize for TrackEvidence {
@@ -134,6 +136,7 @@ impl Serialize for TrackEvidence {
             compatibility: &self.compatibility,
             concurrency: self.concurrency,
             track: &self.track,
+            origin_sha256: self.origin_sha256.as_deref(),
         }
         .serialize(serializer)
     }

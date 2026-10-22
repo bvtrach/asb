@@ -231,6 +231,7 @@ pub(super) fn load(path: &str) -> Result<LoadedReport, Error> {
                 &configuration,
                 replica,
                 &mut proofs,
+                None,
             )?);
         }
     }
@@ -260,6 +261,7 @@ pub(super) fn load(path: &str) -> Result<LoadedReport, Error> {
 fn load_campaign_sweep(request: Request) -> Result<LoadedReport, Error> {
     let plan = request.plan.as_ref().expect("campaign sweep plan");
     let mut layouts = plan.read_campaigns(&request.sweep_results)?;
+    let catalog = plan.generation_catalog(&request.sweep_results, &layouts)?;
     let budget = std::rc::Rc::new(std::cell::Cell::new(256 * 1024 * 1024));
     for layout in &mut layouts {
         layout.share_observation_budget(budget.clone());
@@ -285,6 +287,7 @@ fn load_campaign_sweep(request: Request) -> Result<LoadedReport, Error> {
             config,
             Some(&entry.selection),
             &mut proofs,
+            catalog.as_ref(),
         )?;
         rows.append(&mut selected);
         previews.extend(artifacts);
@@ -411,6 +414,7 @@ fn load_attempt(
     context: &Configuration,
     replica: usize,
     proofs: &mut Vec<crate::cassette::TrackEvidence>,
+    recording_owner: Option<&campaign::RecordingContext<'_>>,
 ) -> Result<BenchmarkData, Error> {
     let index = context.index;
     let config = &context.config;
@@ -582,7 +586,7 @@ fn load_attempt(
         },
     )?;
     if context.expected_execution.is_some() {
-        campaign::collect_summary_recording(&run_value, proofs)?;
+        campaign::collect_summary_recording(&run_value, proofs, recording_owner)?;
     }
     let mut metrics = BTreeMap::new();
     let legacy_evaluation_provenance: Option<

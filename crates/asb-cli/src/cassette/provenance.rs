@@ -98,6 +98,8 @@ impl OriginPlan {
 
     /// Exact stable commitment; caller validates bounds before computing this.
     pub fn commitment(&self) -> Result<String, Error> {
+        #[cfg(test)]
+        super::journal::observed("origin-commitment");
         // The owner has already validated its chosen limits. Hash the canonical
         // wire directly, without allocating a second metadata-sized buffer or
         // silently imposing the default policy on custom-limit journals.

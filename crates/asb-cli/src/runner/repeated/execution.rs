@@ -44,9 +44,10 @@ impl BatchRun<'_> {
         };
         let material_path = self.material_path;
         let recorder = self.recording.clone();
+        let members = admission.cohort().admitted_slots.clone();
         let dispatch = admission.observe(Arc::new(move |compatibility| {
             publish(&material_path, &json!({"schema_version":1,"scope":"verified-prepared-material","compatibility":compatibility}))?;
-            if let Some(recorder) = &recorder { recorder.prepare(compatibility, number)?; }
+            if let Some(recorder) = &recorder { recorder.prepare(compatibility, number, &members)?; }
             Ok(())
         }));
         let mut selected = self.plan.configuration.clone();
@@ -161,6 +162,7 @@ pub(crate) struct Continuation {
     pub pending: Vec<Batch>,
     pub compatibility: Option<Compatibility>,
     pub reference: StartReference,
+    pub recording: Option<Arc<super::super::recording::Recorder>>,
 }
 
 pub(crate) fn continue_campaign(
@@ -179,13 +181,14 @@ pub(crate) fn continue_campaign(
         pending,
         mut compatibility,
         reference,
+        recording,
     } = continued;
     plan.validate_layout()?;
     // Recording unions need a distinct publication owner. Never accidentally
     // reopen or replace a finalized original recording with Recorder::new.
-    if plan.mode == crate::planning::ExecutionMode::Record {
+    if (plan.mode == crate::planning::ExecutionMode::Record) != recording.is_some() {
         return Err(Error::Input(
-            "recording continuation requires union publication recovery".into(),
+            "recording continuation lost its owned union writer".into(),
         ));
     }
     let options = ActivationOptions {
@@ -215,9 +218,10 @@ pub(crate) fn continue_campaign(
     )?;
     let generation_root = root.join(".asb-generations").join(&reference.generation);
     private_directory(&root.join(".asb-generations"), true)?;
-    private_directory(&generation_root, false)?;
+    private_directory(&generation_root, recording.is_some())?;
     let mut failures = 0usize;
     let mut stopped = false;
+    let mut producers_quiescent = true;
     let mut batches = pending.into_iter().peekable();
     for number in 1..=plan.repeat {
         let start = ((number - 1) * plan.concurrency as u64) as usize;
@@ -257,17 +261,21 @@ pub(crate) fn continue_campaign(
         }
         let generation_batch = root.join(batch.directory(&reference.generation));
         private_directory(&generation_batch, false)?;
-        let cassette = (plan.mode == crate::planning::ExecutionMode::Replay)
-            .then(|| {
-                replay::stage_selected(
-                    &root,
-                    &plan,
-                    number,
-                    &batch.cohort.admitted_slots,
-                    &generation_batch,
-                )
-            })
-            .transpose()?;
+        let cassette = if recording.is_some() {
+            Some(path_text(&super::super::recording::base(&root, number))?)
+        } else {
+            (plan.mode == crate::planning::ExecutionMode::Replay)
+                .then(|| {
+                    replay::stage_selected(
+                        &root,
+                        &plan,
+                        number,
+                        &batch.cohort.admitted_slots,
+                        &generation_batch,
+                    )
+                })
+                .transpose()?
+        };
         let identity = BatchIdentity {
             replay: replay::saved_batch_choices(&plan, number),
             campaign: plan.campaign.clone(),
@@ -286,16 +294,26 @@ pub(crate) fn continue_campaign(
             finished_path: generation_batch.join("finished.json"),
             generation: Some(reference.clone()),
             cassette: cassette.as_deref(),
-            recording: None,
+            recording: recording.clone(),
             reused: Some(&reused),
         }
         .execute(dispatch, output, warnings)?;
         failures += usize::from(settled.failed || settled.stopped);
+        producers_quiescent &= settled.quiescent;
         stopped = settled.stopped;
         if stopped {
             break;
         }
         compatibility = settled.prepared;
+    }
+    if let Some(recorder) = &recording
+        && let Some(publication) = recorder.finalize(producers_quiescent)?
+    {
+        recorder.publish_union(&publication)?;
+        warnings
+            .lock()
+            .map_err(|_| Error::Run("recording warnings were interrupted".into()))?
+            .extend(publication.warnings);
     }
     publish(
         &generation_root.join("finished.json"),

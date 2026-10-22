@@ -141,6 +141,7 @@ pub(crate) fn run(args: &[OsString], stdout: &mut dyn Write, stderr: &mut dyn Wr
                     resume: options.resume,
                     reconcile_completed: options.reconcile_completed,
                     import_grades: options.import_grades,
+                    recover_recording: options.recover_recording,
                 },
                 stdout,
             )
@@ -369,6 +370,9 @@ struct SweepArgs {
     /// Reuse validated completed groups and run untouched configurations; incomplete groups require recovery.
     #[arg(long)]
     resume: bool,
+    /// Finish an already frozen union publication/ledger; never execute agents or evaluators.
+    #[arg(long, requires_all = ["resume", "record"], conflicts_with_all = ["import_grades", "reconcile_completed", "repeat", "track", "seed", "show_output", "cassette_root", "respect_record_timings", "max_active_attempts"])]
+    recover_recording: bool,
     #[arg(
         long,
         requires = "resume",

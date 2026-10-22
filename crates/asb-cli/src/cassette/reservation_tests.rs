@@ -48,6 +48,7 @@ fn shared_wire_projections_preserve_exact_existing_bytes_and_optional_fields() {
         assert_eq!(bytes, expected.as_bytes());
         assert_eq!(serde_json::from_slice::<Manifest>(&bytes).unwrap(), value);
         let proof = TrackEvidence {
+            origin_sha256: None,
             schema_version: 1,
             destination: fixture.0.join("trials.zip"),
             recording_id: value.recording_id.clone(),

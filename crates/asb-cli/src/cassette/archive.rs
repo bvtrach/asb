@@ -73,18 +73,45 @@ impl Archive {
     /// when selected. Schema one uses bounded single-disk ZIP32, not ZIP64.
     pub fn open(path: &Path, limits: Limits) -> Result<Self, Error> {
         limits.validate()?;
-        let mut options = OpenOptions::new();
-        options.read(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            // Opening a FIFO must not block before the regular-file check.
-            options.custom_flags(libc::O_NONBLOCK);
+        Self::from_file(open_file(path)?, limits)
+    }
+
+    /// Pin and verify exact compressed publication bytes before inspecting its
+    /// manifest. Hashing does not decompress unselected track entries.
+    pub fn open_verified(
+        path: &Path,
+        bytes: u64,
+        sha256: &str,
+        limits: Limits,
+    ) -> Result<Self, Error> {
+        use sha2::{Digest, Sha256};
+        use std::io::{Seek, SeekFrom};
+        limits.validate()?;
+        if bytes > limits.max_archive_bytes || !super::valid_digest(sha256) {
+            return Err(Error("invalid confirmed archive identity".into()));
         }
-        let file = options.open(path).map_err(io_error)?;
-        if !file.metadata().map_err(io_error)?.is_file() {
-            return Err(Error("cassette archive must be a regular file".into()));
+        let mut file = open_file(path)?;
+        if file.metadata().map_err(io_error)?.len() != bytes {
+            return Err(Error("confirmed archive length changed".into()));
         }
+        let mut hash = Sha256::new();
+        let mut count = 0u64;
+        let mut buffer = [0; 64 * 1024];
+        loop {
+            let read = file.read(&mut buffer).map_err(io_error)?;
+            if read == 0 {
+                break;
+            }
+            count = count
+                .checked_add(read as u64)
+                .filter(|count| *count <= bytes)
+                .ok_or_else(|| Error("confirmed archive grew while reading".into()))?;
+            hash.update(&buffer[..read]);
+        }
+        if count != bytes || format!("{:x}", hash.finalize()) != sha256 {
+            return Err(Error("confirmed archive checksum changed".into()));
+        }
+        file.seek(SeekFrom::Start(0)).map_err(io_error)?;
         Self::from_file(file, limits)
     }
 
@@ -236,6 +263,21 @@ fn read_bounded(
         ));
     }
     Ok(bytes)
+}
+
+fn open_file(path: &Path) -> Result<std::fs::File, Error> {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NONBLOCK);
+    }
+    let file = options.open(path).map_err(io_error)?;
+    if !file.metadata().map_err(io_error)?.is_file() {
+        return Err(Error("cassette archive must be a regular file".into()));
+    }
+    Ok(file)
 }
 
 fn io_error(error: std::io::Error) -> Error {

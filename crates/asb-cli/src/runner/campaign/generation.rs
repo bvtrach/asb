@@ -69,6 +69,8 @@ pub(crate) struct Manifest {
     pub original: Reference,
     pub completed: Vec<Completed>,
     pub pending: Vec<Batch>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recording: Option<crate::runner::recording::union::Descriptor>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -117,6 +119,8 @@ pub(crate) struct Catalog {
     admission: Admission,
     admission_blob: Blob,
     manifests: Vec<Manifest>,
+    // Private derivatives of the validated manifests, not serialized authority.
+    origin_commitments: Vec<Option<String>>,
 }
 
 pub(crate) struct Resolved {
@@ -212,11 +216,44 @@ impl Manifest {
                 "manifest does not partition the original population",
             ));
         }
+        match (&self.recording, plan.mode, self.pending.is_empty()) {
+            (Some(recording), crate::planning::ExecutionMode::Record, false) => recording
+                .validate(
+                    plan,
+                    generation,
+                    configuration,
+                    self.completed.iter().map(|track| track.slot),
+                )?,
+            (None, crate::planning::ExecutionMode::Record, false) => {
+                return Err(invalid("recording generation has no union descriptor"));
+            }
+            (None, _, _) => (),
+            _ => return Err(invalid("unexpected recording union descriptor")),
+        }
         Ok(())
     }
 }
 
 impl Catalog {
+    pub(crate) fn has_recording_union(&self, configuration: usize) -> Result<bool, Error> {
+        self.manifests
+            .get(configuration)
+            .map(|manifest| manifest.recording.is_some())
+            .ok_or_else(|| invalid("configuration is outside manifest"))
+    }
+    pub(crate) fn recordings(
+        &self,
+    ) -> impl Iterator<Item = (usize, &crate::runner::recording::union::Descriptor)> {
+        self.manifests
+            .iter()
+            .enumerate()
+            .filter_map(|(index, manifest)| {
+                manifest
+                    .recording
+                    .as_ref()
+                    .map(|recording| (index, recording))
+            })
+    }
     pub(crate) fn completed_receipt(&self, configuration: usize, slot: u64) -> Option<&Blob> {
         let completed = &self.manifests.get(configuration)?.completed;
         completed
@@ -280,6 +317,7 @@ impl Catalog {
         }
         let mut population = 0usize;
         let mut manifests = Vec::with_capacity(expected.len());
+        let mut origin_commitments = Vec::with_capacity(expected.len());
         for (reference, original) in admission.manifests.iter().zip(expected) {
             population = population
                 .checked_add(original.plan.slots.len())
@@ -301,6 +339,14 @@ impl Catalog {
                 reference.configuration,
                 original,
             )?;
+            origin_commitments.push(
+                manifest
+                    .recording
+                    .as_ref()
+                    .map(|descriptor| descriptor.origins.commitment())
+                    .transpose()
+                    .map_err(|error| invalid(&error.to_string()))?,
+            );
             manifests.push(manifest);
         }
         Ok(Self {
@@ -308,6 +354,7 @@ impl Catalog {
             admission,
             admission_blob: Blob::of(&bytes),
             manifests,
+            origin_commitments,
         })
     }
 
@@ -323,6 +370,64 @@ impl Catalog {
             manifest: manifest.content.clone(),
             admission: self.admission_blob.clone(),
         })
+    }
+
+    pub(crate) fn recording_descriptor(
+        &self,
+        configuration: usize,
+        reference: &StartReference,
+    ) -> Result<&crate::runner::recording::union::Descriptor, Error> {
+        if *reference != self.reference(configuration)? {
+            return Err(invalid("union publication reference changed"));
+        }
+        self.manifests[configuration]
+            .recording
+            .as_ref()
+            .ok_or_else(|| invalid("generation has no recording union"))
+    }
+
+    /// Resolve recording identity against the already validated owning catalog.
+    pub(crate) fn recording(
+        &self,
+        configuration: usize,
+        binding: &crate::runner::recording::union::Binding,
+        evidence: &crate::runner::recording::Evidence,
+        start: &super::StartIntent,
+        plan: &Plan,
+        slot: &Slot,
+    ) -> Result<(), Error> {
+        self.resolve(
+            start.generation.as_ref(),
+            configuration,
+            plan,
+            slot,
+            start.execution_cohort.as_ref(),
+        )?;
+        let descriptor = self
+            .manifests
+            .get(configuration)
+            .and_then(|manifest| manifest.recording.as_ref())
+            .ok_or_else(|| invalid("recording has no owning union descriptor"))?;
+        if start.generation.as_ref() != Some(&binding.reference)
+            || start.schema_version != 1
+            || start.scope != "execution-start-intent-not-actual-attempt"
+            || start.execution != plan.execution(slot)
+            || binding.reference != self.reference(configuration)?
+            || self
+                .origin_commitments
+                .get(configuration)
+                .and_then(Option::as_ref)
+                != Some(&binding.origins_sha256)
+            || evidence.track.origin_sha256.as_ref() != Some(&binding.origins_sha256)
+            || evidence.track.recording_id != descriptor.physical_id
+            || evidence.track.destination != descriptor.destination
+            || descriptor.origins.imported(slot.id).is_some()
+        {
+            return Err(invalid(
+                "recording differs from admitted physical identity/import plan",
+            ));
+        }
+        Ok(())
     }
 
     /// Return derived evidence locations only; this cannot authorize execution.

@@ -15,6 +15,10 @@ pub struct Publication {
     pub cleanup_complete: bool,
     /// Cleanup warnings; publication itself is already confirmed and usable.
     pub warnings: Vec<String>,
+    /// Exact confirmed compressed archive length from the prepared receipt.
+    pub archive_bytes: u64,
+    /// Exact confirmed compressed archive digest from the prepared receipt.
+    pub archive_sha256: String,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -47,6 +51,12 @@ pub(super) fn publication_capacity(recording_id: &str, limits: Limits) -> Result
 }
 
 impl RecordingJournal {
+    /// Whether recovery verified an existing immutable finalization manifest.
+    /// This is publication state, not agent cleanup or retry permission.
+    pub fn publication_is_frozen(&self) -> bool {
+        self.finalization.is_some()
+    }
+
     /// Freeze and publish a verified ZIP, without replacing any destination.
     ///
     /// The caller must first stop/join recording producers. Freezing prevents
@@ -253,6 +263,8 @@ impl RecordingJournal {
         self.allow_existing_destination = true;
         if let Err(error) = self.publication_fault.check("after-published") {
             return Ok(Publication {
+                archive_bytes: prepared.bytes,
+                archive_sha256: prepared.sha256.clone(),
                 destination: self.destination.clone(),
                 manifest,
                 cleanup_complete: false,
@@ -263,6 +275,8 @@ impl RecordingJournal {
         }
         let warnings = self.cleanup_payloads(&manifest, &prepared);
         Ok(Publication {
+            archive_bytes: prepared.bytes,
+            archive_sha256: prepared.sha256.clone(),
             destination: self.destination.clone(),
             manifest,
             cleanup_complete: warnings.is_empty(),

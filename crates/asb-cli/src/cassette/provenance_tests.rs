@@ -42,6 +42,57 @@ impl Read for NoRead {
 }
 
 #[test]
+fn journal_caches_validated_origin_once_but_readonly_proofs_recheck_disk_intent() {
+    let fixture = Fixture::new();
+    let tracks = manifest(6).tracks;
+    crate::cassette::journal::take_observations();
+    let mut union = journal(&fixture, &tracks[..3], 6);
+    for track in &tracks[..3] {
+        union
+            .import_track(track.clone(), 0, &mut &b"{}\n"[..])
+            .unwrap();
+    }
+    for track in &tracks[3..] {
+        union.begin(track.batch, track.replica).unwrap();
+        union.commit(track.clone(), &mut &b"{}\n"[..]).unwrap();
+    }
+    let proofs: Vec<_> = tracks
+        .iter()
+        .map(|track| union.track_evidence(track).unwrap())
+        .collect();
+    assert_eq!(
+        crate::cassette::journal::take_observations()["origin-commitment"],
+        1
+    );
+    let destination = union.destination().to_path_buf();
+    let intent = union.partial_directory().join("intent.json");
+    drop(union);
+    let recovered = RecordingJournal::recover(&destination, Limits::default()).unwrap();
+    for (track, proof) in tracks.iter().zip(&proofs) {
+        assert_eq!(&recovered.track_evidence(track).unwrap(), proof);
+    }
+    assert_eq!(
+        crate::cassette::journal::take_observations()["origin-commitment"],
+        1
+    );
+    TrackEvidence::verify_batch(&proofs, ProofLimits::default()).unwrap();
+    assert_eq!(
+        crate::cassette::journal::take_observations()["origin-commitment"],
+        1
+    );
+    // A reader derives its own commitment from actual metadata, never the
+    // issuing writer's private cache or merely copied evidence claims.
+    let mut value: serde_json::Value = serde_json::from_slice(&fs::read(&intent).unwrap()).unwrap();
+    value["manifest"]["provenance"]["sources"][0]["manifest_sha256"] = digest(b"changed").into();
+    fs::write(&intent, serde_json::to_vec(&value).unwrap()).unwrap();
+    assert!(TrackEvidence::verify_batch(&proofs, ProofLimits::default()).is_err());
+    let observed = crate::cassette::journal::take_observations();
+    assert_eq!(observed["origin-commitment"], 1);
+    assert!(!observed.contains_key("staged"));
+    assert!(!observed.contains_key("payload"));
+}
+
+#[test]
 fn exact_union_import_is_self_contained_and_preserves_failed_unknown_observations() {
     let fixture = Fixture::new();
     let mut old = manifest(1).tracks.remove(0);

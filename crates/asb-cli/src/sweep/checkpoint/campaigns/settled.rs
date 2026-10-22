@@ -14,6 +14,9 @@ use std::path::{Path, PathBuf};
 const METADATA: u64 = 64 * 1024;
 const SCOPE: &str = "settled-campaign-slot-declared-evidence";
 
+#[path = "recording_recovery.rs"]
+mod recording_recovery;
+
 #[path = "continuation.rs"]
 pub(in crate::sweep::checkpoint::campaigns) mod continuation;
 
@@ -455,6 +458,20 @@ impl Inputs {
                 entry.insert(value.compatibility);
             }
             let compatibility = &prepared[&prepared_key];
+            if let Some(recording) = evidence.recording
+                && let Some(binding) = &recording.generation
+            {
+                catalog
+                    .ok_or_else(|| resume_error("recording union has no admitted generation"))?
+                    .recording(
+                        record.configuration,
+                        binding,
+                        recording,
+                        &start.intent,
+                        &layout.plan,
+                        slot,
+                    )?;
+            }
             let roots = slot_roots(
                 SlotOwner {
                     layout,
@@ -785,7 +802,8 @@ fn slot_roots(
     }
     if let Some(recording) = evidence.recording {
         if recording.campaign_root != layout.root
-            || Some(&recording.track.destination) != layout.plan.recording.as_ref()
+            || (recording.generation.is_none()
+                && Some(&recording.track.destination) != layout.plan.recording.as_ref())
         {
             return Err(resume_error(
                 "recording proof differs from campaign destination",

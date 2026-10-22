@@ -65,6 +65,8 @@ with urllib.request.urlopen(urllib.request.Request(url+'/v1/chat/completions',da
     assert response.status == 200
     response_tag = json.load(response).get('recorded_track')
 time.sleep(.06)
+if batch == 2 and replica == 1 and (root/'block-union-ledger').exists():
+    (workspace.parent.parent/'recording-current.json').mkdir()
 (workspace/'src/parser.py').write_text("def parse_path(value: str) -> list[str]:\n    return [segment for segment in value.split('/') if segment]\n")
 row = json.dumps({'batch':batch,'replica':replica,'workspace':str(workspace),'before':before,'runtime':str(runtime),'start':start,'end':time.monotonic_ns(),'response_tag':response_tag})+'\n'
 fd = os.open(root/'attempts.jsonl',os.O_WRONLY|os.O_CREAT|os.O_APPEND,0o600)

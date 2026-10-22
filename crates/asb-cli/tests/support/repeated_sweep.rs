@@ -350,10 +350,29 @@ fn interrupted_modern_sweep_continues_live_batches_without_retrying_old_clients(
     check_interrupted_continuation("live", true);
 }
 
+#[test]
+fn interrupted_recording_sweep_imports_old_tracks_and_only_runs_pending_clients() {
+    check_interrupted_continuation("record", true);
+}
+
+#[test]
+fn interrupted_recording_sweep_recovers_publication_without_clients() {
+    check_interrupted_continuation("record-ledger-fault", false);
+}
+
 fn check_interrupted_continuation(source_kind: &str, measured: bool) {
     use std::io::BufRead;
     use std::process::Stdio;
     let project = registered_project(4);
+    let recording = source_kind.starts_with("record");
+    let ledger_fault = source_kind == "record-ledger-fault";
+    if ledger_fault {
+        fs::write(
+            project.0.join("block-union-ledger"),
+            "fixture-only publication fault",
+        )
+        .unwrap();
+    }
     fs::write(
         project.0.join("hold-first-batch"),
         "bounded fixture barrier",
@@ -364,7 +383,7 @@ fn check_interrupted_continuation(source_kind: &str, measured: bool) {
         let configuration = fs::read_to_string(&path).unwrap();
         fs::write(path, format!("{configuration}\n[measurements]\nenabled=true\ndirectory='measurements'\ncollectors=[]\n")).unwrap();
     }
-    let provider = (source_kind == "live").then(RecordingProvider::new);
+    let provider = (recording || source_kind == "live").then(RecordingProvider::new);
     fs::write(
         project.0.join("false-grade-first"),
         "keep a genuine false grade",
@@ -420,6 +439,9 @@ fn check_interrupted_continuation(source_kind: &str, measured: bool) {
                 "OPENROUTER_MODELS_URL",
                 format!("{}/models", provider.endpoint),
             );
+        if recording {
+            command.arg("--record");
+        }
     } else {
         command.args(["--replay", "--cassette-root", "replay-input"]);
         if matches!(source_kind, "zip" | "incomplete") {
@@ -484,6 +506,10 @@ fn check_interrupted_continuation(source_kind: &str, measured: bool) {
     );
     let mut false_grades = 0;
     let mut frozen = Vec::new();
+    if recording {
+        let path = PathBuf::from(saved["recording"].as_str().unwrap());
+        frozen.push((path.clone(), fs::read(path).unwrap()));
+    }
     for id in 1..=4 {
         let receipt = checkpoint.join(format!("campaign-completed/000000/{id:06}.json"));
         assert!(
@@ -504,6 +530,19 @@ fn check_interrupted_continuation(source_kind: &str, measured: bool) {
         assert_eq!(outcome["proxy_cleanup_confirmed"], true);
         if outcome["summary"]["workload_success"] == false {
             false_grades += 1;
+        }
+        if recording {
+            let destination = PathBuf::from(
+                outcome["recording_track"]["track"]["destination"]
+                    .as_str()
+                    .unwrap(),
+            );
+            let name = destination.file_name().unwrap().to_str().unwrap();
+            let association = destination
+                .parent()
+                .unwrap()
+                .join(format!(".{name}.partial/association-{id}.json"));
+            frozen.push((association.clone(), fs::read(association).unwrap()));
         }
         frozen.push((receipt.clone(), fs::read(receipt).unwrap()));
     }
@@ -553,7 +592,9 @@ fn check_interrupted_continuation(source_kind: &str, measured: bool) {
     let last = checkpoint.join("campaign-completed/000000/000004.json");
     let original = fs::read(&last).unwrap();
     fs::write(&last, b"{}").unwrap();
-    let arguments: &[&str] = if provider.is_some() {
+    let arguments: &[&str] = if recording {
+        &["--record", "--resume"]
+    } else if provider.is_some() {
         &["--resume"]
     } else {
         &["--replay", "--resume"]
@@ -653,7 +694,13 @@ fn check_interrupted_continuation(source_kind: &str, measured: bool) {
         assert_eq!(reported.len(), 8);
         let mut ids = std::collections::BTreeSet::new();
         for row in reported {
-            assert!(ids.insert(row["execution"]["slot"].as_u64().unwrap()));
+            let slot = row["execution"]["slot"].as_u64().unwrap_or_else(|| {
+                panic!(
+                    "missing report execution: {row}\nresume stderr: {}",
+                    String::from_utf8_lossy(&resumed.stderr)
+                )
+            });
+            assert!(ids.insert(slot));
             assert_eq!(row["execution_cohort"]["selected_replicas"], 4);
             assert_eq!(row["execution_cohort"]["dispatch"]["configured"], 4);
             assert_eq!(row["execution_cohort"]["dispatch"]["admitted"], 4);
@@ -693,6 +740,248 @@ fn check_interrupted_continuation(source_kind: &str, measured: bool) {
         if let Some(provider) = &provider {
             assert_eq!(provider.calls.load(std::sync::atomic::Ordering::SeqCst), 8);
         }
+        if recording {
+            let descriptor: Value = serde_json::from_slice(
+                &fs::read(checkpoint.join("campaign-continuation/000000.json")).unwrap(),
+            )
+            .unwrap();
+            let path = PathBuf::from(descriptor["recording"]["destination"].as_str().unwrap());
+            let mut archive = zip::ZipArchive::new(std::fs::File::open(path).unwrap()).unwrap();
+            let union: Value =
+                serde_json::from_reader(archive.by_name("manifest.json").unwrap()).unwrap();
+            let tracks = union["tracks"].as_array().unwrap();
+            assert_eq!(tracks.len(), 8);
+            assert_eq!(union["provenance"]["imports"].as_array().unwrap().len(), 4);
+            assert_ne!(union["recording_id"], saved["campaign"]);
+            let original_path = saved["recording"].as_str().unwrap();
+            let mut original =
+                zip::ZipArchive::new(std::fs::File::open(original_path).unwrap()).unwrap();
+            let old: Value =
+                serde_json::from_reader(original.by_name("manifest.json").unwrap()).unwrap();
+            assert_eq!(&tracks[..4], old["tracks"].as_array().unwrap().as_slice());
+            for id in 1..=8 {
+                assert_eq!(tracks[id - 1]["id"], id);
+                let mut bytes = Vec::new();
+                std::io::Read::read_to_end(
+                    &mut archive.by_name(&format!("tracks/{id}.jsonl")).unwrap(),
+                    &mut bytes,
+                )
+                .unwrap();
+                assert!(!bytes.is_empty());
+                if id <= 4 {
+                    let mut old_bytes = Vec::new();
+                    std::io::Read::read_to_end(
+                        &mut original.by_name(&format!("tracks/{id}.jsonl")).unwrap(),
+                        &mut old_bytes,
+                    )
+                    .unwrap();
+                    assert_eq!(bytes, old_bytes);
+                }
+            }
+            if ledger_fault && iteration == 0 {
+                let blocker = root.join("recording-current.json");
+                assert!(blocker.is_dir());
+                fs::rename(&blocker, root.join("retained-ledger-blocker")).unwrap();
+                let index_before = fs::read(project.0.join("sweep-results/plan.json")).unwrap();
+                let report_path = project.0.join("results/sweep-comparison/comparison.json");
+                let report_before = fs::read(&report_path).unwrap();
+                let mut history_before: Vec<_> = fs::read_dir(project.0.join("sweep-history"))
+                    .map(|entries| entries.map(|entry| entry.unwrap().file_name()).collect())
+                    .unwrap_or_default();
+                history_before.sort();
+                let refused = sweep(&project, None, &["--replay", "--repeat", "1"]);
+                assert!(!refused.status.success());
+                assert!(
+                    String::from_utf8_lossy(&refused.stderr).contains("recover-recording"),
+                    "{}",
+                    String::from_utf8_lossy(&refused.stderr)
+                );
+                assert_eq!(
+                    records(&fs::read(project.0.join("attempts.jsonl")).unwrap()).len(),
+                    8
+                );
+                assert_eq!(
+                    fs::read(project.0.join("sweep-results/plan.json")).unwrap(),
+                    index_before
+                );
+                assert_eq!(fs::read(&report_path).unwrap(), report_before);
+                let mut history_after: Vec<_> = fs::read_dir(project.0.join("sweep-history"))
+                    .map(|entries| entries.map(|entry| entry.unwrap().file_name()).collect())
+                    .unwrap_or_default();
+                history_after.sort();
+                assert_eq!(history_after, history_before);
+                let archive_before =
+                    fs::read(descriptor["recording"]["destination"].as_str().unwrap()).unwrap();
+                for _ in 0..2 {
+                    let recovered = sweep(
+                        &project,
+                        None,
+                        &["--record", "--resume", "--recover-recording"],
+                    );
+                    assert!(
+                        recovered.status.success(),
+                        "{}\n{}",
+                        String::from_utf8_lossy(&recovered.stdout),
+                        String::from_utf8_lossy(&recovered.stderr)
+                    );
+                    let events = records(&recovered.stdout);
+                    assert_eq!(events.len(), 1);
+                    assert_eq!(events[0]["agent_executions"], 0);
+                    assert_eq!(events[0]["evaluations"], 0);
+                    assert_eq!(
+                        records(&fs::read(project.0.join("attempts.jsonl")).unwrap()).len(),
+                        8
+                    );
+                    assert_eq!(
+                        fs::read(descriptor["recording"]["destination"].as_str().unwrap()).unwrap(),
+                        archive_before
+                    );
+                }
+            }
+            assert!(root.join("recording-current.json").is_file());
+            if measured && iteration == 0 {
+                check_union_measurement_only_owner(&project, root, &saved);
+            }
+        }
+    }
+    if recording {
+        let compared = compare_campaign(&project, &root.join("plan.json"));
+        assert!(
+            compared.status.success(),
+            "{}",
+            String::from_utf8_lossy(&compared.stderr)
+        );
+        drop(provider);
+        let descriptor: Value = serde_json::from_slice(
+            &fs::read(checkpoint.join("campaign-continuation/000000.json")).unwrap(),
+        )
+        .unwrap();
+        let union = descriptor["recording"]["destination"].as_str().unwrap();
+        let original = PathBuf::from(saved["recording"].as_str().unwrap());
+        let hidden = original.with_extension("temporarily-unavailable");
+        fs::rename(&original, &hidden).unwrap();
+        // Replay both an imported and a newly captured track with no provider
+        // listener, no credentials and no ancestor ZIP at its original path.
+        for track in ["1", "5"] {
+            let replayed = replay_from(&project, Some(union), &["--track", track, "--repeat", "1"]);
+            let rows = records(&replayed.stdout)
+                .into_iter()
+                .filter(|row| row["task"].is_object())
+                .collect::<Vec<_>>();
+            assert_eq!(
+                rows.len(),
+                4,
+                "{}\n{}",
+                String::from_utf8_lossy(&replayed.stdout),
+                String::from_utf8_lossy(&replayed.stderr)
+            );
+            assert!(
+                rows.iter()
+                    .all(|row| row["execution"]["replay_track"] == track.parse::<u64>().unwrap())
+            );
+            assert!(rows.iter().all(|row| row["process_success"] == true));
+        }
+        fs::rename(hidden, original).unwrap();
+        fs::remove_file(project.0.join("block-union-ledger")).ok();
+        let before = records(&fs::read(project.0.join("attempts.jsonl")).unwrap()).len();
+        let replayed = sweep(
+            &project,
+            None,
+            &["--replay", "--track", "5", "--repeat", "1"],
+        );
+        assert_eq!(
+            records(&replayed.stdout)
+                .into_iter()
+                .filter(|row| row["task"].is_object())
+                .count(),
+            4,
+            "{}\n{}",
+            String::from_utf8_lossy(&replayed.stdout),
+            String::from_utf8_lossy(&replayed.stderr)
+        );
+        assert_eq!(
+            records(&fs::read(project.0.join("attempts.jsonl")).unwrap()).len(),
+            before + 4
+        );
+        let current: Value =
+            serde_json::from_slice(&fs::read(project.0.join("sweep-results/plan.json")).unwrap())
+                .unwrap();
+        let historical = project
+            .0
+            .join("sweep-history")
+            .join(current["run_id"].as_str().unwrap())
+            .join("sweep-results")
+            .join(root.strip_prefix(project.0.join("sweep-results")).unwrap())
+            .join("plan.json");
+        let compared = compare_campaign(&project, &historical);
+        assert!(
+            compared.status.success(),
+            "{}\n{}",
+            historical.display(),
+            String::from_utf8_lossy(&compared.stderr)
+        );
+        for (path, bytes) in frozen
+            .iter()
+            .filter(|(path, _)| !path.starts_with(project.0.join("sweep-results")))
+        {
+            assert_eq!(&fs::read(path).unwrap(), bytes);
+        }
+    }
+}
+
+fn check_union_measurement_only_owner(project: &Project, root: &std::path::Path, saved: &Value) {
+    let paths = [
+        root.join("batch-2/outcomes/1.json"),
+        root.join(saved["slots"][4]["log"].as_str().unwrap()),
+    ];
+    let hidden = paths
+        .iter()
+        .map(|path| path.with_extension("union-test-hidden"))
+        .collect::<Vec<_>>();
+    for (path, hidden) in paths.iter().zip(&hidden) {
+        fs::rename(path, hidden).unwrap();
+    }
+    let compare = || {
+        Command::new(env!("CARGO_BIN_EXE_asb"))
+            .current_dir(&project.0)
+            .isolated_env()
+            .env("HOME", &project.0)
+            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+            .args(["compare", "sweep.toml"])
+            .output()
+            .unwrap()
+    };
+    let valid = compare();
+    assert!(
+        valid.status.success(),
+        "{}",
+        String::from_utf8_lossy(&valid.stderr)
+    );
+    let report_path = project.0.join("results/sweep-comparison/comparison.json");
+    let before = fs::read(&report_path).unwrap();
+    // The measurement and its immutable association stay exact. Change only
+    // the actual start's generation: a measurement-only bypass used to avoid
+    // consulting that owning context altogether.
+    let path = root.join("batch-2/starts/1.json");
+    let start = fs::read(&path).unwrap();
+    let mut changed: Value = serde_json::from_slice(&start).unwrap();
+    changed["generation"]["manifest"]["sha256"] = "0".repeat(64).into();
+    fs::write(&path, serde_json::to_vec(&changed).unwrap()).unwrap();
+    let rejected = compare();
+    assert!(!rejected.status.success());
+    assert!(
+        String::from_utf8_lossy(&rejected.stderr).contains("generation"),
+        "{}",
+        String::from_utf8_lossy(&rejected.stderr)
+    );
+    assert_eq!(fs::read(&report_path).unwrap(), before);
+    assert_eq!(
+        records(&fs::read(project.0.join("attempts.jsonl")).unwrap()).len(),
+        8
+    );
+    fs::write(path, start).unwrap();
+    for (path, hidden) in paths.iter().zip(hidden) {
+        fs::rename(hidden, path).unwrap();
     }
 }
 

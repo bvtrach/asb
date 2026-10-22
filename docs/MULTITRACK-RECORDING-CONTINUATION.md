@@ -143,3 +143,100 @@ The older frozen qualification executable remained unchanged. Diagram generation
 retained all 5,090 functions and 12,970 edges, with Graphviz's nonfatal straight-
 edge fallback. Packaging/extracted-install and exact-head hosted CI are still
 feature-delivery gates, not established by this backend checkpoint.
+
+## Runtime integration checkpoint (not feature delivery)
+
+Recording continuation now freezes a per-configuration union descriptor inside
+the all-configuration generation manifest. Its configuration-qualified physical
+ID and destination are distinct from the original logical campaign. The ZIP and
+journal live beside the original stable recording destination, outside rotating
+sweep results. Historical sources are grouped/indexed once per import phase;
+their exact full metadata and payloads are imported without new producer
+associations, capture receipts or grades. All configurations' imports finish
+under the retained campaign owners before the global admission is published.
+No verified old material means no initial journal: genuine material preparation
+still initializes it, with the same selection/capacity checks as fresh recording.
+Actual dispatch membership alone creates new local intents. Imported IDs bypass
+local raw fallback and raw cleanup.
+
+New recording evidence carries an optional generation binding and optional
+backend `origin_sha256` commitment. Legacy absent fields stay omitted on wire.
+The grouped backend proof checks the actual journal origin against that expected
+commitment; the owning catalog independently binds it to the frozen descriptor,
+actual original start/cohort, physical destination and logical slot. Strict
+settlement checks this before payload proofs. Reporting checks the actual chosen
+summary on every source route, including measurement-only fallback. Standalone
+campaign reports locate the owning retained sweep by its fixed layout/index,
+not a locator supplied by the recording, including under preserved history.
+
+Confirmed backend publication provides its exact prepared compressed length and
+SHA. An immutable generation publication receipt is written before an explicit
+`recording-current.json` reference. Default replay follows that reference through
+the validated catalog, not filename recency. Its archive reader hashes compressed
+bytes and inspects the manifest on one pinned descriptor; it does not inflate
+unselected tracks. Matching retained publication metadata is re-synced, not merely
+accepted by byte equality. Recovery preflights all exact publication/ledger plans
+before advancing any pointer. Backend archive confirmations remain independently
+monotonic; this is not an atomic cross-configuration rollback transaction.
+
+An admitted recording union without a current reference requires explicit
+publication recovery before default replay. It must never silently fall back to
+the older archive and omit new tracks. This check precedes clients, result
+rotation and replacement reports. Explicit user-selected cassette sources remain
+an intentional separate choice.
+
+Validated immutable journal and catalog owners derive their private origin
+commitments once; no cached commitment is serialized or accepted as authority.
+Read-only grouped proofs still derive the commitment from actual retained intent.
+Capacity is recomputed once at successful material admission, while every batch
+still checks logical names, full compatibility and actual dispatch membership.
+Thus checking each slot does not repeatedly serialize the complete import plan.
+
+`asb sweep SWEEP --resume --record --recover-recording` only repairs existing
+frozen publications and their receipt/ledger. It runs before execution planning
+or provider preparation, returns reports rather than a worker capability, and
+starts no agents or evaluators. It binds the original input identity, catalog and
+receipts, but does not require the departed controller's procfs/runtime or current
+provider credentials to match. File-backed metadata is checked before/after;
+ordinary execution resume retains its original stricter environment check.
+This operation needs a usable Python for metadata hashing. Original benchmark
+retained-outcome validation still uses its installed SDK's read-only checker;
+there is no claim that those SDK files may be removed. Missing/foreign published
+archives and conflicting metadata are retained errors, never permission to
+recreate a published target or retry an uncertain attempt.
+
+Focused qualification: 52 repeated-run/sweep tests and 80 cassette tests passed.
+The public C4/N2 fixtures use genuine first-batch receipts, retain a false grade,
+launch only four pending clients, and start none on a second resume. They compare
+all old track metadata/payloads and old receipts/associations byte-for-byte, replay
+imported/new tracks with the provider stopped and ancestor ZIP unavailable,
+follow the union by default and compare preserved history after result rotation.
+A real client-created ledger blocker exercises credential-free publication-only
+recovery twice with zero new clients/evaluations. A measurement-only report must
+reject an altered actual generation start while retaining the previous report.
+Primitive faults cover exact archive corruption, after-link publication/ledger
+failures, mandatory retained-file/directory re-sync and late metadata conflicts.
+These remain synthetic-provider/local-workload qualifications, not live LLM or
+original-SDK continuation claims. Full source/packaging/hosted gates, additional
+fault/SDK cases and repeated continuation-generation lineage remain required.
+The offline viewer has not been implemented by this checkpoint.
+
+The pre-cache runtime full-source checkpoint (`recording-union-full.log`) passed
+1,331 library tests plus all integration tests and doctests, with 13 library
+tests explicitly ignored. Strict all-target/all-feature Clippy and build passed.
+Subsequent focused tests prove one origin hash per journal create/recovery,
+fresh on-disk grouped-proof validation, one capacity check across successful
+batches with later identity/material/member rejection, and missing-ledger replay
+refusal without clients or changes to the saved index/report/history. These
+checks do not establish hosted CI, packaging, repeated-generation lineage or
+official-SDK continuation readiness.
+
+The subsequent cache/runtime checkpoint (`recording-union-cache-full.log`)
+passed all 1,333 library tests, all integration suites (including 52 repeated
+run/sweep tests) and doctests. Thirteen library tests remain explicitly ignored.
+Strict Clippy, offline build, formatting, seven checkout-update tests, Rust
+documentation, UML and interactive dataflow/control-flow generation also passed.
+The independent read-only reviewer found no defect in the private-cache and
+missing-ledger changes. The append-only successive-generation design is recorded
+separately in [continuation lineage](MULTITRACK-CONTINUATION-LINEAGE.md); it is
+not implemented by this checkpoint and feature 5 is not merge/release ready.

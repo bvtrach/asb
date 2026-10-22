@@ -70,6 +70,9 @@ pub struct TrackEvidence {
     pub concurrency: u64,
     /// Immutable committed metadata and exact uncompressed payload identity.
     pub track: Track,
+    /// Optional immutable origin commitment, checked against the actual journal.
+    #[serde(default)]
+    pub origin_sha256: Option<String>,
 }
 
 impl TrackEvidence {
@@ -78,6 +81,10 @@ impl TrackEvidence {
         if self.schema_version != 1
             || !self.destination.is_absolute()
             || self.recording_id.len() > 128
+            || self
+                .origin_sha256
+                .as_ref()
+                .is_some_and(|digest| !super::super::valid_digest(digest))
         {
             return Err(Error("invalid immutable recording track reference".into()));
         }
@@ -158,6 +165,7 @@ impl TrackEvidence {
             if group.expected.recording_id != evidence.recording_id
                 || group.expected.compatibility != evidence.compatibility
                 || group.expected.concurrency != evidence.concurrency
+                || group.expected.origin_sha256 != evidence.origin_sha256
             {
                 return Err(Error(
                     "conflicting recording identities in evidence batch".into(),
@@ -252,7 +260,14 @@ impl<'a> Prepared<'a> {
         )?;
         intent.manifest.validate(limits)?;
         let count = validate_count(intent.repeat, intent.manifest.concurrency, limits)?;
+        let origin_plan = intent
+            .manifest
+            .provenance
+            .as_ref()
+            .map(crate::cassette::OriginPlan::commitment)
+            .transpose()?;
         if !intent.manifest.tracks.is_empty()
+            || origin_plan != expected.origin_sha256
             || intent
                 .manifest
                 .provenance
@@ -303,12 +318,7 @@ impl<'a> Prepared<'a> {
         }
         budget.metadata -= journal_allowance - journal_remaining;
         let mut prepared = Self {
-            origin_plan: intent
-                .manifest
-                .provenance
-                .as_ref()
-                .map(crate::cassette::OriginPlan::commitment)
-                .transpose()?,
+            origin_plan,
             group,
             root,
             original,
@@ -440,7 +450,7 @@ fn charge(used: &mut u64, bytes: u64, limit: u64, kind: &str) -> Result<(), Erro
     Ok(())
 }
 
-pub(super) fn observed(_event: &'static str) {
+pub(in crate::cassette) fn observed(_event: &'static str) {
     #[cfg(test)]
     {
         OBSERVATIONS.with_borrow_mut(|events| *events.entry(_event).or_default() += 1);
@@ -482,6 +492,7 @@ impl RecordingJournal {
             compatibility: self.intent.manifest.compatibility.clone(),
             concurrency: self.intent.manifest.concurrency,
             track: track.clone(),
+            origin_sha256: self.origin_commitment.clone(),
         })
     }
 }

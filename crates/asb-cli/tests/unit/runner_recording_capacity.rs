@@ -66,7 +66,7 @@ fn genuine_identity_is_checked_before_creating_a_journal_and_shape_hashes_never_
         };
         // Equal lengths must not turn name identity into a byte-budget check.
         *value = "z".repeat(value.len());
-        assert!(recorder.prepare(&changed, 1).is_err());
+        assert!(recorder.prepare(&changed, 1, &[1]).is_err());
         assert!(!destination.exists());
         assert!(!root.join(format!(".refused-{field}.zip.partial")).exists());
         assert!(
@@ -88,7 +88,7 @@ fn genuine_identity_is_checked_before_creating_a_journal_and_shape_hashes_never_
     let mut observed = identity;
     observed.material_sha256 = "f".repeat(64);
     observed.prompt_sha256 = "e".repeat(64);
-    recorder.prepare(&observed, 1).unwrap();
+    recorder.prepare(&observed, 1, &[1]).unwrap();
     let intent: serde_json::Value = serde_json::from_slice(
         &std::fs::read(root.join(".observed.zip.partial/intent.json")).unwrap(),
     )

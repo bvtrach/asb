@@ -156,6 +156,8 @@ impl RecordingReservation {
             compatibility: shape.wire()?,
             concurrency,
             track: &track,
+            origin_sha256: provenance
+                .map(|_| "0000000000000000000000000000000000000000000000000000000000000000"),
         };
         let reference_bytes = encoded_size(&reference, u64::MAX)?
             .checked_mul(count)

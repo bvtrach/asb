@@ -56,6 +56,7 @@ pub(crate) struct Options<'a> {
     pub resume: bool,
     pub reconcile_completed: bool,
     pub import_grades: bool,
+    pub recover_recording: bool,
 }
 
 impl Default for Options<'_> {
@@ -74,6 +75,7 @@ impl Default for Options<'_> {
             resume: false,
             reconcile_completed: false,
             import_grades: false,
+            recover_recording: false,
         }
     }
 }
@@ -124,6 +126,43 @@ pub(crate) fn run_with_options(
         .unwrap_or("sweep");
     // Keep ownership through comparison, including moving older output trees.
     let _output_lock = lock::OutputLock::acquire(parent, stem)?;
+    if options.recover_recording {
+        if !options.resume
+            || options.mode != Some(crate::tape::Mode::Record)
+            || options.import_grades
+            || options.reconcile_completed
+            || options.show_output
+            || options.repeat.is_some()
+            || options.track.is_some()
+            || options.seed.is_some()
+            || options.cassette_root.is_some()
+            || options.respect_record_timings
+            || options.max_active_attempts.is_some()
+        {
+            return Err(Error::Input("--recover-recording requires --resume --record and accepts no execution/selection options".into()));
+        }
+        let results = parent.join(format!("{stem}-results"));
+        let saved = plan::SweepPlan::load(&results, parent, &sweep)?
+            .ok_or_else(|| Error::Input("no retained sweep to recover".into()))?;
+        if saved.execution_mode != plan::SavedExecutionMode::Record || saved.execution.is_none() {
+            return Err(Error::Input(
+                "retained sweep is not a recording campaign".into(),
+            ));
+        }
+        for report in checkpoint::Inputs::recover_recordings(parent, &results, &saved)? {
+            if options.json {
+                writeln!(output, "{report}").map_err(crate::io_error)?;
+            } else {
+                writeln!(
+                    output,
+                    "Recovered recording publication: {} (no agents or evaluators started)",
+                    report["destination"].as_str().unwrap_or("unknown")
+                )
+                .map_err(crate::io_error)?;
+            }
+        }
+        return Ok(());
+    }
     if options.import_grades {
         if options.resume
             || options.reconcile_completed

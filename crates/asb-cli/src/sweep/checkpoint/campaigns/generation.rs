@@ -13,6 +13,7 @@ use std::fs;
 
 /// Not Clone/Deserialize. Original observation budgets never enter workers.
 struct Campaign {
+    recorder: Option<std::sync::Arc<crate::runner::recording::Recorder>>,
     compatibility: Option<crate::cassette::Compatibility>,
     invocation: PathBuf,
     root: PathBuf,
@@ -42,6 +43,7 @@ pub(in crate::sweep) struct Prepared {
 /// Only a fully published generation can produce worker capabilities. This is
 /// not deserializable; a future recovery path must positively revalidate state.
 pub(in crate::sweep) struct AdmittedCampaign {
+    recorder: Option<std::sync::Arc<crate::runner::recording::Recorder>>,
     compatibility: Option<crate::cassette::Compatibility>,
     invocation: PathBuf,
     root: PathBuf,
@@ -98,6 +100,7 @@ impl AdmittedCampaign {
                 pending: self.manifest.pending,
                 compatibility: self.compatibility,
                 reference,
+                recording: self.recorder,
             },
             json,
             show_output,
@@ -146,15 +149,6 @@ impl Prepared {
                 "completed-only reuse needs no continuation generation",
             ));
         }
-        if classified
-            .layouts
-            .iter()
-            .any(|layout| layout.plan.mode == crate::planning::ExecutionMode::Record)
-        {
-            return Err(recovery(
-                "recording continuation requires union publication recovery",
-            ));
-        }
         let Classified {
             mut identities,
             origin,
@@ -170,6 +164,8 @@ impl Prepared {
         let mut references = Vec::with_capacity(layouts.len());
         let mut total_bytes = 0usize;
         let mut total_slots = 0usize;
+        let mut recording_capacity = crate::cassette::RecordingReservation::default();
+        let mut import_bytes = 0u64;
         for (configuration, layout) in layouts.into_iter().enumerate() {
             let retained = completed.remove(&configuration).unwrap_or_default();
             let untouched = pending.get(&configuration).cloned().unwrap_or_default();
@@ -225,6 +221,32 @@ impl Prepared {
                     Ok(Batch { batch, cohort })
                 })
                 .collect::<Result<Vec<_>, Error>>()?;
+            let recording = if layout.plan.mode == crate::planning::ExecutionMode::Record
+                && !pending.is_empty()
+            {
+                let descriptor = crate::runner::recording::union::Descriptor::plan(
+                    &layout.plan,
+                    &generation,
+                    configuration,
+                    &retained,
+                )?;
+                recording_capacity = recording_capacity
+                    .checked_add(&descriptor.reservation)
+                    .map_err(|error| recovery(&error.to_string()))?;
+                import_bytes = descriptor
+                    .origins
+                    .imports
+                    .iter()
+                    .try_fold(import_bytes, |total, imported| {
+                        total.checked_add(imported.bytes).filter(|total| {
+                            *total <= crate::cassette::Limits::default().max_total_bytes
+                        })
+                    })
+                    .ok_or_else(|| recovery("union imports exceed global payload budget"))?;
+                Some(descriptor)
+            } else {
+                None
+            };
             let manifest = Manifest {
                 schema_version: 1,
                 scope: SCOPE.into(),
@@ -240,6 +262,7 @@ impl Prepared {
                     .clone(),
                 completed: receipts,
                 pending,
+                recording,
             };
             let bytes = encode(&manifest)?;
             total_bytes = total_bytes
@@ -252,6 +275,7 @@ impl Prepared {
             });
             // Drop the Layout here, retaining only its owned Send plan and root.
             campaigns.push(Campaign {
+                recorder: None,
                 compatibility: identities.remove(&configuration),
                 invocation: origin
                     .invocation_parent
@@ -263,6 +287,9 @@ impl Prepared {
                 bytes,
             });
         }
+        recording_capacity
+            .validate(crate::cassette::ProofLimits::default())
+            .map_err(|error| recovery(&error.to_string()))?;
         let admission = Admission {
             schema_version: 1,
             scope: SCOPE.into(),
@@ -440,6 +467,43 @@ impl Prepared {
             }
         }
         self.recheck(results, sweep)?;
+        // The fixed checkpoint root above is already durable: any staging
+        // failure is visible recovery state, never permission to mint another
+        // generation. Import EVERY configuration before admitting ANY worker.
+        for campaign in &mut self.campaigns {
+            if let Some(descriptor) = &campaign.manifest.recording {
+                let generations = campaign.root.join(".asb-generations");
+                let mut builder = fs::DirBuilder::new();
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::DirBuilderExt;
+                    builder.mode(0o700);
+                }
+                builder
+                    .recursive(true)
+                    .create(&generations)
+                    .map_err(io_error)?;
+                sync_directory(&campaign.root)?;
+                let stage = generations.join(&campaign.manifest.generation);
+                builder.recursive(false).create(&stage).map_err(io_error)?;
+                sync_directory(&generations)?;
+                let reference = crate::runner::campaign::generation::StartReference {
+                    generation: campaign.manifest.generation.clone(),
+                    configuration: campaign.manifest.configuration,
+                    manifest: Blob::of(&campaign.bytes),
+                    admission: Blob::of(&self.admission_bytes),
+                };
+                campaign.recorder = Some(std::sync::Arc::new(
+                    crate::runner::recording::Recorder::for_union(
+                        campaign.root.clone(),
+                        &campaign.plan,
+                        descriptor.clone(),
+                        reference,
+                        campaign.compatibility.clone(),
+                    )?,
+                ));
+            }
+        }
         publish_bytes(&directory.join("admitted.json"), &self.admission_bytes)?;
         // Even a post-link sync failure above returns NO executable capability.
         // Explicit recovery must distinguish published metadata from starts.
@@ -447,6 +511,7 @@ impl Prepared {
             .campaigns
             .into_iter()
             .map(|campaign| AdmittedCampaign {
+                recorder: campaign.recorder,
                 compatibility: campaign.compatibility,
                 invocation: campaign.invocation,
                 root: campaign.root,

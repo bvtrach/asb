@@ -119,6 +119,17 @@ pub(super) fn prepare(
     } else {
         None
     };
+    let previous_layouts = previous
+        .as_ref()
+        .filter(|saved| saved.execution.is_some())
+        .map(|saved| saved.read_campaigns(results))
+        .transpose()?;
+    let previous_catalog = previous
+        .as_ref()
+        .zip(previous_layouts.as_ref())
+        .map(|(saved, layouts)| saved.generation_catalog(results, layouts))
+        .transpose()?
+        .flatten();
     let sources = plan.entries.iter().enumerate().map(|(index, entry)| {
         let name = execution::result_name(index, Path::new(&entry.reference));
         if options.mode == Some(tape::Mode::Record) {
@@ -133,7 +144,8 @@ pub(super) fn prepare(
         {
             if old.reference != entry.reference { return Err(error("default replay source configuration order changed; select an explicit cassette root")); }
             let layout = runner::campaign::reading::Layout::read_reference(results, reference)?;
-            let source = layout.plan.recording.or(layout.plan.replay_source).or_else(|| layout.plan.replay_inputs.first().map(|input| input.source.clone()))
+            let current = previous_catalog.as_ref().map(|catalog| runner::recording::union::current(&layout.root, catalog, index)).transpose()?.flatten();
+            let source = current.or(layout.plan.recording).or(layout.plan.replay_source).or_else(|| layout.plan.replay_inputs.first().map(|input| input.source.clone()))
                 .ok_or_else(|| error("previous campaign has no recording/replay source"))?;
             return Ok(Some(source));
         }

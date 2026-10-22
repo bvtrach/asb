@@ -63,6 +63,19 @@ pub(crate) fn bounded_relative(root: &Path, relative: &Path, limit: u64) -> Resu
     bounded_file(file, limit)
 }
 
+/// Retain the exact regular-file descriptor whose bounded bytes were read.
+/// Publication recovery uses it to confirm durability without a pathname reopen.
+pub(crate) fn pinned_bytes(
+    root: &Path,
+    relative: &Path,
+    limit: u64,
+) -> Result<(File, Vec<u8>), Error> {
+    let file =
+        open_relative(root, relative)?.ok_or_else(|| invalid("relative input is missing"))?;
+    let bytes = bounded_file(file.try_clone().map_err(io_error)?, limit)?;
+    Ok((file, bytes))
+}
+
 /// Any existing slot-owned object prevents untouched admission. Directories
 /// are observations too; aliases/errors must never be mistaken for absence.
 pub(crate) fn present_relative(root: &Path, relative: &Path) -> Result<bool, Error> {

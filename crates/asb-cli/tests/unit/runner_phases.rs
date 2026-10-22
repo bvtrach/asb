@@ -934,7 +934,7 @@ fn recording_association_binds_actual_attempt_and_preserves_uncertain_raw_captur
     );
     let result = result();
     let identity = recording_identity(&result);
-    recorder.prepare(&identity, 1).unwrap();
+    recorder.prepare(&identity, 1, &[1]).unwrap();
     let producer = super::super::recording::base(&campaign, 1);
     std::fs::write(&producer, b"{}\n").unwrap();
     let capture = crate::proxy::capture::CaptureEvidence {
@@ -1020,7 +1020,9 @@ fn recording_setup_failure_retains_partial_bytes_with_unknown_outcomes() {
         1,
         None,
     );
-    recorder.prepare(&recording_identity(&result()), 1).unwrap();
+    recorder
+        .prepare(&recording_identity(&result()), 1, &[1])
+        .unwrap();
     let producer = super::super::recording::base(&campaign, 1);
     std::fs::write(&producer, b"partial trace").unwrap();
     recorder.finalize(false).unwrap().unwrap();

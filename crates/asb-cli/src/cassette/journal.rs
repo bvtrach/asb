@@ -4,6 +4,8 @@ mod publication;
 mod reservation;
 use super::{Error, Limits, Manifest, Statistics, Track, digest};
 use crate::output_lock::OutputLock;
+#[cfg(test)]
+pub(super) use evidence::observed;
 pub use evidence::{ProofLimits, TrackEvidence};
 #[cfg(test)]
 pub(super) use evidence::{set_hook, take_observations};
@@ -57,6 +59,8 @@ pub struct RecordingJournal {
     root: PathBuf,
     destination: PathBuf,
     intent: Intent,
+    // Derived once from validated immutable intent, never loaded from the wire.
+    origin_commitment: Option<String>,
     starts: BTreeMap<u64, Started>,
     commits: BTreeMap<u64, Track>,
     limits: Limits,
@@ -100,6 +104,12 @@ impl RecordingJournal {
             repeat,
             destination_name: name,
         };
+        let origin_commitment = intent
+            .manifest
+            .provenance
+            .as_ref()
+            .map(super::OriginPlan::commitment)
+            .transpose()?;
         let encoded = serde_json::to_vec(&intent).map_err(json_error)?;
         reserve_metadata(&intent, count, limits)?;
         let (destination, root, _, owner) = paths_and_lock(destination)?;
@@ -123,6 +133,7 @@ impl RecordingJournal {
             root,
             destination,
             intent,
+            origin_commitment,
             starts: BTreeMap::new(),
             commits: BTreeMap::new(),
             limits,
@@ -170,11 +181,18 @@ impl RecordingJournal {
                 "recording intent does not match this destination".into(),
             ));
         }
+        let origin_commitment = intent
+            .manifest
+            .provenance
+            .as_ref()
+            .map(super::OriginPlan::commitment)
+            .transpose()?;
         let mut journal = Self {
             _owner: owner,
             root,
             destination,
             intent,
+            origin_commitment,
             starts: BTreeMap::new(),
             commits: BTreeMap::new(),
             limits,

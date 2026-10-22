@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 pub(crate) const MAX_CONFIG_BYTES: usize = 32 * 1024 * 1024;
 
 mod campaigns;
+mod generation;
 pub(crate) const MAX_PLAN_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -167,7 +168,7 @@ impl SweepPlan {
 
     /// Read a historical source index against its OWN retained configurations,
     /// not today's potentially different replay concurrency/collector choices.
-    pub(super) fn source_snapshot(directory: &Path, parent: &Path) -> Result<Option<Self>, Error> {
+    pub(crate) fn source_snapshot(directory: &Path, parent: &Path) -> Result<Option<Self>, Error> {
         let path = directory.join("plan.json");
         match std::fs::symlink_metadata(&path) {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),

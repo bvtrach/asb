@@ -924,6 +924,16 @@ fn publish(path: &Path, value: &impl Serialize) -> Result<(), Error> {
 }
 
 pub(crate) fn publish_bytes(path: &Path, bytes: &[u8]) -> Result<(), Error> {
+    publish_bytes_after_link(path, bytes, || Ok(()))
+}
+
+/// Shared publisher seam for private fault qualification; production callers
+/// cannot select it through configuration, environment or CLI arguments.
+pub(crate) fn publish_bytes_after_link(
+    path: &Path,
+    bytes: &[u8],
+    after_link: impl FnOnce() -> Result<(), Error>,
+) -> Result<(), Error> {
     let directory = path
         .parent()
         .ok_or_else(|| Error::Input("execution metadata needs a parent".into()))?;
@@ -943,6 +953,7 @@ pub(crate) fn publish_bytes(path: &Path, bytes: &[u8]) -> Result<(), Error> {
         .and_then(|()| file.sync_all())
         .and_then(|()| fs::hard_link(&temporary, path))
         .map_err(io_error)?;
+    after_link()?;
     fs::File::open(directory)
         .and_then(|file| file.sync_all())
         .map_err(io_error)?;
