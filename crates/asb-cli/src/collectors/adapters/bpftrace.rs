@@ -7,6 +7,7 @@ use std::fs;
 use std::path::Path;
 use std::process::{Command, Stdio};
 mod custom_scope;
+mod snapshots;
 #[cfg(test)]
 mod startup;
 pub(super) struct BpftraceCollector;
@@ -70,6 +71,31 @@ impl CollectorAdapter for BpftraceCollector {
     fn attach_pid(&self, session: &mut measurements::Session, pid: u32) -> Result<(), String> {
         session.attach_bpftrace(pid)
     }
+    fn lifecycle_event(
+        &self,
+        session: &mut measurements::Session,
+        event: super::super::LifecycleEvent,
+    ) -> Result<(), String> {
+        use super::super::LifecycleEvent;
+        let state = session.state::<BpftraceState>();
+        let mut state = state.borrow_mut();
+        match event {
+            LifecycleEvent::AgentStarted => {
+                if state.execution_start_ns.is_none() {
+                    state.execution_start_ns = snapshots::monotonic_ns();
+                }
+            }
+            LifecycleEvent::AgentExecuteEnd
+            | LifecycleEvent::AgentExited
+            | LifecycleEvent::RunFailed => {
+                if state.execution_end_ns.is_none() {
+                    state.execution_end_ns = snapshots::monotonic_ns();
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
 }
 
 fn process(
@@ -80,7 +106,28 @@ fn process(
     if let Some(profile) = context.name.strip_prefix("bpftrace-") {
         let output = super::super::read_complete_output(context.stdout_reader()?)?;
         result.metrics = parse_bpftrace_metrics(profile, &output);
-        result.series = parse_bpftrace_series(profile, &output);
+        let bounds = {
+            let state = session.state::<BpftraceState>();
+            let state = state.borrow();
+            state
+                .execution_start_ns
+                .zip(state.execution_end_ns)
+                .filter(|(start, end)| end >= start)
+        };
+        let samples = snapshots::parse(profile, &output, bounds)?;
+        result.series = samples.values;
+        result.timestamps = samples.timestamps;
+        measurements::write_json(
+            &session.dir.join(format!("bpftrace-{profile}-timing.json")),
+            &serde_json::json!({
+                "schema_version":1,"collector":"bpftrace-snapshot-timing",
+                "clock":"CLOCK_MONOTONIC; execution-relative milliseconds",
+            "timing_status":if bounds.is_none() {"unavailable execution clock"} else if samples.groups==0 {"no timestamped snapshots; scalar aggregates only"} else if samples.accepted_groups==0 {"no snapshots overlap execution"} else if result.series.is_empty() {"no numeric timestamped observations"} else {"timestamped snapshots"},
+                "snapshot_semantics":"Timestamp marks the kernel interval callback; bpftrace prints maps asynchronously, so map reads are not atomic counter snapshots. Missing keys remain gaps, never zero padding.",
+                "complete_groups":samples.groups,
+            "execution_groups":samples.accepted_groups,
+            }),
+        )?;
         super::super::validate_processed_output(&result)?;
         write_bpftrace_profile_svg(&session.dir, profile, &result.status, &result.metrics)?;
     }
@@ -168,6 +215,8 @@ struct BpftraceState {
     enabled: bool,
     profiles: Vec<BpftraceProfile>,
     custom: Vec<PreparedCustomProgram>,
+    execution_start_ns: Option<u64>,
+    execution_end_ns: Option<u64>,
 }
 
 #[derive(Clone)]
@@ -217,6 +266,8 @@ fn prepare_state(selected: &[String]) -> Result<BpftraceState, String> {
         enabled,
         profiles: selected_bpftrace_profiles(selected)?,
         custom,
+        execution_start_ns: None,
+        execution_end_ns: None,
     })
 }
 
@@ -670,6 +721,7 @@ pub(crate) fn parse_bpftrace_metrics(profile: &str, output: &str) -> BTreeMap<St
     metrics
 }
 
+#[cfg(test)]
 pub(crate) fn parse_bpftrace_series(profile: &str, output: &str) -> BTreeMap<String, Vec<f64>> {
     let mut series: BTreeMap<String, Vec<f64>> = BTreeMap::new();
     for line in output.lines() {
@@ -719,9 +771,9 @@ mod tests {
         .unwrap();
         assert_eq!(result.status, "completed");
         assert_eq!(result.metrics["bpftrace.syscall-rate.syscalls"], 900.0);
-        assert_eq!(
-            result.series["bpftrace.syscall-rate.syscalls"],
-            [2.0, 900.0]
+        assert!(
+            result.series.is_empty(),
+            "untimed maps must not invent a clock series"
         );
         assert!(
             crate::collectors::process_output_fixture(

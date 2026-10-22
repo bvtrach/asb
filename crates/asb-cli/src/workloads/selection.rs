@@ -8,7 +8,7 @@ pub(crate) struct PlanningCatalog {
     pub requirements: std::collections::BTreeMap<String, crate::planning::TaskRequirements>,
     pub dataset: DatasetIdentity,
     pub task_ids: BTreeSet<String>,
-    pub evaluation_kind: &'static str,
+    pub evaluation_kind: super::KnownEvaluationKind,
 }
 
 /// A selection is not an execution attempt or evidence of a passing baseline.
@@ -34,7 +34,10 @@ impl TaskSelection {
                     && module.dataset == self.dataset
                     && match module.support {
                         super::contracts::SupportLevel::OfficialAdapter => {
-                            self.evaluation_kind == "upstream-harness"
+                            super::SavedEvaluationKind::classify(&self.evaluation_kind)
+                                == super::SavedEvaluationKind::Known(
+                                    super::KnownEvaluationKind::UpstreamHarness,
+                                )
                         }
                         _ => self.evaluation_kind == module.protocol.id,
                     }
@@ -93,8 +96,8 @@ pub(crate) fn describe(
         task_id: trial.unwrap_or(workload).into(),
         dataset: catalog.map(|catalog| catalog.dataset.clone()),
         evaluation_kind: catalog.map_or_else(
-            || super::evaluation_kind(workload, directory).into(),
-            |catalog| catalog.evaluation_kind.into(),
+            || super::evaluation_kind(workload, directory).as_str().into(),
+            |catalog| catalog.evaluation_kind.as_str().into(),
         ),
         population_size: catalog.map(|catalog| catalog.task_ids.len()),
     };
@@ -137,7 +140,7 @@ mod tests {
             requirements: Default::default(),
             dataset: profile.dataset.unwrap(),
             task_ids: ["task-1".into()].into_iter().collect(),
-            evaluation_kind: "upstream-harness",
+            evaluation_kind: crate::workloads::KnownEvaluationKind::UpstreamHarness,
         };
         let selection = describe(
             "swe-bench-lite",
@@ -172,7 +175,7 @@ mod tests {
                 split: "test".into(),
             },
             task_ids: ["issue-1".into(), "issue-2".into()].into_iter().collect(),
-            evaluation_kind: "upstream-harness",
+            evaluation_kind: crate::workloads::KnownEvaluationKind::UpstreamHarness,
         };
         assert!(describe("suite", None, None, Path::new("."), Some(&catalog)).is_err());
         assert!(

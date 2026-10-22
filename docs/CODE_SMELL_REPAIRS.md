@@ -14,6 +14,28 @@ informational, not a substitute for meaningful offline regressions. Required
 functional CI, independent review, exact-head validation and patch releases
 still apply to each repair class.
 
+Runner phase completion, coordinated staged patch **0.2.43**, locally qualified:
+immutable red `dcd2467d` proves stopped-warning and late-cwd errors bypassed result
+publication after grading. Consuming configured/provider/workload/runtime/result/
+publication states preserve custody and independent finalization; stopped-warning
+I/O is sticky before sealing, while early physical anchors retain logical wire
+spelling. Finished workload ownership lasts through publication/observer/output;
+started execution errors never call prepared-only cancellation. Existing validated
+reuse semantics are unchanged. Root independently approved original phase source
+`0fde0699` and combined official41/termination42 merge `e71a3b62`; incoming
+production outside the two runner modules is preserved. Three additional actual
+warning/optional-observation fault combinations retain true/false/native-null
+grades. Fresh combined focus passed 842 tests, zero failed, 14 optional skips
+across 12 deduplicated groups. Authorized fresh full qualification passed 1,423
+tests, zero failed, 21 existing opt-in skips across 24 outer targets; nested
+subprocess summaries are excluded. Separate doctests, strict Clippy/fmt and
+sequential offline build/private docs/pinned diagrams/flows/interactive views/
+completion syntax passed. Actual binary `f39fc5d6…` remained unchanged; historical
+`b318ba43…` and red evidence are separately preserved. Independent final proof
+review, actual-main delivery ancestry and all hosted/merge/release gates remain
+pending. This does not complete the original broad audit. See
+[phase repair](RUNNER_PHASE_COMPLETION_REPAIR.md) for exact tests and limitations.
+
 Setup publication integration, coordinated staged patch **0.2.40**, locally qualified:
 reviewed collector39 `1d409705` is combined with independently approved setup
 `0caafe3d`, plus reviewed fixture-only permission restoration `e284b2b7`.
@@ -30,7 +52,21 @@ Independent final evidence review, current-main coordination, hosted/package
 CI, merge, both post-merge jobs and a coordinated release remain pending.
 No push or PR accompanied this evidence-only checkpoint. See
 [setup integration](SETUP_PUBLICATION_INTEGRATION.md) for exact scope and limits.
-Latest verified delivery: setup [PR #305](https://github.com/martin-beck/asb/pull/305)
+Latest verified delivery: official binding [PR #306](https://github.com/martin-beck/asb/pull/306)
+merged as `fb4cce4d8f82547b998228685a2659b839118b20`, with exact-head CI
+`39687408084` and both post-merge jobs `39688437266` successful. Signed
+annotated v0.2.41 tag `1a66fb951c6e1a423e4cd66b3c646339eae475ff` targets that
+commit with GitHub-verified valid signature; release published at
+2026-10-21 22:54:42 UTC.
+
+Termination PR #307 passed exact-head CI `39688577324` and merged with an
+identical tree as `32329d76bfabef76ee4b9db1c32b5d82b5335c9a`. Its post-merge
+run `39689920357` is in progress; signed v0.2.42 remains pending. Runner phase
+stage43 preserves this actual-main ancestry in `b01b30e6`; production/tests
+remain byte-identical to independently qualified source `e71a3b62`. Its hosted
+delivery is still pending.
+
+Earlier setup [PR #305](https://github.com/martin-beck/asb/pull/305)
 merged as `4caaab14bbbcfd2f30a99e58b522394dbd5a29cc`, with exact-head CI
 `39684689249` and both post-merge jobs `39686295128` successful. Signed
 annotated v0.2.40 tag `2afd95ae592371fd5a72dd588c9a5f81b53ffff4` targets that
@@ -39,10 +75,10 @@ commit with GitHub-verified valid signature; release published at
 
 Official-binding PR #306 passed exact-head CI `39687408084` and merged with an
 identical tree as `fb4cce4d8f82547b998228685a2659b839118b20`. Its post-merge run
-`39688437266` is in progress; signed v0.2.41 remains pending. Termination stage42
+`39688437266` and signed v0.2.41 are complete as recorded above. Termination stage42
 preserves this actual-main ancestry in `cab2dd4f`; production/tests remain
 byte-identical to independently qualified source `9b843ee3`. Its hosted
-delivery is still pending.
+delivery is now at the verified merge/post-merge stage recorded above.
 
 Earlier collector [PR #304](https://github.com/martin-beck/asb/pull/304)
 merged as `c612c6c9a4b743c206840908e6a9c91915e75f26`. Exact-head CI

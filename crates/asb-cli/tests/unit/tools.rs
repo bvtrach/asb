@@ -51,6 +51,7 @@ impl ToolAdapter for DefaultTool {
 fn default_and_static_adapter_hooks_have_explicit_nonexecuting_contracts() {
     let fixture = Fixture::new();
     let project = project::ProjectConfig::default();
+    let installation = crate::install::OperationContext::new(&fixture.0, &project).unwrap();
     let context = crate::runtime_inputs::Context {
         root: &fixture.0,
         project: &project,
@@ -58,10 +59,11 @@ fn default_and_static_adapter_hooks_have_explicit_nonexecuting_contracts() {
     assert!(DefaultTool.guest_assets(&fixture.0).unwrap().is_empty());
     assert!(DefaultTool.runtime_path(&fixture.0).is_none());
     assert!(DefaultTool.helper_executables().is_empty());
-    assert!(!DefaultTool.host_runtime_usable());
+    assert!(!DefaultTool.host_runtime_usable(&installation).unwrap());
     assert!(DefaultTool.runtime_inputs(&context).is_err());
     DefaultTool
         .post_install(
+            &installation,
             Path::new("fixture"),
             &mut |_, _| panic!("no default progress"),
             &mut Vec::new(),
@@ -75,10 +77,11 @@ fn default_and_static_adapter_hooks_have_explicit_nonexecuting_contracts() {
         }])
     }
     fn hook(
+        _: &crate::install::OperationContext,
         _: &Path,
         progress: &mut dyn FnMut(u8, crate::install::ProgressStage),
         output: &mut dyn std::io::Write,
-    ) -> Result<(), crate::Error> {
+    ) -> crate::install::InstallResult<()> {
         progress(17, crate::install::ProgressStage::Finalizing);
         writeln!(output, "fixture postinstall").unwrap();
         Ok(())
@@ -91,13 +94,13 @@ fn default_and_static_adapter_hooks_have_explicit_nonexecuting_contracts() {
         ToolKind::Collector,
     )
     .with_guest_assets(assets)
-    .with_host_probe(|| true)
+    .with_host_probe(|_| Ok(true))
     .with_post_install(hook)
     .with_runtime_path()
     .with_helper_executables(&["helper"]);
     assert_eq!(tool.id(), "fixture");
     assert!(tool.kind() == ToolKind::Collector);
-    assert!(tool.host_runtime_usable());
+    assert!(tool.host_runtime_usable(&installation).unwrap());
     assert_eq!(tool.helper_executables(), ["helper"]);
     assert!(tool.runtime_path(&fixture.0).is_none());
     fs::create_dir(fixture.0.join("bin")).unwrap();
@@ -108,6 +111,7 @@ fn default_and_static_adapter_hooks_have_explicit_nonexecuting_contracts() {
     let mut stages = Vec::new();
     let mut output = Vec::new();
     tool.post_install(
+        &installation,
         Path::new("fixture"),
         &mut |percent, _| stages.push(percent),
         &mut output,

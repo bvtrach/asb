@@ -80,7 +80,7 @@ impl RunFailure {
 
 pub(super) struct RunFacts<'a> {
     pub evaluation: &'a EvaluationOutcome,
-    pub evaluation_kind: &'a str,
+    pub evaluation_kind: crate::workloads::KnownEvaluationKind,
     pub process_success: bool,
     pub agent_failure: Option<&'a str>,
     pub run_error: Option<&'a str>,
@@ -155,9 +155,11 @@ impl RunDisposition {
             RunStatus::Failed
         } else if matches!(facts.evaluation, EvaluationOutcome::Pending { .. }) {
             RunStatus::EvaluationPending
-        } else if success && facts.evaluation_kind == "invalid-baseline" {
+        } else if success
+            && facts.evaluation_kind == crate::workloads::KnownEvaluationKind::InvalidBaseline
+        {
             RunStatus::Unscored
-        } else if success && !crate::workloads::resolution_eligible(facts.evaluation_kind) {
+        } else if success && !facts.evaluation_kind.resolution_eligible() {
             RunStatus::SmokePassed
         } else if success {
             RunStatus::Completed
@@ -192,7 +194,7 @@ mod tests {
     fn facts(evaluation: &EvaluationOutcome) -> RunFacts<'_> {
         RunFacts {
             evaluation,
-            evaluation_kind: "bundled-fixture",
+            evaluation_kind: crate::workloads::KnownEvaluationKind::BundledFixture,
             process_success: true,
             agent_failure: None,
             run_error: None,
@@ -410,9 +412,18 @@ mod tests {
             serde_json::json!({"status":"completed","failure_kind":null,"failure_reason":null})
         );
         for (kind, expected) in [
-            ("invalid-baseline", RunStatus::Unscored),
-            ("adapter-smoke", RunStatus::SmokePassed),
-            ("custom-future-evaluator", RunStatus::SmokePassed),
+            (
+                crate::workloads::KnownEvaluationKind::InvalidBaseline,
+                RunStatus::Unscored,
+            ),
+            (
+                crate::workloads::KnownEvaluationKind::AdapterSmoke,
+                RunStatus::SmokePassed,
+            ),
+            (
+                crate::workloads::KnownEvaluationKind::Ungraded,
+                RunStatus::SmokePassed,
+            ),
         ] {
             let mut input = facts(&evaluation);
             input.evaluation_kind = kind;

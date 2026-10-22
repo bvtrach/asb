@@ -224,6 +224,22 @@ pub(super) fn fallback_spec(name: &str) -> Option<ProviderSpec> {
     local::spec(name)
 }
 
+/// Map a negotiated protocol to the provider label expected by an agent CLI.
+/// The one provider-local alias remains inside the provider adapter boundary.
+pub(super) fn agent_provider_name(
+    provider: &str,
+    interface: Option<crate::endpoint::Interface>,
+) -> &'static str {
+    if provider == "cli2key" {
+        "asb-cli2key"
+    } else {
+        match interface {
+            Some(crate::endpoint::Interface::AnthropicMessages) => "anthropic",
+            _ => "openai-api",
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -21,6 +21,9 @@ pub(crate) mod fixture_writer;
 mod helper_exchange;
 mod install;
 mod launch;
+#[cfg(all(test, target_os = "linux"))]
+#[path = "../tests/support/material_guardian.rs"]
+pub(crate) mod material_guardian;
 mod measurements;
 mod models;
 mod output_lock;
@@ -74,7 +77,7 @@ mod tui;
 mod workloads;
 
 use std::ffi::OsString;
-use std::io::{self, Read, Write};
+use std::io::{self, IsTerminal, Read, Write};
 use std::process::ExitCode;
 
 /// Run the process CLI.
@@ -125,10 +128,11 @@ pub fn entry(args: Vec<OsString>) -> ExitCode {
     if args.first().is_some_and(|arg| arg == "__asb-install") {
         return install::operation::entry(&args[1..]);
     }
-    ExitCode::from(run(
+    ExitCode::from(parser::run_with_interactive(
         &args,
         &mut io::stdout().lock(),
         &mut io::stderr().lock(),
+        io::stdout().is_terminal() && io::stderr().is_terminal(),
     ))
 }
 
@@ -264,6 +268,7 @@ mod adapter_layout_tests {
                     "census.rs",     // Descriptor-owned guest material observations.
                     "attributes.rs", // Bounded visible Linux attribute observations.
                     "contracts.rs",  // Generic module metadata and protocol schema.
+                    "evaluation.rs", // Known producer categories and extensible saved classification.
                     "selection.rs",  // Generic pre-execution catalog/identity contract.
                     "recovery.rs",   // Generic attempt references and adapter dispatch.
                     "outcome.rs",    // Generic evaluation, metric and lineage contract.

@@ -1,6 +1,7 @@
 """Only owned local fixtures. No network, package manager, agent or provider."""
 import fcntl
 import json
+from itertools import islice
 import os
 from pathlib import Path
 import pty
@@ -8,6 +9,7 @@ import select
 import signal
 import shutil
 import socket
+import stat
 import struct
 import subprocess
 import sys
@@ -50,10 +52,6 @@ if child == 0:
                 output.write(b"x")
                 time.sleep(.01)
     os._exit(0)  # double fork: only the gate can retain this descendant
-if mode == "helper-loss":
-    while not (root / "grandchild.pid").exists():
-        time.sleep(.005)
-    os.kill(os.getppid(), signal.SIGKILL)
 while True:
     time.sleep(1)
 '''
@@ -92,6 +90,50 @@ def environment(root):
     return result
 
 
+def kill_owned_install_helper(process, binary, root):
+    def bounded(path, limit):
+        with path.open("rb") as stream:
+            value = stream.read(limit + 1)
+        assert len(value) <= limit, (path, "oversized fixture process evidence")
+        return value
+
+    def identity(pid):
+        fields = bounded(Path(f"/proc/{pid}/stat"), 4096).rsplit(b")", 1)[1].split()
+        return int(fields[1]), int(fields[19])  # parent PID, start time
+
+    principal = int((root / "principal.pid").read_text())
+    chain = []
+    candidates = []
+    pid = principal
+    for _ in range(8):
+        parent, started = identity(pid)
+        chain.append((pid, parent, started))
+        args = bounded(Path(f"/proc/{pid}/cmdline"), 8192).rstrip(b"\0").split(b"\0")
+        if (len(args) == 7 and args[1:4] == [b"__asb-install", b"ASBINSTALL1", b"tool"]
+                and args[6] == b"pi" and os.path.samefile(args[4], root)
+                and os.path.samefile(args[5], root / ".asb-tools")):
+            candidates.append((pid, parent, started, args))
+        if pid == process.pid:
+            break
+        pid = parent
+    assert chain[-1][0] == process.pid, ("not our TUI ancestry", chain)
+    assert len(candidates) == 1, ("expected exactly one owned install helper", chain, candidates)
+    helper, parent, started, observed_args = candidates[0]
+    assert chain[0][1] != helper, "installer must have its independent inner guardian"
+    descriptor = os.pidfd_open(helper)
+    try:
+        assert identity(helper) == (parent, started), "helper identity changed"
+        assert bounded(Path(f"/proc/{helper}/cmdline"), 8192).rstrip(b"\0").split(b"\0") == observed_args
+        assert os.path.samefile(f"/proc/{helper}/cwd", root)
+        assert os.path.samefile(f"/proc/{helper}/exe", binary)
+        print(json.dumps({"helper_loss_owned_ancestry": chain, "helper": helper,
+                          "principal_parent": chain[0][1], "image_matched": True,
+                          "helper_args": [os.fsdecode(arg) for arg in observed_args]}), flush=True)
+        signal.pidfd_send_signal(descriptor, signal.SIGKILL)
+    finally:
+        os.close(descriptor)
+
+
 def tui(binary, root, action):
     master, slave = pty.openpty()
     fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
@@ -107,6 +149,7 @@ def tui(binary, root, action):
     output_open = True
     started = False
     triggered = False
+    helper_signalled = False
     deadline = time.monotonic() + 15
     try:
         while time.monotonic() < deadline and process.poll() is None:
@@ -124,6 +167,9 @@ def tui(binary, root, action):
             else:
                 time.sleep(.01)
             ready = (root / "grandchild.pid").is_file() and (root / "writes").exists()
+            if action == "helper-loss" and ready and not helper_signalled:
+                kill_owned_install_helper(process, binary, root)
+                helper_signalled = True
             if action in ["epipe", "cancel", "escape", "owner-loss"] and ready and not triggered:
                 triggered = True
                 if action == "epipe":
@@ -151,8 +197,29 @@ def tui(binary, root, action):
         if action in ["success", "replacement"]:
             assert (root / ".asb-tools/pi/node_modules/.bin/pi").is_file()
         if action == "fail":
-            assert b"credential-looking-value" in (root / ".asb/install.log").read_bytes()
+            with (root / ".asb/install.log").open("rb") as stream:
+                summary = stream.read(4097)
+            assert len(summary) <= 4096
+            assert b"agent package installation failed (exit status: 7)" in summary
+            assert b"verify the prerequisite tool and rerun `asb tool install`" in summary
+            assert b"credential-looking-value" not in summary
+            captures = list(islice(root.glob(".asb-install-step-*/output.log"), 9))
+            assert 0 < len(captures) <= 8, captures
+            failures = 0
+            for capture in captures:
+                descriptor = os.open(capture, os.O_RDONLY | os.O_NOFOLLOW)
+                try:
+                    metadata = os.fstat(descriptor)
+                    assert stat.S_ISREG(metadata.st_mode)
+                    assert stat.S_IMODE(metadata.st_mode) == 0o600
+                    content = os.read(descriptor, 1025)
+                    assert len(content) <= 1024
+                    failures += content == b"fixture failure with secret credential-looking-value\n"
+                finally:
+                    os.close(descriptor)
+            assert failures == 1
         if action == "helper-loss":
+            assert helper_signalled
             assert b"missing final status" in transcript, transcript[-2000:]
         assert not list(root.glob("asb-sweep-*.toml")), "cancellation must not publish selection"
     finally:

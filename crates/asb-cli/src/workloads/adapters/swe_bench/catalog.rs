@@ -1,15 +1,14 @@
 //! Pinned public task catalog and project-local official SDK installation.
 use super::SweBenchAdapter;
-use crate::install::{self, LoggedStatus};
+use crate::Error;
+use crate::install;
 use crate::workloads::InstallationContext;
 use crate::workloads::session::DatasetIdentity;
-use crate::{Error, project};
 use serde::Deserialize;
 use std::collections::BTreeSet;
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Component, Path};
-use std::process::Command;
 
 const MATERIALIZER: &str = include_str!("../../../../assets/benchmarks/asb_swebench.py");
 const TASK_SESSION: &str = include_str!("../../../../assets/benchmarks/asb_swebench_task.py");
@@ -131,10 +130,10 @@ pub(super) fn install(
     context: &InstallationContext<'_>,
     output: &mut dyn std::io::Write,
     progress: &mut dyn FnMut(u8, crate::install::ProgressStage),
-) -> Result<(), Error> {
-    let _network_project = project::network_project(context.project_root);
+) -> crate::install::InstallResult<()> {
     if !install::tool_installed_locally(super::ENGINE.tool(), context.tools_root) {
-        install::tool_with_progress(
+        install::tool_in(
+            context.process,
             install::ToolInstallOptions {
                 name: super::ENGINE.tool().into(),
                 source: None,
@@ -149,29 +148,41 @@ pub(super) fn install(
     super::ENGINE.publish(&tool_root)?;
     let helper = tool_root.join(super::ENGINE.script());
     let python = tool_root.join("venv/bin/python");
-    let status = Command::new(&python)
-        .arg(&helper)
-        .arg("identity")
-        .env("PYTHONDONTWRITEBYTECODE", "1")
-        .logged_status()
-        .map_err(|error| Error::Io(format!("cannot inspect installed evaluator SDK: {error}")))?;
+    let owner = install::ProducerDirectory::open(context.workloads_root)?;
+    let mut scope = owner.scope(context.process);
+    let status = scope.status(
+        &python,
+        install::Purpose::Probe,
+        "SWE-bench evaluator SDK identity",
+        |command| {
+            command
+                .arg(&helper)
+                .arg("identity")
+                .env("PYTHONDONTWRITEBYTECODE", "1");
+        },
+    )?;
     if !status.success() {
-        return Err(Error::Input("installed SWE-bench evaluator SDK does not match its recipe or is unusable; run `asb tool install swebench`, then retry the workload installation (details in .asb/install.log)".into()));
+        return Err(Error::Input("installed SWE-bench evaluator SDK does not match its recipe or is unusable; run `asb tool install swebench`, then retry the workload installation; inspect installation diagnostics".into()).into());
     }
-    let valid = read(adapter, context.workloads_root).is_ok()
-        && Command::new(&python)
-            .arg(&helper)
-            .arg("verify")
-            .arg("--catalog")
-            .arg(context.workloads_root.join(adapter.id).join("catalog.json"))
-            .env("PYTHONDONTWRITEBYTECODE", "1")
-            .logged_status()
-            .map_err(|error| {
-                Error::Io(format!(
-                    "cannot verify installed evaluator metadata: {error}"
-                ))
-            })?
-            .success();
+    let valid = if read(adapter, context.workloads_root).is_ok() {
+        scope
+            .status(
+                &python,
+                install::Purpose::Probe,
+                "SWE-bench installed catalog verification",
+                |command| {
+                    command
+                        .arg(&helper)
+                        .arg("verify")
+                        .arg("--catalog")
+                        .arg(context.workloads_root.join(adapter.id).join("catalog.json"))
+                        .env("PYTHONDONTWRITEBYTECODE", "1");
+                },
+            )?
+            .success()
+    } else {
+        false
+    };
     if !valid {
         let bundle = context.workloads_root.join(adapter.id);
         if fs::symlink_metadata(&bundle).is_ok() {
@@ -180,7 +191,7 @@ pub(super) fn install(
                 .file_type()
                 .is_symlink()
             {
-                return Err(Error::Input("official dataset directory must not be a symlink; preserve it and choose a normal project directory".into()));
+                return Err(Error::Input("official dataset directory must not be a symlink; preserve it and choose a normal project directory".into()).into());
             }
             let backup = context.workloads_root.join(format!(
                 "{}.asb-backup-{}",
@@ -198,8 +209,12 @@ pub(super) fn install(
             .map_err(crate::io_error)?;
         }
         progress(25, crate::install::ProgressStage::DownloadingAndValidating);
-        let mut command = Command::new(&python);
-        command
+        let mut step = scope.prepare(
+            &python,
+            install::Purpose::Download,
+            "official SWE-bench dataset installation",
+        )?;
+        step.command_mut()
             .arg(&helper)
             .arg("catalog")
             .args([
@@ -220,18 +235,15 @@ pub(super) fn install(
             .env("HF_HUB_ETAG_TIMEOUT", "30")
             .env("HF_HUB_DOWNLOAD_TIMEOUT", "60")
             .env("LITELLM_LOCAL_MODEL_COST_MAP", "True");
-        let status = command.logged_status().map_err(|error| {
-            Error::Io(format!(
-                "cannot start official dataset installation: {error}"
-            ))
-        })?;
+        let status = scope.run(step)?.status;
         if !status.success() {
             return Err(Error::Io(format!(
                 "{} official dataset installation failed; inspect .asb/install.log, check network/proxy access and retry `asb workload install {}`",
                 adapter.id, adapter.id,
-            )));
+            )).into());
         }
     }
+    owner.consume(scope.finish()?)?;
     let catalog = read(adapter, context.workloads_root).map_err(Error::Input)?;
     super::sources::install(adapter, context, output, progress)?;
     // The prompt is just a discoverable catalog label, not agent input. Actual
@@ -433,7 +445,7 @@ mod tests {
         assert_eq!(planning.dataset.revision, adapter.revision);
         assert_eq!(planning.task_ids.len(), 2);
         assert!(planning.task_ids.contains("owner__repo-1"));
-        assert_eq!(planning.evaluation_kind, "upstream-harness");
+        assert_eq!(planning.evaluation_kind.as_str(), "upstream-harness");
         let path = root.join("suite/catalog.json");
         let original = fs::read(&path).unwrap();
         let value: serde_json::Value = serde_json::from_slice(&original).unwrap();

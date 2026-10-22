@@ -7,6 +7,8 @@ use std::path::{Path, PathBuf};
 
 mod adapters;
 pub(crate) mod contracts;
+mod evaluation;
+pub(crate) use evaluation::{KnownEvaluationKind, SavedEvaluationKind};
 
 pub(crate) fn descriptor(name: &str) -> Option<contracts::ModuleDescriptor> {
     let descriptor = adapters::find(name).map(|adapter| adapter.descriptor(name));
@@ -109,6 +111,7 @@ pub(crate) fn describe_selection(
 }
 
 pub(crate) struct InstallationContext<'a> {
+    pub process: &'a crate::install::OperationContext,
     pub project_root: &'a Path,
     pub tools_root: &'a Path,
     pub workloads_root: &'a Path,
@@ -119,7 +122,7 @@ pub(crate) fn install_registered(
     context: &InstallationContext<'_>,
     output: &mut dyn std::io::Write,
     progress: &mut dyn FnMut(u8, crate::install::ProgressStage),
-) -> Result<bool, crate::Error> {
+) -> crate::install::InstallResult<bool> {
     adapters::find(name).map_or(Ok(false), |adapter| {
         adapter.install(context, output, progress)
     })
@@ -524,25 +527,22 @@ fn adapter_trial_label(name: &str) -> String {
 /// complete upstream benchmark has been executed.  Until an upstream suite
 /// adapter is selected and installed, ASB runs the small adapter-smoke trial
 /// that is materialized beside that reference.
-pub(crate) fn evaluation_kind(name: &str, _workspace: &Path) -> &'static str {
-    adapters::find(name).map_or("ungraded", |adapter| adapter.evaluation_kind(name))
+pub(crate) fn evaluation_kind(name: &str, _workspace: &Path) -> KnownEvaluationKind {
+    adapters::find(name).map_or(KnownEvaluationKind::Ungraded, |adapter| {
+        adapter.evaluation_kind(name)
+    })
 }
 
 /// Only an actual task evaluator can contribute to task-resolution rate.
 /// A successful installation/protocol smoke exercise is never upstream credit.
 pub(crate) fn resolution_eligible(kind: &str) -> bool {
-    matches!(
-        kind,
-        "bundled-fixture" | "response-review" | "upstream-harness"
-    )
+    SavedEvaluationKind::classify(kind).resolution_eligible()
 }
 
 pub(crate) fn scored_kind<'a>(kind: &'a str, baseline: &session::BaselineEvidence) -> &'a str {
-    if resolution_eligible(kind) && !baseline.supports(kind) {
-        "invalid-baseline"
-    } else {
-        kind
-    }
+    SavedEvaluationKind::classify(kind)
+        .scored(baseline)
+        .as_str()
 }
 
 /// One attempt per selected task. Failures and absent grading stay in the
@@ -1174,6 +1174,10 @@ fn missing(name: &str, directory: &Path) -> String {
 mod boundary_tests;
 
 #[cfg(test)]
+#[path = "../../tests/unit/evaluation_kind_contract.rs"]
+mod evaluation_kind_contract_tests;
+
+#[cfg(test)]
 mod tests {
     use super::{
         copy_plan, copy_tree, load, load_trial, materialize_external_adapter, populate,
@@ -1727,7 +1731,7 @@ fn task_resolution_counts_failures_and_excludes_smoke_and_unknown() {
     assert_eq!(summary.success_rate, Some(1.0 / 3.0));
     for name in adapters::names() {
         assert!(
-            !resolution_eligible(evaluation_kind(name, std::path::Path::new(""))),
+            !evaluation_kind(name, std::path::Path::new("")).resolution_eligible(),
             "{name} is only an adapter smoke fixture"
         );
     }

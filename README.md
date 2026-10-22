@@ -24,6 +24,13 @@ percentage indicates how far through the configuration list execution has
 reached, not how much of the current benchmark has completed. `--json` omits
 these human-readable progress lines.
 
+For a single native `asb run` started from an interactive terminal, ASB also
+refreshes one live status line while the agent runs. It reports observed steps
+and total token usage without changing the final result output. Replay from an
+ASB ZIP cassette additionally shows each known recorded total and percentage.
+The display is omitted for `--json`, redirected output, and concurrent replicas
+so scripts and buffered replica output stay stable.
+
 `asb sweep SWEEP.toml --resume` keeps the original sweep and reuses complete,
 evidence-checked replica groups, including unresolved results. Use the same
 execution mode, cassette-root and scheduling options as the original command.

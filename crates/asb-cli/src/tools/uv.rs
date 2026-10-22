@@ -40,9 +40,17 @@ fn guest_assets(root: &Path) -> Result<Vec<super::GuestAsset>, Error> {
 }
 
 fn install(
+    context: &crate::install::OperationContext,
     root: &Path,
     progress: &mut dyn FnMut(u8, crate::install::ProgressStage),
-) -> Result<PathBuf, Error> {
+) -> crate::install::InstallResult<PathBuf> {
     let (url, hash) = distribution()?;
-    super::runtime::archive(root, url, hash, &[("uv", "uv"), ("uvx", "uvx")], progress)
+    super::runtime::archive(
+        context,
+        root,
+        url,
+        hash,
+        &[("uv", "uv"), ("uvx", "uvx")],
+        progress,
+    )
 }

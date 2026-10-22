@@ -5,5 +5,7 @@ tracepoint:raw_syscalls:sys_enter /@asb_tree[pid] || @asb_tree[tid]/ {
 
 // Emit a cumulative interval sample; the final aggregate remains available on exit.
 interval:s:1 {
+  printf("ASB_BPFTRACE_SNAPSHOT %llu\n", nsecs(monotonic));
   print(@asb_syscalls);
+  printf("ASB_BPFTRACE_SNAPSHOT_END\n");
 }

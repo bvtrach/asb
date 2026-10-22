@@ -1,17 +1,31 @@
 //! Pinned archive preparation and explicit, nonrecursive extraction settlement.
 use super::*;
 
+#[cfg(test)]
 pub(super) fn install_archive(
     root: &Path,
     archive: &Path,
     checksum: &str,
     progress: &mut dyn FnMut(u8, ProgressStage),
 ) -> Result<PathBuf, Error> {
+    let context = OperationContext::new(root, &project::ProjectConfig::default())
+        .map_err(InstallFailure::into_public)?;
+    install_archive_in(&context, root, archive, checksum, progress)
+        .map_err(InstallFailure::into_public)
+}
+
+pub(super) fn install_archive_in(
+    context: &OperationContext,
+    root: &Path,
+    archive: &Path,
+    checksum: &str,
+    progress: &mut dyn FnMut(u8, ProgressStage),
+) -> InstallResult<PathBuf> {
     let metadata = fs::symlink_metadata(archive).map_err(crate::io_error)?;
     if !metadata.is_file() || metadata.len() > 256 * 1024 * 1024 {
-        return Err(Error::Input(
-            "pinned Goose archive is not a bounded regular file".into(),
-        ));
+        return Err(
+            Error::Input("pinned Goose archive is not a bounded regular file".into()).into(),
+        );
     }
     let archive_handle = source::open_named(archive).map_err(crate::io_error)?;
     if !source::same_object(
@@ -19,9 +33,9 @@ pub(super) fn install_archive(
         &archive_handle.metadata().map_err(crate::io_error)?,
     ) || !source::same_named(&archive_handle, archive).map_err(crate::io_error)?
     {
-        return Err(Error::Input(
-            "pinned Goose archive identity changed before extraction".into(),
-        ));
+        return Err(
+            Error::Input("pinned Goose archive identity changed before extraction".into()).into(),
+        );
     }
     source::verify_pinned_checksum(
         &archive_handle,
@@ -42,23 +56,23 @@ pub(super) fn install_archive(
         .map_err(|error| Error::Io(format!("cannot create Goose extraction directory: {error}")))?;
     let directory_identity = fs::symlink_metadata(&extract).map_err(crate::io_error)?;
     let directory_handle = source::open_named(&extract).map_err(crate::io_error)?;
+    let owner = ProducerDirectory::open(&extract)?;
+    let mut scope = owner.scope(context);
     // Before a complete extraction is positively inspected, no child-created
     // entry is ours to unlink. Errors retain the entire scratch, without Drop.
-    let prepared = (|| {
+    let prepared = (|| -> InstallResult<_> {
         progress(60, ProgressStage::Extracting);
-        let status = source::command_status(
-            Command::new("tar")
-                .args(["--extract", "--gzip", "--file"])
-                .arg(archive)
-                .arg("--directory")
-                .arg(&extract),
-            "Goose extraction",
-            "tar",
-        )?;
+        let mut step = scope.prepare("tar", Purpose::Extract, "Goose extraction")?;
+        step.command_mut()
+            .args(["--extract", "--gzip", "--file"])
+            .arg(archive)
+            .arg("--directory")
+            .arg(&extract)
+            .stdin(Stdio::null());
+        let status = scope.run(step)?.status;
+        owner.consume(scope.finish()?)?;
         if !status.success() {
-            return Err(Error::Io(
-                "could not extract the pinned Goose binary".into(),
-            ));
+            return Err(Error::Io("could not extract the pinned Goose binary".into()).into());
         }
         let current = fs::symlink_metadata(archive).map_err(crate::io_error)?;
         if !source::same_named(&archive_handle, archive).map_err(crate::io_error)?
@@ -71,7 +85,8 @@ pub(super) fn install_archive(
         {
             return Err(Error::Input(
                 "pinned Goose archive identity changed during extraction".into(),
-            ));
+            )
+            .into());
         }
         source::verify_pinned_checksum(
             &archive_handle,
@@ -91,37 +106,40 @@ pub(super) fn install_archive(
         {
             return Err(Error::Input(
                 "pinned Goose archive has missing or unexpected extraction entries".into(),
-            ));
+            )
+            .into());
         }
         let source_identity = fs::symlink_metadata(&source).map_err(crate::io_error)?;
         if !source_identity.is_file() {
-            return Err(Error::Input(
-                "pinned Goose source is not a regular executable".into(),
-            ));
+            return Err(
+                Error::Input("pinned Goose source is not a regular executable".into()).into(),
+            );
         }
         let source_handle = source::open_named(&source).map_err(crate::io_error)?;
         if !source::same_object(
             &source_identity,
             &source_handle.metadata().map_err(crate::io_error)?,
         ) {
-            return Err(Error::Input(
-                "pinned Goose extraction source identity changed".into(),
-            ));
+            return Err(
+                Error::Input("pinned Goose extraction source identity changed".into()).into(),
+            );
         }
         Ok((source, source_handle))
     })();
-    let (extracted, handle) = prepared.map_err(|error| {
-        Error::Io(format!(
+    let (extracted, handle) = prepared.map_err(|failure| match failure {
+        InstallFailure::Abort(abort) => InstallFailure::Abort(abort),
+        InstallFailure::Ordinary(error) => InstallFailure::Ordinary(Error::Io(format!(
             "{error}; inspect retained Goose extraction {}",
             extract.display()
-        ))
+        ))),
     })?;
     let destination = root.join("bin/goose");
-    let result = (|| {
+    let result = (|| -> InstallResult<_> {
         fs::create_dir_all(destination.parent().expect("Goose bin parent"))
             .map_err(crate::io_error)?;
         progress(80, ProgressStage::Validating);
-        source::install_input(
+        source::install_input_in(
+            context,
             &source::Input::pinned(
                 extracted.clone(),
                 handle.try_clone().map_err(crate::io_error)?,
@@ -133,11 +151,14 @@ pub(super) fn install_archive(
                 checksum: None,
                 executable: true,
             },
-            |path| check_executable_version(path, "Goose"),
+            |path, scope| check_version_in(scope, path, "Goose"),
             source::Publication::Replace,
         )?;
         Ok(destination)
     })();
+    if matches!(&result, Err(InstallFailure::Abort(_))) {
+        return result;
+    }
     let settled = (|| -> io::Result<()> {
         let directory = fs::symlink_metadata(&extract)?;
         let named = fs::symlink_metadata(&extracted)?;
@@ -179,6 +200,7 @@ pub(super) fn install_archive(
                 |error| error.to_string()
             ),
             extract.display()
-        ))),
+        ))
+        .into()),
     }
 }

@@ -16,10 +16,28 @@ struct Hook {
     admission_replacement: bool,
     capture_grade: Option<bool>,
     observe_original_provider: bool,
+    phase_fault: Option<PhaseFault>,
+}
+#[derive(Clone)]
+enum PhaseFault {
+    StoppedPreserved,
+    RemoveCwd(PathBuf),
+    ObserveLifetime,
+    RuntimeError,
 }
 thread_local! { static HOOK: RefCell<Option<Hook>> = const { RefCell::new(None) }; }
 
 pub(crate) struct Scope;
+
+pub(crate) fn assert_workload_owner_live(root: &Path) {
+    HOOK.with_borrow(|slot| {
+        let hook = slot.as_ref().filter(|hook| hook.root == root).unwrap();
+        assert!(
+            !hook.calls.borrow().contains(&"workload-drop"),
+            "workload owner must survive publication and completion observer"
+        );
+    });
+}
 
 pub(crate) fn module_descriptor(
     name: &str,
@@ -68,6 +86,7 @@ impl Scope {
                 admission_replacement: false,
                 capture_grade: None,
                 observe_original_provider: false,
+                phase_fault: None,
             });
         });
         Self
@@ -94,6 +113,7 @@ impl Scope {
                 admission_replacement: false,
                 capture_grade: None,
                 observe_original_provider: false,
+                phase_fault: None,
             });
         });
         Self
@@ -123,6 +143,7 @@ impl Scope {
                             .then_some(!case.contains("false"))
                     }),
                 observe_original_provider: false,
+                phase_fault: None,
             });
         });
         Self
@@ -130,6 +151,35 @@ impl Scope {
     pub fn recording(root: &Path, calls: Rc<RefCell<Vec<&'static str>>>, native: bool) -> Self {
         let scope = Self::provider(root, calls, false, native);
         HOOK.with_borrow_mut(|slot| slot.as_mut().unwrap().observe_original_provider = true);
+        scope
+    }
+    pub fn phase(root: &Path, calls: Rc<RefCell<Vec<&'static str>>>, case: &str) -> Self {
+        let scope = Self::provider(
+            root,
+            calls,
+            case.contains("provider"),
+            case.contains("native"),
+        );
+        HOOK.with_borrow_mut(|slot| {
+            let hook = slot.as_mut().unwrap();
+            hook.event = if case.contains("prepare-workload-end") {
+                Some(LifecycleEvent::PhaseEnd(
+                    LifecyclePhase::WorkloadPreparation,
+                ))
+            } else {
+                case.contains("measurements")
+                    .then_some(LifecycleEvent::RunFinishing)
+            };
+            hook.phase_fault = Some(if case.contains("owner-lifetime") {
+                PhaseFault::ObserveLifetime
+            } else if case.contains("runtime-error") {
+                PhaseFault::RuntimeError
+            } else if case.ends_with("removed-cwd") {
+                PhaseFault::RemoveCwd(root.join("empty-cwd"))
+            } else {
+                PhaseFault::StoppedPreserved
+            });
+        });
         scope
     }
 }
@@ -294,21 +344,29 @@ pub(crate) fn observe_workload(
                     hook.grader_error,
                     hook.cleanup_error,
                     hook.capture_grade,
+                    hook.phase_fault.clone(),
                 )
             })
     });
     match calls {
-        Some((calls, native_reward, pending, grader_error, cleanup_error, capture_grade)) => {
-            Box::new(Observed {
-                inner: workload,
-                calls,
-                native_reward,
-                pending,
-                grader_error,
-                cleanup_error,
-                capture_grade,
-            })
-        }
+        Some((
+            calls,
+            native_reward,
+            pending,
+            grader_error,
+            cleanup_error,
+            capture_grade,
+            phase_fault,
+        )) => Box::new(Observed {
+            inner: workload,
+            calls,
+            native_reward,
+            pending,
+            grader_error,
+            cleanup_error,
+            capture_grade,
+            phase_fault,
+        }),
         None => workload,
     }
 }
@@ -320,8 +378,13 @@ struct Observed {
     grader_error: bool,
     cleanup_error: bool,
     capture_grade: Option<bool>,
+    phase_fault: Option<PhaseFault>,
 }
 impl workloads::WorkloadSession for Observed {
+    fn cancel_prepared(&mut self) -> Result<(), String> {
+        self.calls.borrow_mut().push("cancel-prepared");
+        self.inner.cancel_prepared()
+    }
     fn initial_material_sha256(&self) -> Result<String, String> {
         self.inner.initial_material_sha256()
     }
@@ -331,7 +394,7 @@ impl workloads::WorkloadSession for Observed {
     fn effective_budgets(&self) -> crate::planning::EffectiveBudgets {
         self.inner.effective_budgets()
     }
-    fn evaluation_kind(&self) -> &'static str {
+    fn evaluation_kind(&self) -> workloads::KnownEvaluationKind {
         self.inner.evaluation_kind()
     }
     fn baseline_passed(&self) -> Option<bool> {
@@ -379,7 +442,7 @@ impl workloads::WorkloadSession for Observed {
                 reason: "fixture verifier unavailable".into(),
             };
         }
-        if self.native_reward {
+        let evaluation = if self.native_reward {
             std::fs::write(
                 self.invocation().workspace.join("native-grade.json"),
                 "fixture numeric evaluator evidence",
@@ -392,7 +455,16 @@ impl workloads::WorkloadSession for Observed {
             }
         } else {
             self.inner.evaluate_outcome(response)
+        };
+        if self.phase_fault.is_some() {
+            // Retain the actual evaluator result, not a second grading pass.
+            std::fs::write(
+                self.invocation().workspace.join("phase-grade.json"),
+                serde_json::to_vec(&evaluation).unwrap(),
+            )
+            .unwrap();
         }
+        evaluation
     }
     fn metric_policy(&self) -> workloads::outcome::MetricPolicy {
         if !self.native_reward {
@@ -422,6 +494,22 @@ impl workloads::WorkloadSession for Observed {
     fn finish(&mut self) -> Result<workloads::session::ResourceSettlement, String> {
         self.calls.borrow_mut().push("finish");
         let result = self.inner.finish();
+        if let Some(fault) = &self.phase_fault {
+            let mut settled = result?;
+            match fault {
+                PhaseFault::StoppedPreserved => {
+                    settled.disposition = workloads::ResourceDisposition::StoppedPreserved;
+                }
+                PhaseFault::RemoveCwd(path) => {
+                    assert_eq!(std::env::current_dir().unwrap(), *path);
+                    // The subprocess owns this empty directory. Measurements
+                    // live in its sibling; no recursive deletion or host cwd.
+                    std::fs::remove_dir(path).unwrap();
+                }
+                PhaseFault::ObserveLifetime | PhaseFault::RuntimeError => {}
+            }
+            return Ok(settled);
+        }
         if self.cleanup_error {
             result?;
             Err("fixture workload cleanup uncertain".into())
@@ -441,6 +529,21 @@ impl workloads::WorkloadSession for Observed {
         context: &mut workloads::ExecutionContext<'_>,
         output: &mut dyn Write,
     ) -> Option<Result<workloads::session::ExecutionResult, String>> {
+        if matches!(self.phase_fault, Some(PhaseFault::RuntimeError)) {
+            self.calls.borrow_mut().push("execute-entered");
+            return Some(Err("fixture started execution failed".into()));
+        }
         self.inner.execute(context, output)
+    }
+}
+
+impl Drop for Observed {
+    fn drop(&mut self) {
+        if matches!(
+            self.phase_fault,
+            Some(PhaseFault::ObserveLifetime | PhaseFault::RuntimeError)
+        ) {
+            self.calls.borrow_mut().push("workload-drop");
+        }
     }
 }

@@ -1,11 +1,11 @@
 //! Shared publication of pinned, project-local language runtime archives.
 use crate::Error;
 use crate::install::{
-    LoggedStatus, install_runtime_source, verify_sha256_preserving as verify_sha256,
+    InstallResult, OperationContext, ProducerDirectory, Purpose, install_source_bounded_in,
+    verify_sha256_preserving as verify_sha256,
 };
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 pub(crate) fn unique_id() -> String {
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -35,12 +35,13 @@ pub(super) fn guest_archive(
     }]
 }
 
-pub(crate) fn cached_archive(
+pub(crate) fn cached_archive_in(
+    context: &OperationContext,
     destination: &Path,
     url: &str,
     checksum: &str,
     progress: &mut dyn FnMut(u8, crate::install::ProgressStage),
-) -> Result<PathBuf, Error> {
+) -> InstallResult<PathBuf> {
     let cache = destination.parent().expect("archive parent");
     fs::create_dir_all(cache).map_err(|error| Error::Io(error.to_string()))?;
     let lock = fs::OpenOptions::new()
@@ -50,8 +51,18 @@ pub(crate) fn cached_archive(
         .write(true)
         .open(destination.with_extension("download-lock"))
         .map_err(|error| Error::Io(error.to_string()))?;
-    lock.lock()
-        .map_err(|error| Error::Io(format!("cannot lock runtime download: {error}")))?;
+    loop {
+        context.check_before_admission("runtime download cache lock", cache)?;
+        match lock.try_lock() {
+            Ok(()) => break,
+            Err(fs::TryLockError::WouldBlock) => {
+                std::thread::sleep(std::time::Duration::from_millis(10))
+            }
+            Err(fs::TryLockError::Error(error)) => {
+                return Err(Error::Io(format!("cannot lock runtime download: {error}")).into());
+            }
+        }
+    }
     if !destination.is_symlink()
         && destination.is_file()
         && verify_sha256(destination, checksum, "runtime archive").is_ok()
@@ -67,26 +78,40 @@ pub(crate) fn cached_archive(
     }
     progress(15, crate::install::ProgressStage::Downloading);
     let temporary = destination.with_extension(format!("part-{}", unique_id()));
-    install_runtime_source(url, &temporary)?;
+    install_source_bounded_in(
+        context,
+        url,
+        &temporary,
+        "runtime archive",
+        256 * 1024 * 1024,
+    )?;
     verify_sha256(&temporary, checksum, "runtime archive")?;
     fs::rename(&temporary, destination).map_err(|error| Error::Io(error.to_string()))?;
     Ok(destination.to_path_buf())
 }
 
 pub(super) fn archive(
+    context: &OperationContext,
     root: &Path,
     url: &str,
     checksum: &str,
     programs: &[(&str, &str)],
     progress: &mut dyn FnMut(u8, crate::install::ProgressStage),
-) -> Result<PathBuf, Error> {
+) -> InstallResult<PathBuf> {
     if !cfg!(target_os = "linux") {
         return Err(Error::Input(
             "project-local bootstrap runtimes currently support Linux".into(),
-        ));
+        )
+        .into());
     }
     let filename = url.rsplit('/').next().expect("runtime archive name");
-    let download = cached_archive(&root.join("cache").join(filename), url, checksum, progress)?;
+    let download = cached_archive_in(
+        context,
+        &root.join("cache").join(filename),
+        url,
+        checksum,
+        progress,
+    )?;
     let runtime = root.join("runtime");
     let receipt = root.join("ASB-RUNTIME");
     if fs::read_to_string(&receipt).ok().as_deref() != Some(checksum)
@@ -96,8 +121,11 @@ pub(super) fn archive(
     {
         let stage = root.join(format!(".runtime-{}", unique_id()));
         fs::create_dir(&stage).map_err(|error| Error::Io(error.to_string()))?;
+        let owner = ProducerDirectory::open(&stage)?;
+        let mut scope = owner.scope(context);
         progress(50, crate::install::ProgressStage::Extracting);
-        let status = Command::new("tar")
+        let mut step = scope.prepare("tar", Purpose::Extract, "language runtime extraction")?;
+        step.command_mut()
             .args(["--extract", "--file"])
             .arg(&download)
             .arg("--directory")
@@ -107,13 +135,15 @@ pub(super) fn archive(
                 "--no-same-owner",
                 "--no-same-permissions",
             ])
-            .logged_status()
-            .map_err(|error| Error::Io(format!("cannot extract language runtime: {error}")))?;
+            .stdin(std::process::Stdio::null());
+        let status = scope.run(step)?.status;
+        owner.consume(scope.finish()?)?;
         if !status.success() || programs.iter().any(|(_, path)| !stage.join(path).is_file()) {
             return Err(Error::Io(format!(
                 "runtime archive extraction failed; retained evidence at {}",
                 stage.display()
-            )));
+            ))
+            .into());
         }
         if runtime.exists() {
             fs::rename(
@@ -150,6 +180,7 @@ pub(super) fn archive(
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
+    use std::process::Command;
 
     struct Fixture(PathBuf);
     impl Fixture {
@@ -201,8 +232,11 @@ mod tests {
         let root = fixture.0.join("project-tool");
         let (first, hash) = package(&fixture, "#!/bin/sh\nprintf first\\n", "first.tar.gz");
         let programs = &[("runtime", "bin/runtime")];
+        let context =
+            OperationContext::new(&fixture.0, &crate::project::ProjectConfig::default()).unwrap();
         let mut stages = Vec::new();
         let executable = archive(
+            &context,
             &root,
             first.to_str().unwrap(),
             &hash,
@@ -226,6 +260,7 @@ mod tests {
         // The primary source is now absent: a second install must use cache.
         assert_eq!(
             archive(
+                &context,
                 &root,
                 first.to_str().unwrap(),
                 &hash,
@@ -244,6 +279,7 @@ mod tests {
         }));
         let (second, next_hash) = package(&fixture, "#!/bin/sh\nprintf second\\n", "second.tar.gz");
         archive(
+            &context,
             &root,
             second.to_str().unwrap(),
             &next_hash,
@@ -280,7 +316,10 @@ mod tests {
         let cache = root.join("cache");
         fs::create_dir_all(&cache).unwrap();
         fs::write(cache.join("runtime.tar.gz"), b"damaged evidence").unwrap();
+        let context =
+            OperationContext::new(&fixture.0, &crate::project::ProjectConfig::default()).unwrap();
         let executable = archive(
+            &context,
             &root,
             source.to_str().unwrap(),
             &hash,
