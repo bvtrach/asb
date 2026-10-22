@@ -93,6 +93,8 @@ catalog origin failed before its legacy runtime calls because the newly empty
 project file omitted required `tools_dir`. Its raw failure and frozen images
 remain under `target/installer49-v3-*` and `target/qualification/installer49-v3`.
 No full suite or package success is claimed for v3. The test-only correction
-serializes `ProjectConfig::default()`, preserving its ordinary `tools` and
-`workloads` paths and leaving explicit fixture installation context unchanged.
+serializes `ProjectConfig` with the fixture's existing `tools` directory and
+otherwise default fields (including `workloads`), leaving explicit fixture
+installation context unchanged. This explicit tools spelling is intentional:
+the product default is `.asb-tools`, not this fixture's `tools` path.
 Fresh v4 qualification is required; no production change is involved.

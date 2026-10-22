@@ -22,7 +22,11 @@ impl Fixture {
         fs::create_dir_all(root.join(".asb")).unwrap();
         fs::write(
             root.join(".asb/project.toml"),
-            toml::to_string(&crate::project::ProjectConfig::default()).unwrap(),
+            toml::to_string(&crate::project::ProjectConfig {
+                tools_dir: "tools".into(),
+                ..Default::default()
+            })
+            .unwrap(),
         )
         .unwrap();
         for task in ["first", "second"] {
