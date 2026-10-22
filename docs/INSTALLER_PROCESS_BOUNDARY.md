@@ -1206,3 +1206,33 @@ not production missing-tool wiring proof. No raw process/source wrapper is
 restored. Actual missing-curl and missing-probe fixture expectations remain
 unchanged and must drive any necessary owning-adapter diagnostic repair after
 observed execution. No new runtime evidence is claimed.
+
+### First actual Source migration qualification (observed failures)
+
+Root and an independent reviewer approved d434 plus narrow pure-formatter
+follow-up ae7e5c0d. Actual-FIRST actual-source-wiring-build.log passed14.11s,
+with frozen actual-source-wiring-asb SHA
+`c82ff09d5f941c7cb1cabfaadae8397f7afe59ceba2859cac4dbda609080c2aa`.
+The first source.log compile failed E0599 because the harness used SettledStep
+getters on CompletedStep. Signed TEST-only b5c259e7/07622221 use its existing
+crate-visible fields without changing predicates or limits. That failure is
+preserved; no tests executed in it.
+
+After actual-FIRST cached build, source-v2.log compiled24.30s and executed
+21PASS/3FAIL/0ignored in18.77s. All five actual Source lifecycle cases passed,
+as did every source repair case, genuine configured download timeout and
+blocked-publication observations. Runtime failures are missing actionable
+curl explanation, missing staged-probe explanation, and an older symlink
+message expectation. The symlink actually yielded typed OwnerObservation,
+confirmed cleanup/incomplete capture, evidence path and private identity-loss
+detail; inspection confirmed retained foreign symlink, unchanged foreign bytes
+and old executable. It is not evidence of a custody defect.
+
+Before/after/frozen c82 matched. The failed libtest is preserved at
+qualification/installer44-actual-source-wiring-failed-libtests, SHA
+`98e3c8961113fc46afd777d61fa406fab4756709259d4368b41c4ea4c13b8e72`.
+No other focus/full/lint was started after these failures. Root approved a
+TEST-only refinement: retain both actionable assertions while printing the
+actual errors, move prior-byte/cleanup observations before diagnostic REDs,
+and assert the symlink's actual typed identity-loss facts plus all unchanged
+foreign-data guarantees. No production diagnostic repair is included yet.

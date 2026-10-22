@@ -444,9 +444,9 @@ fn publication_fixture_child() {
                 |_, _| Ok(()),
             )
             .unwrap_err();
-            assert!(error.to_string().contains("needs `curl`"));
             assert_old_ready(&root, &destination);
             assert_eq!(scratch(&destination), retained);
+            assert!(error.to_string().contains("needs `curl`"), "{error}");
         }
         "symlinks" => {
             let foreign = root.join("foreign");
@@ -459,13 +459,11 @@ fn publication_fixture_child() {
                 |_, _| Ok(()),
             )
             .unwrap_err();
-            assert!(error.to_string().contains("not a regular file"), "{error}");
             assert_eq!(fs::read(&foreign).unwrap(), b"do not change");
             assert_old_ready(&root, &destination);
             // The downloader replaced our owned file with a foreign symlink.
             // Explicit settlement must retain that entry, not silently unlink
             // it as the old best-effort Drop implementation did.
-            assert!(error.to_string().contains("retained staging"));
             let retained = fs::read_dir(destination.parent().unwrap())
                 .unwrap()
                 .map(|entry| entry.unwrap().path())
@@ -477,6 +475,21 @@ fn publication_fixture_child() {
                 })
                 .unwrap();
             assert_eq!(fs::read_link(retained.join("perf")).unwrap(), foreign);
+            let InstallFailure::Abort(abort) = &error else {
+                panic!("identity loss became an ordinary retry: {error}");
+            };
+            assert_eq!(
+                abort.cause,
+                super::super::process::AbortCause::OwnerObservation
+            );
+            assert!(abort.cleanup_confirmed && !abort.capture_complete);
+            assert_eq!(abort.evidence.as_deref(), Some(retained.as_path()));
+            assert!(
+                error
+                    .to_string()
+                    .contains("private installation source identity changed"),
+                "{error}"
+            );
             fs::remove_file(&destination).unwrap();
             symlink(&foreign, &destination).unwrap();
             let error = install_fixture(
@@ -580,7 +593,11 @@ fn publication_fixture_child() {
             let mut scope = owner.scope(&context);
             let error = check_version_in(&mut scope, &root.join("absent"), "fixture").unwrap_err();
             owner.consume(scope.finish().unwrap()).unwrap();
-            assert!(error.to_string().contains("cannot start staged fixture"));
+            assert!(!root.join("absent").exists());
+            assert!(
+                error.to_string().contains("cannot start staged fixture"),
+                "{error}"
+            );
         }
         "blocked" => {
             install_fixture(
