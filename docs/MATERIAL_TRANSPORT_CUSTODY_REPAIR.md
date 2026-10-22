@@ -2,12 +2,13 @@
 
 ## Status and scope
 
-Design and RED-fixture plan only, based on actual main
-`66fb5fda` (PR309 merge). No production, fixture, version, wire, or preparation
-change is implemented here. No new failure has been reproduced by this
-checkpoint. The source findings below are not claims of an observed Docker leak.
-Root must approve both architecture and fixtures before implementation or RED
-execution. Parked class46 `ede2ffc7` and its source/cache/evidence are untouched.
+This document began as design-only `bdbd290c`, based on actual main
+`66fb5fda` (PR309 merge). The historical design and observed RED sections below
+record that progression, not completion of host transport custody. Root then
+approved RED `c0cfae8e` and ONLY the narrow generic-gate prerequisite. Its current
+implementation/focused proof is recorded at the end. No controller/Python
+integration, version, public wire, or preparation-policy change is implemented.
+Parked class46 `ede2ffc7` and its source/cache/evidence are untouched.
 
 AGENTS.md, DEVELOPMENT.md, ARCHITECTURE.md and all four MULTITRACK documents are
 byte-identical to the previously fully read qualified `551fe3c` baseline. The
@@ -298,7 +299,7 @@ or production repair; the only production-file edits are cfg(test) test-module
 registration and the exact-owned-pid/thread-local error hook AFTER the real
 pidfd/kernel wait ownership check. No production environment fault setting.
 
-Three outer RED tests now fail at their intended contract assertions:
+At immutable `c0cfae8e`, three outer RED tests failed at their intended assertions:
 
 - Real Controller/task_server/ResourceJournal/DockerSession path, inherited
   private output pipe: material call returned with TWO live daemon readers;
@@ -358,5 +359,63 @@ Coordinator reports checkpoint49 delivered at actual signed66fb5fda: exact
 PR309 run39695483387 and both postmerge jobs39696944017 succeeded; signed tag
 4810664778dda385d666aa1e943f9fe1410870dc points to66fb, release v0.2.43 published
 00:10:42UTC. This supplied delivery evidence is distinct from this class50
-RED proof. Parked class46 source/cache remain unchanged. This checkpoint is
-submitted for independent RED review; no production implementation authorized.
+RED proof. Parked class46 source/cache remain unchanged. That RED checkpoint was
+submitted for independent review before any production implementation authority.
+
+## Narrow generic-gate prerequisite implementation and focused proof
+
+After independent review of complete RED source and logs, root authorized ONLY
+this prerequisite, before controller integration. Production changes are
+limited to `src/process_gate/descendants.rs`:
+
+- quiesce keeps the first io::Error, continues separately owned siblings and
+  fair polling/escalation within the original five-second allowance. The
+  deadline is also checked inside a finite snapshot; per-child failures do not
+  restart it. Population/churn limits remain. On unresolved deadline the first
+  error is returned, not replaced by a later timeout or sibling error.
+- reap_exited records the first error and visits remaining children without
+  signalling live children.
+- WNOWAIT's actual exited-child observation skips unnecessary signalling and
+  directly reaps through the pinned pidfd. Signal denial cannot prevent reaping
+  a child already known exited. Kernel wait ownership checks remain before any
+  signal or test hook. No cached PID/PGID signalling after reap.
+- An actually empty owned-child population still returns positive quiescence;
+  an inaccessible live child still returns an error and the unchanged gate
+  retaining loop cannot issue QUIESCENT. No grade/resource/authorization or
+  ManagedGate/receipt semantics were altered.
+
+The former gate RED now passes with actual pinned sibling exit AND waitid
+ECHILD proving production Scope reaped it (not fixture Child::try_wait).
+The first EPERM remains returned at5004ms, while sibling_alive=false and
+sibling_reaped_by_scope=true. The still-denied child is then actually killed
+and reaped before outer assertions; unrelated sentinel survives. An additional
+isolated EIO reap test proves later exited siblings reap while a live child is
+not signalled; all real cleanup precedes assertions. A direct exited-child test
+sets the signal-denial hook but observes successful production reap and ECHILD
+from both the pidfd and original Child::wait. No blanket lint suppression.
+
+Actual ASB built FIRST and frozen readonly:
+`5e10539a39042b273b7ea89ad2ab53c083ad9a75bcd82b975a9a247b70612fa8`,
+at `target/qualification/material50-gate-prerequisite-asb`. Before/after-runtime
+hash files match. Fresh complete gate focus: **30passing/0failing/0skips**, one
+outer libtest target, nested fixture rows not double-counted. Log
+`target/material50-gate-focused-final.log`; initial all-green focus-v1 remains.
+The actual binary changed only for this narrow production prerequisite; original
+baseline/RED binaries and source remain immutable and separately named.
+
+Strict lint initially reported zombie_processes on a test's conditional
+Child::wait after actual pidfd reaping; preserved
+`target/material50-gate-clippy-v1.log`. The test now always observes original
+Child::wait and requires ECHILD after positive production reap, safely collecting
+the already-exited child before assertions if the implementation regresses.
+No production fix was made for that lint and final30-test focus was rerun.
+Final strict offline/locked workspace/all-target/all-feature Clippy -Dwarnings,
+fmt-check and diff-check are terminal0; logs
+`target/material50-gate-{clippy,fmt,diffcheck}-final.log`. Actual and frozen
+binary hashes still match after all gates, recorded at
+`target/material50-gate-final-frozen.sha256`. No source or relink during runtime.
+
+The two host-material/controller REDs are deliberately STILL UNFIXED; their
+historical observations are not replaced by this gate-only qualification. Root
+must review signed prerequisite proof before any controller/Python integration.
+No full suite, live Docker/privilege, new broker, version bump, PR or push.
