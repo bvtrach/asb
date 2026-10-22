@@ -43,6 +43,18 @@ def verify_cleanup(campaign,failed_batches=0):
 @unittest.skipUnless(os.environ.get("ASB_TEST_SWECATALOG_ROOT") and os.environ.get("ASB_TEST_BENCHMARK_ASB"),
                      "requires explicit ASB, original SWE SDK/catalog and installed Pi assets")
 class RepeatedOriginalQualification(unittest.TestCase):
+    def execution_command(self,binary,config):
+        return [binary,"run",config,"--repeat","2","--json"]
+
+    def execution_rows(self,result):
+        return [json.loads(line) for line in result.stdout.splitlines()]
+
+    def qualification_sources(self):
+        return sorted((Path(__file__).parents[1]/"assets/benchmarks").glob("asb_*.py"))+[Path(__file__)]
+
+    def after_execution(self,binary,config,root,environment,rows,arrivals,fault):
+        """Optional workflow qualification, before provider shutdown or receipt."""
+
     def test_public_repeat_prepares_isolated_original_tasks_before_real_client_execution(self):
         self.qualify()
 
@@ -56,7 +68,7 @@ class RepeatedOriginalQualification(unittest.TestCase):
         root = Path(os.environ["ASB_TEST_SWECATALOG_ROOT"]).resolve()
         binary = Path(os.environ["ASB_TEST_BENCHMARK_ASB"]).resolve()
         binary_hash = hashlib.sha256(binary.read_bytes()).hexdigest()
-        sources = sorted((Path(__file__).parents[1]/"assets/benchmarks").glob("asb_*.py"))
+        sources = self.qualification_sources()
         source_hashes = {path.name:hashlib.sha256(path.read_bytes()).hexdigest() for path in sources}
         suite = os.environ.get("ASB_TEST_BENCHMARK_SUITE","swe-bench-lite")
         self.assertIn(suite,["swe-bench-lite","terminal-bench-1.0","terminal-bench-2.1"])
@@ -149,7 +161,7 @@ class RepeatedOriginalQualification(unittest.TestCase):
                 "OPENROUTER_MODELS_URL":base+"/models","NO_PROXY":"*","no_proxy":"*"}
             if network is not None:environment["ASB_BENCHMARK_NETWORK"] = network.name
             try:
-                result = subprocess.run([binary,"run",config,"--repeat","2","--json"],
+                result = subprocess.run(self.execution_command(binary,config),
                     cwd=root,env=environment,capture_output=True,timeout=600)
             except subprocess.TimeoutExpired as error:
                 (artifacts/"asb.stdout").write_bytes(error.stdout or b"")
@@ -161,7 +173,7 @@ class RepeatedOriginalQualification(unittest.TestCase):
                 self.assertNotEqual(result.returncode,0,"expected grader error must remain an overall command failure")
             else:
                 self.assertEqual(result.returncode,0,result.stderr.decode())
-            rows = [json.loads(line) for line in result.stdout.splitlines()]
+            rows = self.execution_rows(result)
             self.assertEqual(len(rows),5)
             self.assertGreaterEqual(len(arrivals),8,"each real client needs its tool call and completion")
             campaign = Path(rows[0]["path"]).parent
@@ -226,6 +238,7 @@ class RepeatedOriginalQualification(unittest.TestCase):
                     for row in rows[1:] if row["execution"]["batch"] == batch))
                 self.assertEqual(len(list((campaign/f"batch-{batch}/outcomes").glob("*.json"))),2)
             self.assertFalse((artifacts/"unused-workspace").exists())
+            self.after_execution(binary,config,root,environment,rows,arrivals,fault)
             self.assertEqual(binary_hash,hashlib.sha256(binary.read_bytes()).hexdigest())
             self.assertEqual(source_hashes,{path.name:hashlib.sha256(path.read_bytes()).hexdigest() for path in sources})
             (artifacts/"qualification.json").write_text(json.dumps({"campaign":str(campaign),

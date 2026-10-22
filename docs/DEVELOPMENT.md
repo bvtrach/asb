@@ -75,6 +75,28 @@ The exclusive grading-start marker binds the original attempt; protocol unit
 tests separately count the single evaluate request and cached cancellation.
 Neither test retries a retained verifier or converts a missing grade into zero.
 
+`benchmark_live_repeated_sweep_original.py` reuses the installed-Pi/original-SDK
+qualification with the same explicit project/frozen-binary opt-ins. It runs one
+configuration at C2/N2 through the public sweep, validates four actual report
+execution/attempt identities and grades, then requires completed-only resume to
+issue zero additional fixture inference requests and preserve all declared result
+and verifier inventories, seals and receipts. Inventories include roots, file
+content/modes, directory modes and symlink targets without following them, with
+4096-entry/64 MiB bounds and propagated traversal errors. Both qualification
+harnesses join the Python source-hash receipt. Default discovery includes only
+this normal live qualification, not the inherited costly verifier-fault case.
+Its inventory and emitted-row tests run provider-/Docker-free in ordinary
+`benchmark_protocol` CI; the actual installed-SDK test is skipped without opt-in.
+This qualifies completed-only reuse, not interrupted SDK-worker recovery.
+
+The first local Terminal1 sweep attempt failed before client execution because
+Docker's predefined address pools were fully subnetted. Both owned attempts
+were stopped/preserved and the frozen binary hash stayed unchanged. The raw
+qualification/Compose logs remain local evidence; this is not a passing original
+SDK qualification. Do not prune unrelated networks or change daemon configuration
+to turn the qualification green. The run also disclosed an unavailable initial
+input seal, which must be resolved before claiming original-SDK resume readiness.
+
 `benchmark_live_material_environment.py` uses the same explicit image/binary/
 artifact-parent opt-ins as the mounted-root qualification below. It prepares
 two network-none services per fixture, checks independent fresh generated
