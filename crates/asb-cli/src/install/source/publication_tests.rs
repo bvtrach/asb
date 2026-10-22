@@ -145,11 +145,9 @@ esac
             self.0.display()
         );
         assert!(
-            String::from_utf8_lossy(&output.stdout)
-                .lines()
-                .any(|line| {
-                    line.starts_with("test result: ok. 1 passed; 0 failed; 0 ignored;")
-                }),
+            String::from_utf8_lossy(&output.stdout).lines().any(|line| {
+                line.starts_with("test result: ok. 1 passed; 0 failed; 0 ignored;")
+            }),
             "{case}: exact child did not execute its one fixture test; retained {}",
             self.0.display()
         );
