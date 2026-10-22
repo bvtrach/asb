@@ -11,11 +11,15 @@ mod config;
 mod endpoint;
 mod evidence;
 mod executables;
+#[cfg(unix)]
+mod helper_exchange;
 mod install;
 mod launch;
 mod measurements;
 mod models;
 mod output_lock;
+#[cfg(unix)]
+mod owned_fd_exec;
 mod parser;
 mod planning;
 mod process_cleanup;
@@ -45,6 +49,12 @@ use std::process::ExitCode;
 /// Run the process CLI.
 #[must_use]
 pub fn entry(args: Vec<OsString>) -> ExitCode {
+    if args.first().is_some_and(|arg| arg == "__asb-owned-fd-exec") {
+        #[cfg(unix)]
+        return owned_fd_exec::entry(&args[1..]);
+        #[cfg(not(unix))]
+        return ExitCode::from(2);
+    }
     if args.first().is_some_and(|arg| arg == "__asb-staging") {
         return workloads::staging::entry(&args[1..]);
     }

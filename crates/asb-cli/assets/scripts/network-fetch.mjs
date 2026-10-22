@@ -47,7 +47,7 @@ function anyProxy() {
     .some((name) => Boolean(process.env[name]));
 }
 
-export async function networkFetch(url, options = {}, redirects = 0) {
+export async function networkFetch(url, options = {}, redirects = 0, launch = null) {
   if (closing) throw new Error("outbound network session is closing");
   if (!anyProxy()) return fetch(url, options);
   const target = new URL(url);
@@ -75,10 +75,22 @@ export async function networkFetch(url, options = {}, redirects = 0) {
     let pending = Buffer.alloc(0);
     const stream = new PassThrough();
     stream.on("error", () => {});
-    const child = spawn("curl", ["--disable", "--config", "-", "--silent", "--show-error",
+    const curlArgs = ["--disable", "--config", "-", "--silent", "--show-error",
       "--include", "--suppress-connect-headers", "--no-buffer", "--compressed",
-      "--connect-timeout", "10", "--proto", "=http,https"],
-      { stdio: ["pipe", "pipe", "ignore"] });
+      "--connect-timeout", "10", "--proto", "=http,https"];
+    // Optional generic same-PID exec prefix; ordinary HTTP users retain the
+    // original direct curl launch. No provider or descriptor policy lives here.
+    if (launch !== null && (typeof launch.program !== "string" || !launch.program ||
+        launch.program.includes("\0") || !Array.isArray(launch.args) || launch.args.length > 64 ||
+        launch.args.some((arg) => typeof arg !== "string" || arg.includes("\0")) ||
+        launch.args.join("").length > 16384)) {
+      rmSync(scratch, { recursive: true, force: true });
+      reject(new Error("invalid outbound process launch specification"));
+      return;
+    }
+    const child = launch === null
+      ? spawn("curl", curlArgs, { stdio: ["pipe", "pipe", "ignore"] })
+      : spawn(launch.program, [...launch.args, "curl", ...curlArgs], { stdio: ["pipe", "pipe", "ignore"] });
     children.add(child);
     const cleanup = () => {
       children.delete(child);
@@ -167,5 +179,5 @@ export async function networkFetch(url, options = {}, redirects = 0) {
     headers: Object.fromEntries(Object.entries(options.headers || {}).filter(([name]) =>
       !/^(content-type|content-length|transfer-encoding)$/i.test(name))),
   } : options;
-  return networkFetch(next, nextOptions, redirects + 1);
+  return networkFetch(next, nextOptions, redirects + 1, launch);
 }

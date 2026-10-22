@@ -106,7 +106,7 @@ while True: time.sleep(0.1)
         ),
         (
             "node",
-            r#"import os,sys,time,threading
+            r#"import os,sys,time,threading,socket,json
 from pathlib import Path
 Path('proxy.pid').write_text(str(os.getpid()))
 threading.Thread(target=lambda: (sys.stdin.buffer.read(), os._exit(0)),daemon=True).start()
@@ -114,7 +114,8 @@ case=os.environ['ASB_COVERAGE_BRIDGE_CASE']
 if case=='proxy-closed': sys.exit(0)
 if case=='proxy-noise':
  print('not a ready marker',flush=True);sys.exit(0)
-print('ASB cli2key proxy ready',flush=True)
+listener=socket.socket(fileno=int(sys.argv[sys.argv.index('--listen-fd')+1]))
+print('ASB cli2key proxy ready '+json.dumps({'schema_version':1,'host':'127.0.0.1','port':listener.getsockname()[1]}),flush=True)
 while True: time.sleep(0.1)
 "#,
         ),

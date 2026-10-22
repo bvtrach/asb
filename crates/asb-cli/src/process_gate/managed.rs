@@ -92,6 +92,8 @@ impl<'a> Admission<'a> {
             startup_deadline: Instant::now() + STARTUP,
             control,
             observation_only,
+            #[cfg(test)]
+            readiness_delay: None,
         })
     }
 }
@@ -106,6 +108,8 @@ pub(crate) struct ManagedGate {
     startup_deadline: Instant,
     control: Option<super::control::Parent>,
     observation_only: bool,
+    #[cfg(test)]
+    readiness_delay: Option<Duration>,
 }
 
 impl ManagedGate {
@@ -130,16 +134,32 @@ impl ManagedGate {
     }
 
     pub(crate) fn resume(&mut self) -> io::Result<()> {
+        self.resume_when(|| true).map(|_| ())
+    }
+
+    /// Check an operation's cancellation/deadline after readiness, immediately
+    /// before CONT. A false condition retains the stopped guardian in custody.
+    pub(crate) fn resume_when(
+        &mut self,
+        continue_operation: impl FnOnce() -> bool,
+    ) -> io::Result<bool> {
         self.wait_stopped()?;
+        if !continue_operation() {
+            return Ok(false);
+        }
         if unsafe { libc::kill(self.id() as i32, libc::SIGCONT) } != 0 {
             return Err(io::Error::last_os_error());
         }
-        Ok(())
+        Ok(true)
     }
 
     /// Establish current-ABI custody without admitting the application. This
     /// is also revalidated before CONT after any shared launch rendezvous.
     pub(crate) fn wait_stopped(&mut self) -> io::Result<()> {
+        #[cfg(test)]
+        if let Some(delay) = self.readiness_delay.take() {
+            std::thread::sleep(delay);
+        }
         let deadline = self.startup_deadline;
         loop {
             self.receiver.poll(self.id()).map_err(incompatible)?;
