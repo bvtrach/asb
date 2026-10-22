@@ -116,8 +116,16 @@ impl Drop for DescendantScope {
 }
 
 fn children(owner: u32) -> io::Result<Vec<u32>> {
+    #[cfg(test)]
+    let task = if owner == std::process::id() {
+        CURRENT_TASK_VIEW.get().unwrap_or(owner)
+    } else {
+        owner
+    };
+    #[cfg(not(test))]
+    let task = owner;
     let mut bytes = Vec::new();
-    std::fs::File::open(format!("/proc/{owner}/task/{owner}/children"))?
+    std::fs::File::open(format!("/proc/{owner}/task/{task}/children"))?
         .take(512 * 1024 + 1)
         .read_to_end(&mut bytes)?;
     if bytes.len() > 512 * 1024 {
@@ -221,11 +229,45 @@ thread_local! {
     // kernel ownership check. No environment-controlled production fault.
     static DENIED_CHILD: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
     static FAILED_REAP_CHILD: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    // Exclusive libtest fixtures run on a worker rather than the process
+    // leader. This task-view override never changes production child discovery.
+    static CURRENT_TASK_VIEW: std::cell::Cell<Option<u32>> = const { std::cell::Cell::new(None) };
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct CurrentTaskView(Option<u32>);
+    impl CurrentTaskView {
+        fn enter() -> Self {
+            // Exact calling task only; never an arbitrary PID or another owner.
+            let task = u32::try_from(unsafe { libc::syscall(libc::SYS_gettid) })
+                .expect("current fixture task identity");
+            assert!(task > 0 && task <= i32::MAX as u32);
+            Self(CURRENT_TASK_VIEW.replace(Some(task)))
+        }
+    }
+    impl Drop for CurrentTaskView {
+        fn drop(&mut self) {
+            CURRENT_TASK_VIEW.set(self.0);
+        }
+    }
+
+    #[test]
+    fn current_task_fixture_view_restores_after_unwind() {
+        let original = CURRENT_TASK_VIEW.get();
+        let unwind = std::panic::catch_unwind(|| {
+            let _view = CurrentTaskView::enter();
+            assert_eq!(
+                CURRENT_TASK_VIEW.get(),
+                Some(unsafe { libc::syscall(libc::SYS_gettid) } as u32)
+            );
+            panic!("controlled task-view unwind");
+        });
+        assert!(unwind.is_err());
+        assert_eq!(CURRENT_TASK_VIEW.get(), original);
+    }
 
     fn pin(pid: u32) -> OwnedFd {
         let descriptor = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) } as i32;
@@ -273,19 +315,13 @@ mod tests {
     fn one_owned_signal_denial_does_not_starve_later_owned_siblings() {
         use std::process::Command;
         if let Some(root) = std::env::var_os("ASB_MATERIAL_CUSTODY_ROOT") {
+            let _view = CurrentTaskView::enter();
             let mut scope = DescendantScope::new().unwrap();
-            // libtest runs the fixture on a worker, whereas the real gate is
-            // single-threaded. Exit the spawning thread so its children become
-            // the process leader's actual children before using production's
-            // /proc/<leader>/task/<leader>/children observation.
-            let (mut denied, mut sibling) = std::thread::spawn(|| {
-                (
-                    Command::new("/bin/sleep").arg("30").spawn().unwrap(),
-                    Command::new("/bin/sleep").arg("30").spawn().unwrap(),
-                )
-            })
-            .join()
-            .unwrap();
+            // Observe these exact direct children on their actual spawning
+            // libtest task. Joining another thread does not prove completed
+            // reparenting onto the leader. Real gate tests retain leader view.
+            let mut denied = Command::new("/bin/sleep").arg("30").spawn().unwrap();
+            let mut sibling = Command::new("/bin/sleep").arg("30").spawn().unwrap();
             let sibling_identity = pin(sibling.id());
             let population = children(std::process::id()).unwrap();
             assert_eq!(population, vec![denied.id(), sibling.id()]);
@@ -301,13 +337,16 @@ mod tests {
             // Real cleanup before publishing observations; the outer guardian
             // still owns any orphan if a fixture assertion/unwind fails.
             denied.kill().unwrap();
-            if !sibling_reaped {
-                if sibling_alive {
-                    sibling.kill().unwrap();
-                }
-                sibling.wait().unwrap();
+            if !sibling_reaped && sibling_alive {
+                sibling.kill().unwrap();
             }
+            let sibling_wait = sibling.wait();
             denied.wait().unwrap();
+            if sibling_reaped {
+                assert_eq!(sibling_wait.unwrap_err().raw_os_error(), Some(libc::ECHILD));
+            } else {
+                sibling_wait.unwrap();
+            }
             std::fs::write(
                 std::path::PathBuf::from(root).join("sibling.json"),
                 serde_json::to_vec(&serde_json::json!({
@@ -371,16 +410,15 @@ mod tests {
     fn reap_exited_continues_after_first_error_without_signalling_live_siblings() {
         use std::process::Command;
         if let Some(root) = std::env::var_os("ASB_MATERIAL_CUSTODY_ROOT") {
+            let _view = CurrentTaskView::enter();
             let scope = DescendantScope::new().unwrap();
-            let (mut failed, mut sibling, mut live) = std::thread::spawn(|| {
-                (
-                    Command::new("/bin/true").spawn().unwrap(),
-                    Command::new("/bin/true").spawn().unwrap(),
-                    Command::new("/bin/sleep").arg("30").spawn().unwrap(),
-                )
-            })
-            .join()
-            .unwrap();
+            let mut failed = Command::new("/bin/true").spawn().unwrap();
+            let mut sibling = Command::new("/bin/true").spawn().unwrap();
+            let mut live = Command::new("/bin/sleep").arg("30").spawn().unwrap();
+            assert_eq!(
+                children(std::process::id()).unwrap(),
+                vec![failed.id(), sibling.id(), live.id()]
+            );
             let failed_identity = pin(failed.id());
             let sibling_identity = pin(sibling.id());
             let live_identity = pin(live.id());
@@ -392,11 +430,14 @@ mod tests {
             let sibling_reaped = was_reaped(&sibling_identity);
             let live_alive = !exited(&live_identity, 0);
             failed.wait().unwrap();
-            if !sibling_reaped {
-                sibling.wait().unwrap();
-            }
+            let sibling_wait = sibling.wait();
             live.kill().unwrap();
             live.wait().unwrap();
+            if sibling_reaped {
+                assert_eq!(sibling_wait.unwrap_err().raw_os_error(), Some(libc::ECHILD));
+            } else {
+                sibling_wait.unwrap();
+            }
             std::fs::write(
                 std::path::PathBuf::from(root).join("reap.json"),
                 serde_json::to_vec(&serde_json::json!({
