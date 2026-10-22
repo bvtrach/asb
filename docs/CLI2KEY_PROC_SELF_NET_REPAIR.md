@@ -85,3 +85,46 @@ ignoring EPIPE or changing status/output assertions. Exact file parity against
 ab877c31 passed. No failure in the first37bd suite is attributed to this seam.
 The first proof remains historical; this new signed candidate still requires an
 actual-FIRST rebuild, consent focus and fresh full/final gates before promotion.
+
+## Final local qualification, source `7cb6d428`
+
+All previous handles were terminal before the exact reviewed consent-fixture
+backport. Actual-FIRST cargo build completed exit0 (0.03s cached), restoring the
+main-source image after package verification; it was frozen separately as
+`target/qualification/proc-self-net-7cb6d428-asb`. SHA256 remains
+`938009d6750c27d9da7975c337f47e49f45d750198893d5b4c20c8181c47e751`.
+The consent owning test passed1outer/0/0, covering all eleven unchanged child
+cases. Fresh full locked/offline workspace/all-target/all-feature suite completed
+exit0: **1466passed/0failed/21ignored across24 outer targets**. The library is
+1211/0/13, offline_cli98/0/5 and repeated_run33/0/0. No nested child summaries
+are counted twice. All eight originally failing cases passed in this final run.
+
+Complete final logs use `target/proc-self-net-final-*`: build, consent, full,
+full-outer-summaries, doctests, clippy, fmt, diffcheck, make, update-tests,
+completion-syntax, package, package-help, package-assets and package-hashes.
+Before/full-after/normal-gates-after SHA256 logs agree for actual and frozen
+938009d6. No source edit or relink occurred during runtime. Doctests0/0,
+strict workspace/all-target/all-feature Clippy `-D warnings`10.34s, fmt/diffcheck,
+sequential make/private Rustdocs/pinned AutoUML0.7.2/flows/interactive/completions,
+both actual completion-file syntax checks and update tests7/0 passed. This is
+the update-test gate, not mutation through make update. All handles are terminal.
+
+The newly generated regular nonsymlink zero-byte install.log was again preserved
+with exact metadata under target/fixture-preservation after runtime/builds ended;
+only its empty .asb parent was removed, and crate target diagnostics remain.
+Final locked/offline cargo package passed511files/13.86s verification. Actual
+archived owning tests, writer support and mode0755 immutable mock gate match
+checkout bytes; generated crate target artifacts are excluded. Package help
+passed. Package verification legitimately replaced ordinary debug ASB with
+`55a5f91e45fd235aeb2fb4b6158ace95a87e12b66b7eaaa3a0f0653212e142a3`,
+retained as qualification/proc-self-net-7cb6d428-packaged-asb (help-only, not the
+full-suite binary). Frozen full-suite938009d6 remains unchanged. Final archive
+SHA256 is `14ba071e31240f89be74dd339ed54b19c3a8c621009faf98afdf72a960e97fa4`.
+
+Scope is local Linux x86_64 offline qualification, not direct hardened-service
+view, Windows, external SDK/client/provider or privileged tracing qualification.
+No product source, Cargo version, workflow, original assertion, retry or skip
+policy changed. The removed coverage gate stays removed. This signed docs-only
+proof follows the frozen source; independent final review, new hotfix PR/CI,
+actual postmerge hardened job and both release gates remain pending. Root owns
+delivery; this worker has not pushed, opened a PR, merged or released anything.
