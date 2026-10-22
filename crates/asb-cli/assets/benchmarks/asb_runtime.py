@@ -203,7 +203,9 @@ def _inspect_elf(path, payload):
     if not path.is_file():
         raise ExecutionError(missing)
     descriptor = os.open(path,os.O_RDONLY|getattr(os,"O_NONBLOCK",0))
-    with os.fdopen(descriptor,"rb") as source:
+    # Metadata seeks must not amplify fixed header reads through userspace
+    # readahead. Keep the existing complete-payload reader's buffering policy.
+    with os.fdopen(descriptor,"rb",buffering=-1 if payload else 0) as source:
         before = os.fstat(source.fileno())
         if not stat.S_ISREG(before.st_mode) or (payload and before.st_size > MAX_FILE):
             raise ExecutionError(missing)
