@@ -231,3 +231,15 @@ Static/legacy input, normal library grammar, unresolved/conflicting/named checks
 and redaction remain unchanged. This source has NOT been built or run; independent
 root review precedes fixed-source Python/actual ASB/gated owning qualification
 and any push. All original hosted/local diagnostics remain immutable evidence.
+
+Root independently approved the complete parser delta, golden and baseline RED.
+A final negative case places vDSO BEFORE the anonymous header and ordinary
+library: it must reject because first-nonempty is stricter than first-resolved.
+The temporary Ubuntu26 workflow now selects all four EXACT original owning
+tests, checks their1passed/0failed/0ignored footer and attempts every distinct
+filter once before returning a nonzero aggregate if any fails. This is not a
+retry or permission to substitute diagnostic-harness success for regression
+success. Normal CI remains unchanged. Root requires removal of temporary
+workflow/harness/script AFTER actual26 success and before final full/package
+qualification; immutable artifacts, permanent captured parser tests/fixture and
+incremental0 policy remain. No new fixed-source runtime claim is made here.

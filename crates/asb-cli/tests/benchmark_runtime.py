@@ -76,6 +76,7 @@ class RuntimeTests(unittest.TestCase):
         invalid = [
             header, header+"linux-vdso.so.1 (0x123)\n",
             header+header+library, library+header,
+            "linux-vdso.so.1 (0x123)\n"+header+library,
             "(0x)\n"+library, "(0x123456789abcdef01)\n"+library,
             "(0xNOTHEX)\n"+library, "(0x123) extra\n"+library,
             "missing => (0x123)\n"+library,
