@@ -575,7 +575,7 @@ mod tests {
         );
         let receipts = crate::process_cleanup::test_support::Scope::new();
         let started = Instant::now();
-        let error = discover_with_timeout(&python, &[], Duration::from_millis(300))
+        let error = discover_with_timeout(&python, &[], Duration::from_secs(2))
             .unwrap_err()
             .to_string();
         let elapsed = started.elapsed();
@@ -587,7 +587,7 @@ mod tests {
         );
         assert!(error.contains("exchange deadline exceeded"), "{error}");
         assert!(!error.contains("response exceeds its byte bound"));
-        assert!(elapsed < Duration::from_secs(2));
+        assert!(elapsed < Duration::from_secs(4));
     }
 
     #[test]

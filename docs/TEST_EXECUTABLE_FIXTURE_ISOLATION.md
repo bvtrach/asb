@@ -340,3 +340,11 @@ progress, and must fail specifically on the absolute deadline, not byte bound.
 Actual reaper receipts settle before marker assertions. No production limits,
 admission/cleanup policy, retry, skip or suite serialization changed. This
 signed source checkpoint precedes its next focused execution/review.
+
+Root's pre-run followup gives only the NEW slow-activity proof the same fixed2s
+healthy startup allowance and4s outer return bound. Requiring actual repeated
+child output inside a new300ms budget would conflate startup scheduling again.
+Its unchanged at-most300 one-byte writes/10ms cadence take at least3s naturally,
+so a deadline reset by activity would reach schema failure rather than the
+required deadline error. All original three300ms/<2s negative controls remain
+unchanged. No production timer or qualification claim changes.
