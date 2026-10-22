@@ -4,8 +4,8 @@ use super::*;
 use crate::measurements::ExecutionCohort;
 use crate::runner::campaign::Plan;
 use crate::runner::campaign::generation::{
-    Admission, Batch, Blob, Completed, MAX_GENERATION, MAX_MANIFEST, Manifest, ManifestReference,
-    ROOT, SCOPE, manifest_path,
+    Admission, Batch, Blob, Catalog, Completed, MAX_GENERATION, MAX_MANIFEST, Manifest,
+    ManifestReference, NextReference, ROOT, SCOPE, manifest_path,
 };
 use crate::runner::repeated::publish_bytes;
 use serde::Serialize;
@@ -30,7 +30,7 @@ pub(in crate::sweep) struct Guard {
     owners: Vec<crate::output_lock::OutputLock>,
 }
 
-/// Planning owns the original input owner and cannot mint a second generation.
+/// Planning owns all original owners and one fixed create-new successor stage.
 pub(in crate::sweep) struct Prepared {
     guard: Guard,
     parent: PathBuf,
@@ -38,6 +38,10 @@ pub(in crate::sweep) struct Prepared {
     campaigns: Vec<Campaign>,
     admission: Admission,
     admission_bytes: Vec<u8>,
+    predecessor: Option<Catalog>,
+    relative: PathBuf,
+    link_bytes: Option<Vec<u8>>,
+    stage_created: bool,
 }
 
 /// Only a fully published generation can produce worker capabilities. This is
@@ -137,9 +141,9 @@ impl Prepared {
                 "classification belongs to another input/index owner",
             ));
         }
-        // A single derived root makes a prior publication crash visible. Never
-        // pick a new random directory and silently abandon earlier authority.
-        if reading::present_relative(&inputs.directory, Path::new(ROOT))? {
+        if classified.catalog.is_none()
+            && reading::present_relative(&inputs.directory, Path::new(ROOT))?
+        {
             return Err(recovery(
                 "a prior continuation generation requires metadata recovery",
             ));
@@ -150,6 +154,7 @@ impl Prepared {
             ));
         }
         let Classified {
+            catalog,
             mut identities,
             origin,
             layouts,
@@ -158,6 +163,16 @@ impl Prepared {
             receipt_bindings,
             _owners,
         } = classified;
+        // Existing unions must be confirmed before a successor can supersede
+        // their authority. This also covers wholly completed configurations.
+        if let Some(catalog) = &catalog {
+            catalog.recheck_for_publication(None)?;
+            for (configuration, layout) in layouts.iter().enumerate() {
+                if catalog.has_recording_union(configuration)? {
+                    crate::runner::recording::union::current(&layout.root, catalog, configuration)?;
+                }
+            }
+        }
         let generation =
             crate::workloads::TaskIdentity::local("continuation-generation", None).attempt_id;
         let mut campaigns = Vec::with_capacity(layouts.len());
@@ -301,13 +316,42 @@ impl Prepared {
                 sha256: origin.index_sha256.clone(),
             },
             manifests: references,
-            lineage: None,
+            lineage: catalog.as_ref().map(Catalog::next_lineage),
         };
         let admission_bytes = encode(&admission)?;
-        total_bytes
+        let total_bytes = total_bytes
             .checked_add(admission_bytes.len())
             .filter(|count| *count <= MAX_GENERATION)
             .ok_or_else(|| recovery("continuation generation exceeds 64 MiB"))?;
+        let (relative, link_bytes) = if let Some(lineage) = &admission.lineage {
+            let bytes = encode(&NextReference {
+                schema_version: 1,
+                ordinal: lineage.ordinal,
+                generation: admission.generation.clone(),
+                admission: Blob::of(&admission_bytes),
+                previous_admission: lineage.previous_admission.clone(),
+            })?;
+            catalog
+                .as_ref()
+                .expect("lineage has predecessor")
+                .validate_successor(
+                    &campaigns
+                        .iter()
+                        .map(|campaign| &campaign.manifest)
+                        .collect::<Vec<_>>(),
+                    total_bytes
+                        .checked_add(bytes.len())
+                        .ok_or_else(|| recovery("generation metadata overflow"))?,
+                )?;
+            (
+                Path::new(ROOT)
+                    .join("successors")
+                    .join(format!("{:06}", lineage.ordinal)),
+                Some(bytes),
+            )
+        } else {
+            (PathBuf::from(ROOT), None)
+        };
         Ok(Self {
             guard: Guard {
                 inputs,
@@ -318,10 +362,22 @@ impl Prepared {
             campaigns,
             admission,
             admission_bytes,
+            predecessor: catalog,
+            relative,
+            link_bytes,
+            stage_created: false,
         })
     }
 
     fn recheck(&mut self, results: &Path, sweep: &SweepPlan) -> Result<(), Error> {
+        let stage = self.guard.inputs.directory.join(&self.relative);
+        if let Some(catalog) = &self.predecessor {
+            catalog.recheck_for_publication(self.stage_created.then_some(stage.as_path()))?;
+        } else if !self.stage_created
+            && reading::present_relative(&self.guard.inputs.directory, Path::new(ROOT))?
+        {
+            return Err(recovery("first generation appeared before publication"));
+        }
         let inputs = &mut self.guard.inputs;
         if self.origin != Origin::read(inputs, &self.parent, results, sweep)?
             || inputs.final_fingerprint()? != inputs.initial
@@ -334,15 +390,15 @@ impl Prepared {
         // This does not reacquire locks and reads no public replay archive.
         let layouts = shared_layouts(results, sweep)?;
         let inventory = Inventory::read(&layouts, &inputs.directory)?;
-        // This generation has not published its final marker yet. Only the
-        // original completed starts may be checked during this owned phase.
+        // Historical starts retain their own previously validated generation;
+        // this new stage is not yet execution authority.
         let declarations = inputs.declare_campaign_layouts_with_catalog(
             &self.parent,
             results,
             sweep,
             layouts,
             crate::workloads::recovery::verify_retained,
-            None,
+            self.predecessor.as_ref(),
         )?;
         if !inventory.unsettled.is_empty() || !declarations.unsettled.is_empty() {
             return Err(recovery(
@@ -440,7 +496,7 @@ impl Prepared {
         mut after_file: impl FnMut(usize) -> Result<(), Error>,
     ) -> Result<(Guard, Vec<AdmittedCampaign>), Error> {
         self.recheck(results, sweep)?;
-        let directory = root(&self.guard.inputs);
+        let directory = self.guard.inputs.directory.join(&self.relative);
         // No recursive mkdir/adoption: existing partial state is recovery-only.
         let mut builder = fs::DirBuilder::new();
         #[cfg(unix)]
@@ -448,8 +504,19 @@ impl Prepared {
             use std::os::unix::fs::DirBuilderExt;
             builder.mode(0o700);
         }
+        let parent = directory.parent().expect("fixed generation parent");
+        if self.predecessor.is_some()
+            && !reading::present_relative(
+                &self.guard.inputs.directory,
+                &Path::new(ROOT).join("successors"),
+            )?
+        {
+            builder.create(parent).map_err(io_error)?;
+            sync_directory(&root(&self.guard.inputs))?;
+        }
         builder.create(&directory).map_err(io_error)?;
-        sync_directory(&self.guard.inputs.directory)?;
+        self.stage_created = true;
+        sync_directory(parent)?;
         for (index, campaign) in self.campaigns.iter().enumerate() {
             publish_bytes(&directory.join(manifest_path(index)), &campaign.bytes)?;
             after_file(index)?;
@@ -501,11 +568,47 @@ impl Prepared {
                         descriptor.clone(),
                         reference,
                         campaign.compatibility.clone(),
+                        self.admission.recording_current_path(),
                     )?,
                 ));
             }
         }
+        self.recheck(results, sweep)?;
+        self.verify_stage(&directory, false)?;
         publish_bytes(&directory.join("admitted.json"), &self.admission_bytes)?;
+        self.verify_stage(&directory, true)?;
+        if let Some(bytes) = &self.link_bytes {
+            publish_bytes(
+                &self
+                    .predecessor
+                    .as_ref()
+                    .expect("link has predecessor")
+                    .head_root()
+                    .join("next.json"),
+                bytes,
+            )?;
+        }
+        // Validate the entire public chain before returning any executable cap.
+        // A postlink validation/sync error retains metadata, never launches.
+        let layouts = shared_layouts(results, sweep)?;
+        let catalog = self
+            .guard
+            .inputs
+            .read_generation_catalog(results, sweep, &layouts)?
+            .ok_or_else(|| recovery("published generation catalog disappeared"))?;
+        for campaign in &self.campaigns {
+            let expected = crate::runner::campaign::generation::StartReference {
+                generation: self.admission.generation.clone(),
+                configuration: campaign.manifest.configuration,
+                manifest: Blob::of(&campaign.bytes),
+                admission: Blob::of(&self.admission_bytes),
+            };
+            if catalog.reference(campaign.manifest.configuration)? != expected {
+                return Err(recovery(
+                    "published head changed before worker capability return",
+                ));
+            }
+        }
         // Even a post-link sync failure above returns NO executable capability.
         // Explicit recovery must distinguish published metadata from starts.
         let entries = self
@@ -524,6 +627,43 @@ impl Prepared {
             })
             .collect();
         Ok((self.guard, entries))
+    }
+
+    fn verify_stage(&self, directory: &Path, admitted: bool) -> Result<(), Error> {
+        let mut names = BTreeSet::new();
+        for campaign in &self.campaigns {
+            let relative = manifest_path(campaign.manifest.configuration);
+            if reading::bounded_relative(directory, &relative, MAX_MANIFEST as u64)?
+                != campaign.bytes
+            {
+                return Err(recovery(
+                    "local stage manifest changed before admission link",
+                ));
+            }
+            names.insert(relative.into_os_string());
+        }
+        if admitted {
+            if reading::bounded_relative(
+                directory,
+                Path::new("admitted.json"),
+                MAX_MANIFEST as u64,
+            )? != self.admission_bytes
+            {
+                return Err(recovery("local stage admission changed before final link"));
+            }
+            names.insert("admitted.json".into());
+        }
+        let actual: BTreeSet<_> = reading::list_relative(
+            directory.parent().expect("fixed parent"),
+            Path::new(directory.file_name().expect("fixed node")),
+            names.len(),
+        )?
+        .into_iter()
+        .collect();
+        if actual != names {
+            return Err(recovery("local stage has partial or foreign metadata"));
+        }
+        Ok(())
     }
 }
 

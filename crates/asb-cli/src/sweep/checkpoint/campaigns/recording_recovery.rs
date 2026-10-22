@@ -107,6 +107,7 @@ impl Inputs {
                 descriptor,
                 &binding,
                 &publication,
+                &catalog.recording_current_path(&binding.reference)?,
             )?);
             reports.push(json!({"type":"recording-publication-recovery","configuration":configuration,
                 "destination":publication.destination,"agent_executions":0,"evaluations":0,"cleanup_complete":publication.cleanup_complete}));

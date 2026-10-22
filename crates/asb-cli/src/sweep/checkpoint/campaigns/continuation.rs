@@ -63,6 +63,7 @@ impl Origin {
 /// Locks remain owned until this classification is consumed. Pending slots
 /// still need generation publication and exclusive create-new start admission.
 pub(in crate::sweep) struct Classified {
+    catalog: Option<crate::runner::campaign::generation::Catalog>,
     identities: BTreeMap<usize, crate::cassette::Compatibility>,
     origin: Origin,
     layouts: Vec<Layout>,
@@ -304,12 +305,14 @@ impl Inputs {
             );
         }
         let inventory = Inventory::read(&layouts, &self.directory)?;
-        let declarations = self.declare_campaign_layouts(
+        let catalog = self.read_generation_catalog(results, plan, &layouts)?;
+        let declarations = self.declare_campaign_layouts_with_catalog(
             parent,
             results,
             plan,
             layouts,
             crate::workloads::recovery::verify_retained,
+            catalog.as_ref(),
         )?;
         if !declarations.unsettled.is_empty() || !inventory.unsettled.is_empty() {
             return Err(recovery(
@@ -381,6 +384,7 @@ impl Inputs {
                 .insert(candidate.slot, candidate.summary);
         }
         Ok(Classified {
+            catalog,
             identities: inspection.identities,
             origin,
             layouts: inspection.layouts,

@@ -154,6 +154,7 @@ pub(crate) struct Recorder {
     planned: Option<Planned>,
     union: Option<union::Descriptor>,
     binding: Option<union::Binding>,
+    current_relative: PathBuf,
 }
 
 struct Planned {
@@ -261,6 +262,7 @@ impl Recorder {
             }),
             union: None,
             binding: None,
+            current_relative: PathBuf::from("recording-current.json"),
         }
     }
 
@@ -271,6 +273,7 @@ impl Recorder {
         descriptor: union::Descriptor,
         reference: super::campaign::generation::StartReference,
         compatibility: Option<Compatibility>,
+        current_relative: PathBuf,
     ) -> Result<Self, Error> {
         let journal = descriptor.stage(compatibility.as_ref(), plan.concurrency, plan.repeat)?;
         let binding = union::Binding {
@@ -308,6 +311,7 @@ impl Recorder {
             planned: Some(planned),
             union: Some(descriptor),
             binding: Some(binding),
+            current_relative,
         })
     }
 
@@ -571,7 +575,13 @@ impl Recorder {
             .binding
             .as_ref()
             .ok_or_else(|| Error::Input("recorder has no union generation binding".into()))?;
-        union::publish(&self.root, descriptor, binding, publication)
+        union::publish(
+            &self.root,
+            descriptor,
+            binding,
+            publication,
+            &self.current_relative,
+        )
     }
 
     fn operation<T>(

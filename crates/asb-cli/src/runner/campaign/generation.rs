@@ -140,6 +140,8 @@ pub(crate) struct Expected<'a> {
 pub(crate) struct Catalog {
     nodes: Vec<Node>,
     indices: std::collections::BTreeMap<String, usize>,
+    metadata_bytes: usize,
+    recording_nodes: Vec<Option<usize>>,
 }
 
 /// One immutable admission and its private validated derivatives. Keeping node
@@ -153,6 +155,7 @@ struct Node {
     // Private derivatives of the validated manifests, not serialized authority.
     origin_commitments: Vec<Option<String>>,
     metadata_bytes: usize,
+    next_blob: Option<Blob>,
 }
 
 pub(crate) struct Resolved {
@@ -267,12 +270,6 @@ impl Manifest {
 }
 
 impl Node {
-    fn has_recording_union(&self, configuration: usize) -> Result<bool, Error> {
-        self.manifests
-            .get(configuration)
-            .map(|manifest| manifest.recording.is_some())
-            .ok_or_else(|| invalid("configuration is outside manifest"))
-    }
     fn recordings(
         &self,
     ) -> impl Iterator<Item = (usize, &crate::runner::recording::union::Descriptor)> {
@@ -398,6 +395,7 @@ impl Node {
             manifests,
             origin_commitments,
             metadata_bytes: budget,
+            next_blob: None,
         })
     }
 
@@ -592,7 +590,7 @@ impl Catalog {
         let mut next: Option<NextReference> = None;
         let mut relative = PathBuf::from(ROOT);
         loop {
-            let node = Node::read(checkpoint, &relative, &context, expected, remaining)?;
+            let mut node = Node::read(checkpoint, &relative, &context, expected, remaining)?;
             remaining = remaining
                 .checked_sub(node.metadata_bytes)
                 .ok_or_else(|| invalid("cumulative generation metadata exceeds 64 MiB"))?;
@@ -630,6 +628,7 @@ impl Catalog {
                 remaining = remaining
                     .checked_sub(bytes.len())
                     .ok_or_else(|| invalid("cumulative generation metadata exceeds 64 MiB"))?;
+                node.next_blob = Some(Blob::of(&bytes));
                 let link: NextReference = serde_json::from_slice(&bytes)
                     .map_err(|_| invalid("successor link is malformed"))?;
                 if link.schema_version != 1
@@ -668,7 +667,138 @@ impl Catalog {
                 "orphan or foreign successor requires metadata recovery",
             ));
         }
-        Ok(Self { nodes, indices })
+        let mut recording_nodes = vec![None; expected.len()];
+        for (ordinal, node) in nodes.iter().enumerate() {
+            for (configuration, manifest) in node.manifests.iter().enumerate() {
+                if manifest.recording.is_some() {
+                    recording_nodes[configuration] = Some(ordinal);
+                }
+            }
+        }
+        Ok(Self {
+            nodes,
+            indices,
+            metadata_bytes: limit - remaining,
+            recording_nodes,
+        })
+    }
+
+    pub(crate) fn next_lineage(&self) -> Lineage {
+        Lineage {
+            schema_version: 1,
+            ordinal: self.nodes.len(),
+            previous_generation: self.head().admission.generation.clone(),
+            previous_admission: self.head().admission_blob.clone(),
+        }
+    }
+
+    pub(crate) fn head_root(&self) -> &Path {
+        &self.head().root
+    }
+
+    /// Consuming publication revalidates its predecessor while it holds all
+    /// original owners. Only that caller's fixed, create-new local stage may be
+    /// present without a link; ordinary passive readers still reject orphans.
+    pub(crate) fn recheck_for_publication(&self, stage: Option<&Path>) -> Result<(), Error> {
+        for node in &self.nodes {
+            let admission = reading::bounded_relative(
+                &node.root,
+                Path::new("admitted.json"),
+                MAX_MANIFEST as u64,
+            )?;
+            if !node.admission_blob.matches(&admission) {
+                return Err(invalid(
+                    "predecessor admission changed before successor publication",
+                ));
+            }
+            let mut names = BTreeSet::from([std::ffi::OsString::from("admitted.json")]);
+            for reference in &node.admission.manifests {
+                let path = manifest_path(reference.configuration);
+                let bytes = reading::bounded_relative(&node.root, &path, reference.content.bytes)?;
+                if !reference.content.matches(&bytes) {
+                    return Err(invalid(
+                        "predecessor manifest changed before successor publication",
+                    ));
+                }
+                names.insert(path.into_os_string());
+            }
+            match &node.next_blob {
+                Some(blob) => {
+                    let bytes =
+                        reading::bounded_relative(&node.root, Path::new("next.json"), blob.bytes)?;
+                    if !blob.matches(&bytes) {
+                        return Err(invalid(
+                            "predecessor link changed before successor publication",
+                        ));
+                    }
+                    names.insert("next.json".into());
+                }
+                None if reading::present_relative(&node.root, Path::new("next.json"))? => {
+                    return Err(invalid(
+                        "predecessor head advanced before successor publication",
+                    ));
+                }
+                None => (),
+            }
+            if node.root == self.nodes[0].root
+                && reading::present_relative(&node.root, Path::new("successors"))?
+            {
+                names.insert("successors".into());
+            }
+            let actual: BTreeSet<_> = reading::list_relative(
+                node.root.parent().expect("absolute node parent"),
+                Path::new(node.root.file_name().expect("derived node name")),
+                names.len(),
+            )?
+            .into_iter()
+            .collect();
+            if actual != names {
+                return Err(invalid("predecessor metadata envelope changed"));
+            }
+        }
+        let mut names: BTreeSet<_> = (1..self.nodes.len())
+            .map(|ordinal| std::ffi::OsString::from(format!("{ordinal:06}")))
+            .collect();
+        if let Some(stage) = stage {
+            let expected = self.nodes[0]
+                .root
+                .join("successors")
+                .join(format!("{:06}", self.nodes.len()));
+            if std::path::absolute(stage).map_err(crate::io_error)? != expected {
+                return Err(invalid(
+                    "local successor stage is not the fixed next ordinal",
+                ));
+            }
+            names.insert(
+                expected
+                    .file_name()
+                    .expect("derived ordinal")
+                    .to_os_string(),
+            );
+        }
+        let actual: BTreeSet<_> =
+            reading::list_relative(&self.nodes[0].root, Path::new("successors"), names.len())?
+                .into_iter()
+                .collect();
+        if actual != names {
+            return Err(invalid("predecessor successor topology changed"));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn validate_successor(
+        &self,
+        manifests: &[&Manifest],
+        additional_bytes: usize,
+    ) -> Result<(), Error> {
+        self.metadata_bytes
+            .checked_add(additional_bytes)
+            .filter(|total| *total <= MAX_GENERATION)
+            .ok_or_else(|| invalid("cumulative generation metadata exceeds 64 MiB"))?;
+        if manifests.len() != self.head().manifests.len() {
+            return Err(invalid("successor configuration population changed"));
+        }
+        validate_completed_progress(&self.head().manifests, manifests.iter().copied())
     }
 
     pub(crate) fn reference(&self, configuration: usize) -> Result<StartReference, Error> {
@@ -676,7 +806,28 @@ impl Catalog {
     }
 
     pub(crate) fn has_recording_union(&self, configuration: usize) -> Result<bool, Error> {
-        self.head().has_recording_union(configuration)
+        self.recording_nodes
+            .get(configuration)
+            .map(Option::is_some)
+            .ok_or_else(|| invalid("configuration is outside manifest"))
+    }
+
+    pub(crate) fn recording_reference(
+        &self,
+        configuration: usize,
+    ) -> Result<Option<StartReference>, Error> {
+        self.recording_nodes
+            .get(configuration)
+            .ok_or_else(|| invalid("configuration is outside manifest"))?
+            .map(|ordinal| self.nodes[ordinal].reference(configuration))
+            .transpose()
+    }
+
+    pub(crate) fn recording_current_path(
+        &self,
+        reference: &StartReference,
+    ) -> Result<PathBuf, Error> {
+        Ok(self.node_for(reference)?.admission.recording_current_path())
     }
 
     pub(crate) fn recordings(
@@ -734,8 +885,15 @@ impl Catalog {
 }
 
 fn validate_transition(previous: &Node, next: &Node) -> Result<(), Error> {
+    validate_completed_progress(&previous.manifests, next.manifests.iter())
+}
+
+fn validate_completed_progress<'a>(
+    previous: &[Manifest],
+    next: impl IntoIterator<Item = &'a Manifest>,
+) -> Result<(), Error> {
     let mut progress = false;
-    for (before, after) in previous.manifests.iter().zip(&next.manifests) {
+    for (before, after) in previous.iter().zip(next) {
         for entry in &before.completed {
             let inherited = after
                 .completed
@@ -755,4 +913,16 @@ fn validate_transition(previous: &Node, next: &Node) -> Result<(), Error> {
         return Err(invalid("successor makes no completed-slot progress"));
     }
     Ok(())
+}
+
+impl Admission {
+    pub(crate) fn recording_current_path(&self) -> PathBuf {
+        if self.lineage.is_some() {
+            PathBuf::from(".asb-generations")
+                .join(&self.generation)
+                .join("recording-current.json")
+        } else {
+            PathBuf::from("recording-current.json")
+        }
+    }
 }

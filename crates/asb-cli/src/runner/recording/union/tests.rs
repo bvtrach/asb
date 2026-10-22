@@ -1,6 +1,63 @@
 //! Actual backend publication, no fabricated agent outcomes or paid requests.
 use super::*;
 
+fn publish(
+    root: &Path,
+    descriptor: &Descriptor,
+    binding: &Binding,
+    publication: &Publication,
+) -> Result<(), Error> {
+    super::publish(
+        root,
+        descriptor,
+        binding,
+        publication,
+        Path::new("recording-current.json"),
+    )
+}
+
+fn prepare_publication(
+    root: &Path,
+    descriptor: &Descriptor,
+    binding: &Binding,
+    publication: &Publication,
+) -> Result<PublicationPlan, Error> {
+    super::prepare_publication(
+        root,
+        descriptor,
+        binding,
+        publication,
+        Path::new("recording-current.json"),
+    )
+}
+
+#[test]
+fn successor_publication_keeps_the_original_root_ledger_immutable() {
+    let fixture = Fixture::new();
+    let (descriptor, binding, publication) = fixture.publication();
+    let original = b"original immutable publication ledger";
+    fs::write(fixture.0.join("recording-current.json"), original).unwrap();
+    let relative = PathBuf::from(".asb-generations/111/recording-current.json");
+    super::publish(&fixture.0, &descriptor, &binding, &publication, &relative).unwrap();
+    let bytes = fs::read(fixture.0.join(&relative)).unwrap();
+    super::publish(&fixture.0, &descriptor, &binding, &publication, &relative).unwrap();
+    assert_eq!(fs::read(fixture.0.join(&relative)).unwrap(), bytes);
+    assert_eq!(
+        fs::read(fixture.0.join("recording-current.json")).unwrap(),
+        original
+    );
+    assert!(
+        super::prepare_publication(
+            &fixture.0,
+            &descriptor,
+            &binding,
+            &publication,
+            Path::new("foreign-current.json")
+        )
+        .is_err()
+    );
+}
+
 struct Fixture(PathBuf);
 impl Fixture {
     fn new() -> Self {

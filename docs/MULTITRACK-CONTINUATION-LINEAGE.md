@@ -4,15 +4,28 @@ Status: independently reviewed design for the remaining feature-5 work, not an
 implemented or qualified capability. The current single-generation path must
 remain safe until this entire change and its public fault matrix are complete.
 
-Decoder checkpoint: the passive catalog now validates an explicit bounded chain,
-preserves original-node start/recording resolution and cumulative head receipt
-membership, and refuses orphan successors, non-progressing generations and
-changed inherited bindings. Legacy first admissions omit `lineage` unchanged.
-The publication path still refuses a second generation; head-only recording
-discovery/recovery is not yet inheritance support. The synthetic metadata tests
-below are not evidence that repeated public continuation works. Do not mark this
-feature delivered until the consuming publication path, recording ledger
-inheritance/recovery and actual C4/N3 qualification below are complete.
+Implementation checkpoint: the passive catalog validates an explicit bounded
+chain and preserves original-node start/recording resolution. Consuming successor
+publication retains and rechecks the predecessor under all owners, validates
+global progress/cumulative metadata before staging, imports all configurations,
+and publishes the predecessor link last before returning worker capabilities.
+Legacy first admissions omit `lineage` unchanged. Later recording ledgers are
+generation-local; current selection derives the latest applicable descriptor per
+configuration from the explicit validated chain, never filesystem recency.
+
+Actual measured C4/N3 recording and seeded ZIP replay fixtures passed two
+successive interruptions (4 -> 8 -> 12 -> 12 attempts), including complete false
+grades, historical byte preservation, final-union metadata/payload equality for
+all eight ancestor tracks, provider-free old/new track replay, historical compare
+and default latest-union selection. Missing ancestor metadata/receipts/ledgers and
+orphan stages launch no new client and do not replace reports. The repeated CLI
+suite currently has 56 passing cases; this is not full release qualification.
+
+Still unfinished: exact same-head activation after owner death before any worker,
+explicit recovery of an unlinked fully staged child, postlink durability fault
+qualification, larger multi-configuration inheritance/fault tests, original-SDK
+qualification and full current-main packaging/CI. Do not mark feature 5 delivered
+until these remaining paths and release gates are complete.
 
 ## Explicit append-only authority
 

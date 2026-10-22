@@ -331,8 +331,9 @@ pub(crate) fn publish(
     descriptor: &Descriptor,
     binding: &Binding,
     publication: &Publication,
+    current_relative: &Path,
 ) -> Result<(), Error> {
-    let prepared = prepare_publication(root, descriptor, binding, publication)?;
+    let prepared = prepare_publication(root, descriptor, binding, publication, current_relative)?;
     prepared.preflight()?;
     prepared.commit()
 }
@@ -342,6 +343,7 @@ pub(crate) struct PublicationPlan {
     receipt_path: PathBuf,
     receipt: Published,
     current: Current,
+    current_relative: PathBuf,
 }
 
 impl PublicationPlan {
@@ -351,7 +353,7 @@ impl PublicationPlan {
         for (relative, expected) in [
             (&self.receipt_path, serde_json::to_vec_pretty(&self.receipt)),
             (
-                &PathBuf::from("recording-current.json"),
+                &self.current_relative,
                 serde_json::to_vec_pretty(&self.current),
             ),
         ] {
@@ -374,11 +376,7 @@ impl PublicationPlan {
 
     pub(crate) fn commit(self) -> Result<(), Error> {
         publish_exact(&self.root, &self.receipt_path, &self.receipt)?;
-        publish_exact(
-            &self.root,
-            Path::new("recording-current.json"),
-            &self.current,
-        )
+        publish_exact(&self.root, &self.current_relative, &self.current)
     }
 }
 
@@ -387,7 +385,18 @@ pub(crate) fn prepare_publication(
     descriptor: &Descriptor,
     binding: &Binding,
     publication: &Publication,
+    current_relative: &Path,
 ) -> Result<PublicationPlan, Error> {
+    let generation_current = PathBuf::from(".asb-generations")
+        .join(&binding.reference.generation)
+        .join("recording-current.json");
+    if current_relative != Path::new("recording-current.json")
+        && current_relative != generation_current
+    {
+        return Err(Error::Input(
+            "union publication ledger is not a derived generation location".into(),
+        ));
+    }
     if publication.destination != descriptor.destination
         || publication.manifest.recording_id != descriptor.physical_id
         || publication.manifest.provenance.as_ref() != Some(&descriptor.origins)
@@ -421,6 +430,7 @@ pub(crate) fn prepare_publication(
         root: root.to_path_buf(),
         receipt_path: relative.clone(),
         receipt,
+        current_relative: current_relative.to_path_buf(),
         current: Current {
             schema_version: 1,
             scope: "current-recording-union-reference".into(),
@@ -438,19 +448,24 @@ pub(crate) fn current(
     configuration: usize,
 ) -> Result<Option<PathBuf>, Error> {
     use crate::runner::campaign::reading;
-    if !reading::present_relative(root, Path::new("recording-current.json"))? {
-        if catalog.has_recording_union(configuration)? {
-            return Err(Error::Input("admitted recording union has no confirmed current reference; use sweep --resume --record --recover-recording before default replay".into()));
+    let Some(reference) = catalog.recording_reference(configuration)? else {
+        if reading::present_relative(root, Path::new("recording-current.json"))? {
+            return Err(Error::Input(
+                "recording current reference has no admitted union".into(),
+            ));
         }
         return Ok(None);
+    };
+    let current_relative = catalog.recording_current_path(&reference)?;
+    if !reading::present_relative(root, &current_relative)? {
+        return Err(Error::Input("admitted recording union has no confirmed current reference; use sweep --resume --record --recover-recording before default replay".into()));
     }
     let current: Current = serde_json::from_slice(&reading::bounded_relative(
         root,
-        Path::new("recording-current.json"),
+        &current_relative,
         64 * 1024,
     )?)
     .map_err(|_| Error::Input("malformed current recording reference".into()))?;
-    let reference = catalog.reference(configuration)?;
     let relative = PathBuf::from(".asb-generations")
         .join(&reference.generation)
         .join("recording-published.json");
@@ -479,6 +494,7 @@ pub(crate) fn current(
     )
     .map_err(recording_error)?;
     if receipt.schema_version != 1
+        || receipt.binding.reference != reference
         || receipt.scope != "confirmed-recording-union-publication"
         || receipt.physical_id != descriptor.physical_id
         || receipt.destination != descriptor.destination

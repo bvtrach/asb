@@ -1,7 +1,136 @@
 //! Real CLI repeated sweeps, sharing the owned synthetic run fixtures.
 use super::*;
 
+/// Test-owned nonblocking output, with one absolute deadline across all prelude
+/// events. A partial line cannot strand a reader thread or bypass the watchdog.
+struct Prelude {
+    stdout: std::process::ChildStdout,
+    buffered: Vec<u8>,
+    bytes: usize,
+    deadline: std::time::Instant,
+}
+
+impl Prelude {
+    #[allow(unsafe_code)]
+    fn new(child: &mut std::process::Child) -> Self {
+        use std::os::fd::AsRawFd;
+        let stdout = child.stdout.take().expect("owned fixture stdout");
+        let fd = stdout.as_raw_fd();
+        // SAFETY: this live owned pipe descriptor is retained by Self; these
+        // fcntl calls only query/set its file-status flags and take no pointers.
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+        if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("cannot make fixture stdout nonblocking");
+        }
+        Self {
+            stdout,
+            buffered: Vec::new(),
+            bytes: 0,
+            deadline: std::time::Instant::now() + std::time::Duration::from_secs(30),
+        }
+    }
+
+    fn try_event(&mut self) -> Result<Value, String> {
+        use std::io::Read;
+        loop {
+            if std::time::Instant::now() >= self.deadline {
+                return Err("fixture prelude deadline exceeded".into());
+            }
+            if let Some(end) = self.buffered.iter().position(|byte| *byte == b'\n') {
+                if end > 1024 * 1024 || self.bytes > 8 * 1024 * 1024 {
+                    return Err("fixture prelude exceeded its byte budget".into());
+                }
+                let row = serde_json::from_slice(&self.buffered[..end])
+                    .map_err(|_| "fixture event is not JSON".to_string())?;
+                self.buffered.drain(..=end);
+                return Ok(row);
+            }
+            if self.buffered.len() >= 1024 * 1024 || self.bytes >= 8 * 1024 * 1024 {
+                return Err("fixture prelude exceeded its byte budget".into());
+            }
+            let mut chunk = [0; 4096];
+            match self.stdout.read(&mut chunk) {
+                Ok(0) => return Err("fixture stdout ended before expected event".into()),
+                Ok(count) => {
+                    self.bytes += count;
+                    self.buffered.extend_from_slice(&chunk[..count]);
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(std::time::Duration::from_millis(5))
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => (),
+                Err(_) => return Err("fixture stdout read failed".into()),
+            }
+        }
+    }
+
+    fn event(&mut self, child: &mut std::process::Child) -> Value {
+        self.try_event().unwrap_or_else(|reason| {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("{reason}");
+        })
+    }
+}
+
+#[test]
+fn fixture_prelude_bounds_partial_lines_without_abandoned_readers() {
+    let mut child = Command::new("python3").isolated_env().env("PATH", std::env::var_os("PATH").unwrap_or_default())
+        .args(["-c", "import sys,time; print('{}',flush=True); sys.stdout.write('partial'); sys.stdout.flush(); time.sleep(30)"])
+        .stdout(std::process::Stdio::piped()).spawn().unwrap();
+    let mut prelude = Prelude::new(&mut child);
+    assert_eq!(prelude.event(&mut child), json!({}));
+    prelude.deadline = std::time::Instant::now() + std::time::Duration::from_millis(20);
+    assert_eq!(
+        prelude.try_event().unwrap_err(),
+        "fixture prelude deadline exceeded"
+    );
+    assert!(child.try_wait().unwrap().is_none());
+    drop(prelude);
+    child.kill().unwrap();
+    child.wait().unwrap();
+}
+
+#[test]
+fn fixture_prelude_rejects_invalid_oversized_and_missing_events() {
+    for (body, expected) in [
+        ("print('invalid',flush=True)", "fixture event is not JSON"),
+        (
+            "print('x'*(1024*1024+1),flush=True)",
+            "fixture prelude exceeded its byte budget",
+        ),
+        ("pass", "fixture stdout ended before expected event"),
+    ] {
+        let mut child = Command::new("python3")
+            .isolated_env()
+            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+            .args(["-c", body])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let mut prelude = Prelude::new(&mut child);
+        let result = prelude.try_event();
+        drop(prelude);
+        let _ = child.kill();
+        child.wait().unwrap();
+        assert_eq!(result.unwrap_err(), expected);
+    }
+}
+
 fn sweep(project: &Project, provider: Option<&RecordingProvider>, arguments: &[&str]) -> Output {
+    sweep_command(project, provider, arguments)
+        .output()
+        .unwrap()
+}
+
+fn sweep_command(
+    project: &Project,
+    provider: Option<&RecordingProvider>,
+    arguments: &[&str],
+) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_asb"));
     command
         .current_dir(&project.0)
@@ -20,7 +149,7 @@ fn sweep(project: &Project, provider: Option<&RecordingProvider>, arguments: &[&
                 format!("{}/models", provider.endpoint),
             );
     }
-    command.output().unwrap()
+    command
 }
 
 fn selections(output: &Output) -> std::collections::BTreeMap<String, Value> {
@@ -62,6 +191,7 @@ fn registered_project(concurrency: usize) -> Project {
             serde_json::to_string(project.0.to_str().unwrap()).unwrap()
         ),
     ).replace("if (root/'reverse-arrivals').exists()", "if batch == 1 and (root/'hold-first-batch').exists():\n    hold_deadline = time.monotonic()+45\n    while not (root/'release-first-batch').exists():\n        assert time.monotonic()<hold_deadline, 'fixture owner did not release first batch'\n        time.sleep(.005)\nif (root/'reverse-arrivals').exists()");
+    let script = script.replace("if (root/'reverse-arrivals').exists()", "if (root/f'hold-batch-{batch}').exists():\n    hold_deadline = time.monotonic()+45\n    while not (root/f'release-batch-{batch}').exists():\n        assert time.monotonic()<hold_deadline, 'fixture owner did not release batch'\n        time.sleep(.005)\nif (root/'reverse-arrivals').exists()");
     fixture_writer::write_file(&project.0, &executable, script).unwrap();
     fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
     let config_path = project.0.join("benchmark.toml");
@@ -360,12 +490,33 @@ fn interrupted_recording_sweep_recovers_publication_without_clients() {
     check_interrupted_continuation("record-ledger-fault", false);
 }
 
+#[test]
+fn successive_recording_continuations_preserve_all_generations_and_publish_complete_union() {
+    check_interrupted_generations("record", true, true);
+}
+
+#[test]
+fn successive_seeded_replay_continuations_preserve_every_choice_and_measurement() {
+    check_interrupted_generations("zip", true, true);
+}
+
 fn check_interrupted_continuation(source_kind: &str, measured: bool) {
-    use std::io::BufRead;
+    check_interrupted_generations(source_kind, measured, false);
+}
+
+fn check_interrupted_generations(source_kind: &str, measured: bool, successive: bool) {
     use std::process::Stdio;
     let project = registered_project(4);
     let recording = source_kind.starts_with("record");
     let ledger_fault = source_kind == "record-ledger-fault";
+    let total = if successive { 12 } else { 8 };
+    if successive {
+        fs::write(
+            project.0.join("hold-batch-2"),
+            "preinstalled bounded batch barrier",
+        )
+        .unwrap();
+    }
     if ledger_fault {
         fs::write(
             project.0.join("block-union-ledger"),
@@ -425,7 +576,7 @@ fn check_interrupted_continuation(source_kind: &str, measured: bool) {
             "sweep",
             "sweep.toml",
             "--repeat",
-            "2",
+            if successive { "3" } else { "2" },
             "--jobs",
             "1",
             "--json",
@@ -456,14 +607,12 @@ fn check_interrupted_continuation(source_kind: &str, measured: bool) {
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    let mut source = std::io::BufReader::new(child.stdout.take().unwrap());
-    let mut line = String::new();
-    source.read_line(&mut line).unwrap();
-    let event: Value = serde_json::from_str(&line).unwrap();
+    let mut source = Prelude::new(&mut child);
+    let event = source.event(&mut child);
     assert_eq!(event["type"], "execution-plan", "{event}");
     // Wait until actual clients have started, not merely the execution-plan
     // prelude (ZIP selection or measured preflight may still emit output).
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let deadline = source.deadline;
     while !(1..=4).all(|replica| project.0.join(format!("barrier-1-{replica}")).exists()) {
         if child.try_wait().unwrap().is_some() || std::time::Instant::now() >= deadline {
             let _ = child.kill();
@@ -610,6 +759,145 @@ fn check_interrupted_continuation(source_kind: &str, measured: bool) {
     if let Some(path) = source_path {
         fs::remove_file(path).unwrap();
     }
+    if successive {
+        let mut child = sweep_command(&project, provider.as_ref(), arguments)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut source = Prelude::new(&mut child);
+        // Drain the reused first batch before deliberately closing output.
+        // Otherwise a full pipe could stop admission before B2 really started.
+        let mut reused = 0;
+        while reused < 4 {
+            let row = source.event(&mut child);
+            reused += usize::from(row["reused"] == true);
+        }
+        let deadline = source.deadline;
+        while !(1..=4).all(|replica| project.0.join(format!("barrier-2-{replica}")).exists()) {
+            if child.try_wait().unwrap().is_some() || std::time::Instant::now() >= deadline {
+                let _ = child.kill();
+                drop(source);
+                let output = child.wait_with_output().unwrap();
+                panic!(
+                    "clients never reached second batch: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        drop(source);
+        fs::write(
+            project.0.join("release-batch-2"),
+            "settle owned second batch",
+        )
+        .unwrap();
+        let interrupted = child.wait_with_output().unwrap();
+        assert!(!interrupted.status.success());
+        assert_eq!(
+            records(&fs::read(project.0.join("attempts.jsonl")).unwrap()).len(),
+            8
+        );
+        assert!(!root.join("batch-3").exists());
+        for id in 5..=8 {
+            let slot = &saved["slots"][id - 1];
+            let outcome_path = root.join(format!("batch-2/outcomes/{}.json", id - 4));
+            let reference: Value =
+                serde_json::from_slice(&fs::read(&outcome_path).unwrap()).unwrap();
+            for path in [
+                checkpoint.join(format!("campaign-completed/000000/{id:06}.json")),
+                root.join(format!("batch-2/starts/{}.json", id - 4)),
+                outcome_path,
+                root.join(reference["path"].as_str().unwrap()),
+                root.join(slot["log"].as_str().unwrap()),
+                root.join(slot["workspace"].as_str().unwrap())
+                    .join("src/parser.py"),
+            ] {
+                frozen.push((path.clone(), fs::read(path).unwrap()));
+            }
+            if measured {
+                let path = root
+                    .join(slot["measurements"].as_str().unwrap())
+                    .join("run.json");
+                frozen.push((path.clone(), fs::read(path).unwrap()));
+            }
+        }
+        for path in [
+            checkpoint.join("campaign-continuation/admitted.json"),
+            checkpoint.join("campaign-continuation/000000.json"),
+        ] {
+            frozen.push((path.clone(), fs::read(path).unwrap()));
+        }
+        if recording {
+            let manifest: Value = serde_json::from_slice(
+                &fs::read(checkpoint.join("campaign-continuation/000000.json")).unwrap(),
+            )
+            .unwrap();
+            for path in [
+                PathBuf::from(manifest["recording"]["destination"].as_str().unwrap()),
+                root.join("recording-current.json"),
+            ] {
+                frozen.push((path.clone(), fs::read(path).unwrap()));
+            }
+        }
+        // Faults in the established ancestor must stop before a successor stage
+        // or paid attempt. Restore only fixture-owned fault injections afterward.
+        let mut faults = vec![
+            checkpoint.join("campaign-continuation/admitted.json"),
+            checkpoint.join("campaign-completed/000000/000004.json"),
+        ];
+        if recording {
+            faults.push(root.join("recording-current.json"));
+        }
+        let report = project.0.join("results/sweep-comparison/comparison.json");
+        let report_before = fs::read(&report).unwrap();
+        for path in faults {
+            let original = fs::read(&path).unwrap();
+            let retained = checkpoint.join("retained-ancestor-fault");
+            fs::rename(&path, &retained).unwrap();
+            let rejected = sweep(&project, provider.as_ref(), arguments);
+            // Restore the same file, including its private publication mode;
+            // recreating with write() would change 0600 to the host umask mode
+            // and correctly invalidate historical content fingerprints.
+            fs::rename(&retained, &path).unwrap();
+            assert_eq!(fs::read(&path).unwrap(), original);
+            assert!(
+                !rejected.status.success(),
+                "missing ancestor {}",
+                path.display()
+            );
+            assert_eq!(
+                records(&fs::read(project.0.join("attempts.jsonl")).unwrap()).len(),
+                8
+            );
+            assert_eq!(fs::read(&report).unwrap(), report_before);
+            assert!(
+                !checkpoint
+                    .join("campaign-continuation/successors/000001")
+                    .exists()
+            );
+        }
+        let orphan = checkpoint.join("campaign-continuation/successors/000001");
+        fs::create_dir_all(&orphan).unwrap();
+        fs::write(
+            orphan.join("admitted.json"),
+            b"fixture-owned orphan must be retained",
+        )
+        .unwrap();
+        let rejected = sweep(&project, provider.as_ref(), arguments);
+        assert!(!rejected.status.success());
+        assert_eq!(
+            records(&fs::read(project.0.join("attempts.jsonl")).unwrap()).len(),
+            8
+        );
+        assert_eq!(
+            fs::read(orphan.join("admitted.json")).unwrap(),
+            b"fixture-owned orphan must be retained"
+        );
+        assert_eq!(fs::read(&report).unwrap(), report_before);
+        fs::remove_file(orphan.join("admitted.json")).unwrap();
+        fs::remove_dir(orphan).unwrap();
+    }
     for iteration in 0..2 {
         let resumed = sweep(&project, provider.as_ref(), arguments);
         // The genuine false grade remains an overall failure, not a reason to
@@ -621,7 +909,7 @@ fn check_interrupted_continuation(source_kind: &str, measured: bool) {
             .collect::<Vec<_>>();
         assert_eq!(
             rows.len(),
-            8,
+            total,
             "iteration {iteration}: {}\n{}",
             String::from_utf8_lossy(&resumed.stdout),
             String::from_utf8_lossy(&resumed.stderr)
@@ -658,10 +946,10 @@ fn check_interrupted_continuation(source_kind: &str, measured: bool) {
         );
         assert_eq!(
             rows.iter().filter(|row| row["reused"] == true).count(),
-            if iteration == 0 { 4 } else { 8 }
+            if iteration == 0 { total - 4 } else { total }
         );
         let attempts = records(&fs::read(project.0.join("attempts.jsonl")).unwrap());
-        assert_eq!(attempts.len(), 8);
+        assert_eq!(attempts.len(), total);
         assert_eq!(
             attempts
                 .iter()
@@ -691,7 +979,7 @@ fn check_interrupted_continuation(source_kind: &str, measured: bool) {
         )
         .unwrap();
         let reported = report["benchmarks"].as_array().unwrap();
-        assert_eq!(reported.len(), 8);
+        assert_eq!(reported.len(), total);
         let mut ids = std::collections::BTreeSet::new();
         for row in reported {
             let slot = row["execution"]["slot"].as_u64().unwrap_or_else(|| {
@@ -726,7 +1014,7 @@ fn check_interrupted_continuation(source_kind: &str, measured: bool) {
                 path.display()
             );
         }
-        for id in 5..=8 {
+        for id in 5..=total {
             let receipt = checkpoint.join(format!("campaign-completed/000000/{id:06}.json"));
             assert!(
                 receipt.is_file(),
@@ -738,11 +1026,19 @@ fn check_interrupted_continuation(source_kind: &str, measured: bool) {
             }
         }
         if let Some(provider) = &provider {
-            assert_eq!(provider.calls.load(std::sync::atomic::Ordering::SeqCst), 8);
+            assert_eq!(
+                provider.calls.load(std::sync::atomic::Ordering::SeqCst),
+                total
+            );
         }
         if recording {
             let descriptor: Value = serde_json::from_slice(
-                &fs::read(checkpoint.join("campaign-continuation/000000.json")).unwrap(),
+                &fs::read(checkpoint.join(if successive {
+                    "campaign-continuation/successors/000001/000000.json"
+                } else {
+                    "campaign-continuation/000000.json"
+                }))
+                .unwrap(),
             )
             .unwrap();
             let path = PathBuf::from(descriptor["recording"]["destination"].as_str().unwrap());
@@ -750,8 +1046,11 @@ fn check_interrupted_continuation(source_kind: &str, measured: bool) {
             let union: Value =
                 serde_json::from_reader(archive.by_name("manifest.json").unwrap()).unwrap();
             let tracks = union["tracks"].as_array().unwrap();
-            assert_eq!(tracks.len(), 8);
-            assert_eq!(union["provenance"]["imports"].as_array().unwrap().len(), 4);
+            assert_eq!(tracks.len(), total);
+            assert_eq!(
+                union["provenance"]["imports"].as_array().unwrap().len(),
+                total - 4
+            );
             assert_ne!(union["recording_id"], saved["campaign"]);
             let original_path = saved["recording"].as_str().unwrap();
             let mut original =
@@ -759,7 +1058,53 @@ fn check_interrupted_continuation(source_kind: &str, measured: bool) {
             let old: Value =
                 serde_json::from_reader(original.by_name("manifest.json").unwrap()).unwrap();
             assert_eq!(&tracks[..4], old["tracks"].as_array().unwrap().as_slice());
-            for id in 1..=8 {
+            if successive {
+                let ancestor: Value = serde_json::from_slice(
+                    &fs::read(checkpoint.join("campaign-continuation/000000.json")).unwrap(),
+                )
+                .unwrap();
+                let mut prior = zip::ZipArchive::new(
+                    fs::File::open(ancestor["recording"]["destination"].as_str().unwrap()).unwrap(),
+                )
+                .unwrap();
+                let prior_manifest: Value =
+                    serde_json::from_reader(prior.by_name("manifest.json").unwrap()).unwrap();
+                assert_eq!(
+                    &tracks[..8],
+                    prior_manifest["tracks"].as_array().unwrap().as_slice()
+                );
+                for id in 1..=8 {
+                    let mut actual = Vec::new();
+                    let mut expected = Vec::new();
+                    std::io::Read::read_to_end(
+                        &mut archive.by_name(&format!("tracks/{id}.jsonl")).unwrap(),
+                        &mut actual,
+                    )
+                    .unwrap();
+                    std::io::Read::read_to_end(
+                        &mut prior.by_name(&format!("tracks/{id}.jsonl")).unwrap(),
+                        &mut expected,
+                    )
+                    .unwrap();
+                    assert_eq!(actual, expected, "imported ancestor slot {id}");
+                }
+                let admission: Value = serde_json::from_slice(
+                    &fs::read(
+                        checkpoint.join("campaign-continuation/successors/000001/admitted.json"),
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+                let path = root
+                    .join(".asb-generations")
+                    .join(admission["generation"].as_str().unwrap())
+                    .join("recording-current.json");
+                assert!(path.is_file());
+                if iteration == 0 {
+                    frozen.push((path.clone(), fs::read(path).unwrap()));
+                }
+            }
+            for id in 1..=total {
                 assert_eq!(tracks[id - 1]["id"], id);
                 let mut bytes = Vec::new();
                 std::io::Read::read_to_end(
@@ -853,7 +1198,12 @@ fn check_interrupted_continuation(source_kind: &str, measured: bool) {
         );
         drop(provider);
         let descriptor: Value = serde_json::from_slice(
-            &fs::read(checkpoint.join("campaign-continuation/000000.json")).unwrap(),
+            &fs::read(checkpoint.join(if successive {
+                "campaign-continuation/successors/000001/000000.json"
+            } else {
+                "campaign-continuation/000000.json"
+            }))
+            .unwrap(),
         )
         .unwrap();
         let union = descriptor["recording"]["destination"].as_str().unwrap();
@@ -862,7 +1212,11 @@ fn check_interrupted_continuation(source_kind: &str, measured: bool) {
         fs::rename(&original, &hidden).unwrap();
         // Replay both an imported and a newly captured track with no provider
         // listener, no credentials and no ancestor ZIP at its original path.
-        for track in ["1", "5"] {
+        for track in if successive {
+            vec!["1", "5", "9"]
+        } else {
+            vec!["1", "5"]
+        } {
             let replayed = replay_from(&project, Some(union), &["--track", track, "--repeat", "1"]);
             let rows = records(&replayed.stdout)
                 .into_iter()
@@ -887,7 +1241,13 @@ fn check_interrupted_continuation(source_kind: &str, measured: bool) {
         let replayed = sweep(
             &project,
             None,
-            &["--replay", "--track", "5", "--repeat", "1"],
+            &[
+                "--replay",
+                "--track",
+                if successive { "9" } else { "5" },
+                "--repeat",
+                "1",
+            ],
         );
         assert_eq!(
             records(&replayed.stdout)
@@ -977,7 +1337,7 @@ fn check_union_measurement_only_owner(project: &Project, root: &std::path::Path,
     assert_eq!(fs::read(&report_path).unwrap(), before);
     assert_eq!(
         records(&fs::read(project.0.join("attempts.jsonl")).unwrap()).len(),
-        8
+        saved["slots"].as_array().unwrap().len()
     );
     fs::write(path, start).unwrap();
     for (path, hidden) in paths.iter().zip(hidden) {
