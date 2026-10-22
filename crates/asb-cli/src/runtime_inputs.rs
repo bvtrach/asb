@@ -347,11 +347,16 @@ mod tests {
             } else {
                 vec![Dependency::file("/fixture/absent-file")]
             };
-            let result = discover_with_timeout(
-                &root.join("fake-python"),
-                &dependencies,
-                Duration::from_millis(150),
-            );
+            // The nested probe has its own 50ms deadline. Give the enclosing
+            // real-child exchange enough scheduling headroom to observe its
+            // response and perform owned descendant settlement on a busy CI
+            // worker; this fixture's independent outer watchdog remains 2s.
+            let timeout = if case == "nested-probe" {
+                Duration::from_secs(1)
+            } else {
+                Duration::from_millis(150)
+            };
+            let result = discover_with_timeout(&root.join("fake-python"), &dependencies, timeout);
             if case == "held-stdin" {
                 let error = result.unwrap_err().to_string();
                 assert!(!error.contains("PRIVATE_RUNTIME_COMPONENT"));
