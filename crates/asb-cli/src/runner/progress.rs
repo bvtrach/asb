@@ -21,7 +21,7 @@ pub(super) fn status(enabled: bool, stage: &str) {
 pub(super) fn clear(enabled: bool) {
     if enabled {
         let mut stderr = io::stderr().lock();
-        let _ = writeln!(stderr, "\r\x1b[2K");
+        let _ = clear_line(&mut stderr, true);
     }
 }
 
@@ -125,10 +125,20 @@ impl Progress for Display {
     fn finish(&mut self) {
         if self.visible {
             let mut stderr = io::stderr().lock();
-            let _ = writeln!(stderr, "\r\x1b[2K");
+            // Keep the cursor on this line: the caller immediately emits the
+            // teardown transition, which should replace the active progress.
+            let _ = clear_line(&mut stderr, false);
             self.visible = false;
         }
     }
+}
+
+fn clear_line(output: &mut impl Write, newline: bool) -> io::Result<()> {
+    write!(output, "\r\x1b[2K")?;
+    if newline {
+        writeln!(output)?;
+    }
+    output.flush()
 }
 
 fn quantity(current: Option<u64>, total: Option<u64>) -> String {
@@ -160,5 +170,16 @@ mod tests {
     fn live_quantities_do_not_invent_a_total() {
         assert_eq!(quantity(Some(3), None), "3");
         assert_eq!(quantity(None, None), "?");
+    }
+
+    #[test]
+    fn progress_handoff_clears_in_place_but_final_cleanup_ends_the_line() {
+        let mut handoff = Vec::new();
+        clear_line(&mut handoff, false).unwrap();
+        assert_eq!(handoff, b"\r\x1b[2K");
+
+        let mut final_cleanup = Vec::new();
+        clear_line(&mut final_cleanup, true).unwrap();
+        assert_eq!(final_cleanup, b"\r\x1b[2K\n");
     }
 }
