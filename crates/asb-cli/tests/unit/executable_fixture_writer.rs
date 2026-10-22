@@ -213,18 +213,25 @@ fn standalone_keeper_uses_the_same_writer_and_retains_failed_or_unknown_namespac
     );
     assert!(!fixture_writer::cleanup(&failed).unwrap());
     let held = root();
+    let mut completed = None;
     let result = fixture_writer::with_fault(Fault::UnknownCleanup, || {
-        fixture_writer::write(
+        fixture_writer::write_with(
             &held,
             &held.join("must-not-admit"),
             b"not written",
             Some(0o700),
+            || {
+                let (keeper, receipt) = fixture_writer::OneSlotKeeper::with_receipt()?;
+                completed = Some(receipt);
+                Ok(keeper)
+            },
         )
     });
     assert!(result.is_err());
-    let pid = fs::read_to_string(held.join("writer-child-started")).unwrap();
+    assert!(held.join("writer-child-started").is_file());
+    let completed = completed.unwrap();
     let end = Instant::now() + Duration::from_secs(3);
-    while std::path::Path::new(&format!("/proc/{pid}")).exists() {
+    while !completed.load(std::sync::atomic::Ordering::Acquire) {
         assert!(
             Instant::now() < end,
             "standalone keeper lost its exact writer"

@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::{
     Arc, Condvar, Mutex, OnceLock,
-    atomic::{AtomicU64, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
 };
 use std::time::{Duration, Instant};
 
@@ -85,8 +85,13 @@ struct Slot {
 pub struct OneSlotKeeper(Arc<(Mutex<Slot>, Condvar)>);
 impl OneSlotKeeper {
     pub fn new() -> io::Result<Self> {
+        Self::with_receipt().map(|(keeper, _)| keeper)
+    }
+    pub fn with_receipt() -> io::Result<(Self, Arc<AtomicBool>)> {
         let state = Arc::new((Mutex::new(Slot::default()), Condvar::new()));
         let worker = Arc::clone(&state);
+        let completed = Arc::new(AtomicBool::new(false));
+        let completion = Arc::clone(&completed);
         std::thread::Builder::new()
             .name("asb-test-writer-keeper".into())
             .spawn(move || {
@@ -112,8 +117,11 @@ impl OneSlotKeeper {
                         std::thread::sleep(Duration::from_millis(10));
                     }
                 }
+                // Only actual successful try_wait(Some), or no transferred
+                // child, permits the pre-established worker's receipt.
+                completion.store(true, Ordering::Release);
             })?;
-        Ok(Self(state))
+        Ok((Self(state), completed))
     }
 }
 impl Keeper for OneSlotKeeper {
