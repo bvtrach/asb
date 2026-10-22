@@ -1,5 +1,8 @@
 //! Offline guest-driver checks using a registered adapter and fixture executable.
 #![cfg(unix)]
+#[cfg(unix)]
+#[path = "support/fixture_writer.rs"]
+mod fixture_writer;
 mod support;
 use std::io::{BufRead, BufReader, Read};
 use std::os::unix::fs::PermissionsExt;
@@ -35,7 +38,8 @@ impl Project {
         )
         .unwrap();
         let program = root.join(".asb-tools/pi/bin/pi");
-        std::fs::write(
+        fixture_writer::write_file(
+            &root,
             &program,
             r#"#!/bin/sh
 test -z "$ASB_GUEST_AGENT_REQUEST" || exit 90
@@ -65,7 +69,7 @@ exit 7
 }
 impl Drop for Project {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
+        let _ = fixture_writer::cleanup(&self.0);
     }
 }
 
@@ -127,8 +131,9 @@ fn actual_guest_metadata_preserves_code_versus_signal_without_changing_carrier()
         ),
     ] {
         let project = Project::new();
-        std::fs::write(
-            project.0.join(".asb-tools/pi/bin/pi"),
+        fixture_writer::write_file(
+            &project.0,
+            &project.0.join(".asb-tools/pi/bin/pi"),
             format!("#!/bin/sh\nprintf 'fixture submission\\n'\n{script}\n"),
         )
         .unwrap();
@@ -304,7 +309,8 @@ fn guest_preserves_adapter_artifact_steps_and_usage() {
     let project = Project::new();
     let program = project.0.join(".asb-tools/hermes/bin/hermes");
     std::fs::create_dir_all(program.parent().unwrap()).unwrap();
-    std::fs::write(
+    fixture_writer::write_file(
+        &project.0,
         &program,
         r#"#!/bin/sh
 while test "$#" -gt 0; do
@@ -433,7 +439,7 @@ sys.exit({code})
 "#,
         hold_streams = if hold_streams { "True" } else { "False" }
     );
-    std::fs::write(&program, source).unwrap();
+    fixture_writer::write_file(&project.0, &program, source).unwrap();
     program
 }
 

@@ -1,4 +1,7 @@
 //! Real CLI rejection before providers, collectors, environments or output moves.
+#[cfg(unix)]
+#[path = "support/fixture_writer.rs"]
+mod fixture_writer;
 mod support;
 use std::{path::PathBuf, process::Command};
 use support::IsolatedEnvironment;
@@ -60,6 +63,9 @@ impl Project {
 }
 impl Drop for Project {
     fn drop(&mut self) {
+        #[cfg(unix)]
+        let _ = fixture_writer::cleanup(&self.0);
+        #[cfg(not(unix))]
         let _ = std::fs::remove_dir_all(&self.0);
     }
 }
@@ -70,7 +76,8 @@ fn native_plan_executes_with_the_validated_budget_and_keeps_output_for_grading()
     use std::os::unix::fs::PermissionsExt;
     let project = Project::new();
     let script = project.0.join("slow-native-fixture.sh");
-    std::fs::write(
+    fixture_writer::write_file(
+        &project.0,
         &script,
         "#!/bin/sh\nprintf 'native-fixture-started\\n'\nexec sleep 5\n",
     )

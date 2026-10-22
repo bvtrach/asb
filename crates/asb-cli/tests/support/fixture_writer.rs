@@ -48,6 +48,15 @@ pub fn with_fault<T>(fault: Fault, body: impl FnOnce() -> T) -> T {
 fn retained() -> &'static Mutex<BTreeSet<PathBuf>> {
     RETAINED.get_or_init(Mutex::default)
 }
+
+#[test]
+fn local_fault_scope_restores_the_unmodified_writer_default() {
+    assert!(FAULT.get() == Fault::None);
+    with_fault(Fault::ChildFailure, || {
+        assert!(FAULT.get() == Fault::ChildFailure)
+    });
+    assert!(FAULT.get() == Fault::None);
+}
 fn retain(root: &Path) {
     retained()
         .lock()
@@ -280,6 +289,11 @@ impl<K: Keeper> Drop for Owned<K> {
             self.keeper.adopt(child);
         }
     }
+}
+
+/// Shared integration entry; the library wrapper instead supplies OwnedReaper.
+pub fn write_file(root: &Path, path: &Path, bytes: impl AsRef<[u8]>) -> io::Result<()> {
+    write(root, path, bytes.as_ref(), None)
 }
 
 /// Shared integration entry; the library wrapper instead supplies OwnedReaper.

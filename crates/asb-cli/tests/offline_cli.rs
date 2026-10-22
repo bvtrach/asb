@@ -1,5 +1,8 @@
 //! CLI contract tests using isolated local projects and no provider credentials.
 
+#[cfg(unix)]
+#[path = "support/fixture_writer.rs"]
+mod fixture_writer;
 mod support;
 use std::path::PathBuf;
 use std::process::{Command, Output};
@@ -104,6 +107,11 @@ impl Project {
     fn write(&self, name: &str, contents: &str) {
         let path = self.0.join(name);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        #[cfg(unix)]
+        if contents.starts_with("#!") {
+            fixture_writer::write_file(&self.0, &path, contents).unwrap();
+            return;
+        }
         std::fs::write(path, contents).unwrap();
     }
 
@@ -120,6 +128,9 @@ impl Project {
 
 impl Drop for Project {
     fn drop(&mut self) {
+        #[cfg(unix)]
+        let _ = fixture_writer::cleanup(&self.0);
+        #[cfg(not(unix))]
         let _ = std::fs::remove_dir_all(&self.0);
     }
 }

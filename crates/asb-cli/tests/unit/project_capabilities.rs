@@ -20,7 +20,8 @@ fn isolated_host_capability_consent_and_execution_diagnostics() {
         fs::create_dir_all(&root).unwrap();
         let root = root.canonicalize().unwrap();
         let sudo = root.join("sudo");
-        fs::write(
+        crate::write_test_file(
+            &root,
             &sudo,
             r##"#!/bin/sh
 printf 'sudo' >> "$ASB_PROJECT_CAPABILITY_LOG"

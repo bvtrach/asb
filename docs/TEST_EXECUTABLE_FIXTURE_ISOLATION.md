@@ -203,3 +203,44 @@ This proves the forced mechanism, not the unknown historical CI FD holder.
 The helper will retain this as an explicit negative control asserting ETXTBSY,
 separate from new positive isolated-writer tests; that assertion change will be
 visible in the reviewed diff, not described as an unchanged RED turning green.
+
+## Cohesive migration checkpoint (qualification pending)
+
+The shared std-only writer now serves both harness kinds. Library callers use
+the existing OwnedReaper adapter; the six identified integration targets opt in
+to the same file and use its one-slot pre-established keeper. No production API,
+CLI dispatch, version, timeout retry or suite serialization is added. The shared
+keeper retains the actual Child across observation errors until confirmed exit;
+the caller remains bounded and never joins it. Root separately assigned the
+existing production OwnedReaper wait-error prerequisite: this checkpoint does
+not claim that independent library-reaper repair has already landed.
+
+The perf source fixture's identical five script writes/chmods now occur inside
+its existing exact child before tool admission. Other identified library parent
+and direct-execution sites use the shared writer, retaining their script bytes,
+chmods and ownership-fault mutations. ManagedGate initial helper activity occurs
+before the intended product Scope, not by disabling product hooks. The exact
+three reviewed gate/control paths from 98b2c643 are retained byte-for-byte,
+including the executable asset's 100755 mode.
+
+Integration migration includes offline_cli, guest_agent,
+completion_diagnostics, repeated_run, compare_setup and planning_admission.
+Generic Project.write routes only shebang script payloads through the writer;
+data writes remain direct. Repeated-run initial script transformations happen
+before admission through that writer, while the actual workload's intentional
+input/material mutations remain unchanged. The offline flamegraph automatic
+dependency no-clobber fixture's deliberate overwrite of the already-published
+perf executable remains an intentional ownership-test mutation, not setup to
+rewrite or remove. Existing inner-child script setup stays inner-child setup.
+This is the identified inventory, not a claim to audit every integration target.
+
+Affected fixture Drop paths now use conservative marker-aware cleanup (and
+retain on unwind); non-Unix branches retain their existing fixture behavior.
+The owning cleanup tests cover an enclosing parent root whose nested pending
+marker was created by another real process, not the parent's in-process
+registry; symlink no-follow preserves a foreign marked directory; exceeding
+the bounded scan depth retains the owned namespace. Root approved the polling
+and nested-marker corrections at d35e7eee. Their latest tests, all migrated
+owning families and strict lint still require fresh actual-first qualification.
+The earlier core Clippy failure from wiring the module into unrelated harnesses
+is preserved; opt-in wiring replaces that accidental blanket inclusion.

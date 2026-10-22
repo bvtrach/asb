@@ -194,6 +194,11 @@ fn standalone_keeper_uses_the_same_writer_and_retains_failed_or_unknown_namespac
     let healthy = root();
     let script = healthy.join("script");
     fixture_writer::write(&healthy, &script, b"#!/bin/sh\nexit 0\n", Some(0o700)).unwrap();
+    fixture_writer::write_file(&healthy, &script, b"#!/bin/sh\nexit 0\n").unwrap();
+    assert_eq!(
+        fs::metadata(&script).unwrap().permissions().mode() & 0o777,
+        0o700
+    );
     assert!(Command::new(&script).status().unwrap().success());
     assert!(fixture_writer::cleanup(&healthy).unwrap());
     let failed = root();
@@ -279,6 +284,34 @@ fn enclosing_cleanup_detects_a_nested_pending_writer_from_another_process() {
     // Parent has no in-process retention registration for the child's owner.
     assert!(!crate::fixture_writer::cleanup(&root).unwrap());
     assert!(root.join("nested/owner").is_dir());
+}
+
+#[test]
+fn cleanup_does_not_follow_symlinks_and_retains_on_scan_limits() {
+    let foreign = root();
+    fs::write(
+        foreign.join(".asb-test-executable-writer.pending"),
+        b"foreign",
+    )
+    .unwrap();
+    let owned = root();
+    std::os::unix::fs::symlink(&foreign, owned.join("foreign")).unwrap();
+    assert!(crate::fixture_writer::cleanup(&owned).unwrap());
+    assert_eq!(
+        fs::read(foreign.join(".asb-test-executable-writer.pending")).unwrap(),
+        b"foreign"
+    );
+    let alias = root().join("alias");
+    std::os::unix::fs::symlink(&foreign, &alias).unwrap();
+    assert!(!crate::fixture_writer::cleanup(&alias).unwrap());
+    let owned = root();
+    let mut deepest = owned.clone();
+    for _ in 0..66 {
+        deepest = deepest.join("nested");
+        fs::create_dir(&deepest).unwrap();
+    }
+    assert!(!crate::fixture_writer::cleanup(&owned).unwrap());
+    assert!(deepest.is_dir());
 }
 
 #[test]

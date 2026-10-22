@@ -1,5 +1,8 @@
 //! Offline public CLI coverage for setup matrices and standalone reports.
 use serde_json::{Value, json};
+#[cfg(unix)]
+#[path = "support/fixture_writer.rs"]
+mod fixture_writer;
 mod support;
 use std::path::PathBuf;
 use std::process::{Command, Output};
@@ -24,6 +27,11 @@ impl Project {
     fn write(&self, path: &str, text: &str) {
         let path = self.0.join(path);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        #[cfg(unix)]
+        if text.starts_with("#!") {
+            fixture_writer::write_file(&self.0, &path, text).unwrap();
+            return;
+        }
         std::fs::write(path, text).unwrap();
     }
     fn command(&self, args: &[&str]) -> Output {
@@ -59,6 +67,9 @@ impl Project {
 }
 impl Drop for Project {
     fn drop(&mut self) {
+        #[cfg(unix)]
+        let _ = fixture_writer::cleanup(&self.0);
+        #[cfg(not(unix))]
         let _ = std::fs::remove_dir_all(&self.0);
     }
 }

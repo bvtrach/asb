@@ -61,6 +61,14 @@ pub(crate) fn write_test_script(
         process_cleanup::OwnedReaper::new("test-executable-writer").map_err(std::io::Error::other)
     })
 }
+#[cfg(all(test, unix))]
+pub(crate) fn write_test_file(
+    root: &std::path::Path,
+    path: &std::path::Path,
+    bytes: impl AsRef<[u8]>,
+) -> std::io::Result<()> {
+    write_test_script(root, path, bytes.as_ref(), None)
+}
 mod tools;
 mod tui;
 mod workloads;

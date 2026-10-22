@@ -295,7 +295,7 @@ mod tests {
     }
     impl Drop for Directory {
         fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
+            let _ = crate::fixture_writer::cleanup(&self.0);
         }
     }
 
@@ -384,7 +384,7 @@ mod tests {
             script
         };
         let helper = root.0.join("fake-python");
-        std::fs::write(&helper, script).unwrap();
+        crate::write_test_file(&root.0, &helper, script).unwrap();
         std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o700)).unwrap();
         let executable = std::env::current_exe().unwrap();
         let binary = executable.parent().unwrap().parent().unwrap().join("asb");
@@ -511,7 +511,7 @@ mod tests {
     fn helper(root: &Directory, source: &str) -> PathBuf {
         use std::os::unix::fs::PermissionsExt;
         let path = root.0.join("helper");
-        std::fs::write(&path, format!("#!/usr/bin/python3\n{source}")).unwrap();
+        crate::write_test_file(&root.0, &path, format!("#!/usr/bin/python3\n{source}")).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
         path
     }

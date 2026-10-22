@@ -14,29 +14,6 @@ fn source_build_checks_real_fixture_digest_before_running_build_tools() {
             .join("target/perf-source-fixtures")
             .join(crate::workloads::TaskIdentity::local("perf-source", None).attempt_id);
         fs::create_dir_all(root.join("commands")).unwrap();
-        for (name, script) in [
-            (
-                "curl",
-                "#!/bin/sh\nwhile [ $# -gt 0 ]; do if [ \"$1\" = --output ]; then shift; printf 'offline perf source fixture' > \"$1\"; exit 0; fi; shift; done\nexit 1\n",
-            ),
-            (
-                "tar",
-                "#!/bin/sh\nprintf tar >> \"$ASB_PERF_SOURCE_UNIT_FIXTURE/build-called\"\nwhile [ $# -gt 0 ]; do if [ \"$1\" = -C ]; then shift; /bin/mkdir -p \"$1/tools/perf\"; exit 0; fi; shift; done\nexit 1\n",
-            ),
-            (
-                "make",
-                "#!/bin/sh\n[ \"$1\" = -C ] || exit 1\nprintf make >> \"$ASB_PERF_SOURCE_UNIT_FIXTURE/build-called\"\nprintf '#!/bin/sh\\nprintf \"perf fixture version\\\\n\"\\n' > \"$2/perf\"\n/bin/chmod 755 \"$2/perf\"\n",
-            ),
-            ("pkg-config", "#!/bin/sh\nexit 1\n"),
-            (
-                "sha256sum",
-                "#!/bin/sh\nprintf called > \"$ASB_PERF_SOURCE_UNIT_FIXTURE/external-hasher-called\"\nexit 93\n",
-            ),
-        ] {
-            let file = root.join("commands").join(name);
-            fs::write(&file, script).unwrap();
-            fs::set_permissions(file, fs::Permissions::from_mode(0o700)).unwrap();
-        }
         let mut command = Command::new(std::env::current_exe().unwrap());
         command
             .args(["--exact", "tools::perf::source_install_tests::source_build_checks_real_fixture_digest_before_running_build_tools", "--nocapture"])
@@ -59,6 +36,29 @@ fn source_build_checks_real_fixture_digest_before_running_build_tools() {
         return;
     };
     let root = PathBuf::from(root);
+    for (name, script) in [
+        (
+            "curl",
+            "#!/bin/sh\nwhile [ $# -gt 0 ]; do if [ \"$1\" = --output ]; then shift; printf 'offline perf source fixture' > \"$1\"; exit 0; fi; shift; done\nexit 1\n",
+        ),
+        (
+            "tar",
+            "#!/bin/sh\nprintf tar >> \"$ASB_PERF_SOURCE_UNIT_FIXTURE/build-called\"\nwhile [ $# -gt 0 ]; do if [ \"$1\" = -C ]; then shift; /bin/mkdir -p \"$1/tools/perf\"; exit 0; fi; shift; done\nexit 1\n",
+        ),
+        (
+            "make",
+            "#!/bin/sh\n[ \"$1\" = -C ] || exit 1\nprintf make >> \"$ASB_PERF_SOURCE_UNIT_FIXTURE/build-called\"\nprintf '#!/bin/sh\\nprintf \"perf fixture version\\\\n\"\\n' > \"$2/perf\"\n/bin/chmod 755 \"$2/perf\"\n",
+        ),
+        ("pkg-config", "#!/bin/sh\nexit 1\n"),
+        (
+            "sha256sum",
+            "#!/bin/sh\nprintf called > \"$ASB_PERF_SOURCE_UNIT_FIXTURE/external-hasher-called\"\nexit 93\n",
+        ),
+    ] {
+        let file = root.join("commands").join(name);
+        fs::write(&file, script).unwrap();
+        fs::set_permissions(file, fs::Permissions::from_mode(0o700)).unwrap();
+    }
     let valid = root.join("valid");
     fs::create_dir(&valid).unwrap();
     let checksum = format!("{:x}", Sha256::digest(PAYLOAD));

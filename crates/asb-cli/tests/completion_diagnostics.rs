@@ -1,5 +1,8 @@
 //! Real CLI metadata-publication failures with a local, non-networked client.
 #![cfg(unix)]
+#[cfg(unix)]
+#[path = "support/fixture_writer.rs"]
+mod fixture_writer;
 mod support;
 use serde_json::Value;
 use std::fs;
@@ -40,7 +43,8 @@ impl Project {
         }
         // No real curl exists in this private PATH; no provider is contacted.
         let curl = root.join("commands/curl");
-        fs::write(
+        fixture_writer::write_file(
+            &root,
             &curl,
             r#"#!/usr/bin/python3
 import sys
@@ -52,7 +56,7 @@ sys.stderr.write('\nASB_HTTP_STATUS=200\nASB_PROXY_STATUS=0\nASB_CONTENT_TYPE=ap
         .unwrap();
         fs::set_permissions(curl, fs::Permissions::from_mode(0o700)).unwrap();
         let agent = root.join("fixture-client");
-        fs::write(&agent,format!(r#"#!/usr/bin/python3
+        fixture_writer::write_file(&root, &agent,format!(r#"#!/usr/bin/python3
 from pathlib import Path
 import os,sys
 root=Path(os.environ['HOME'])
@@ -103,7 +107,7 @@ sys.exit({exit})
 }
 impl Drop for Project {
     fn drop(&mut self) {
-        fs::remove_dir_all(&self.0).unwrap();
+        let _ = fixture_writer::cleanup(&self.0);
     }
 }
 fn json_lines(output: &Output) -> Vec<Value> {

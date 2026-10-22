@@ -1,5 +1,8 @@
 //! Provider-free real CLI qualification of fresh repeated execution.
 #![cfg(unix)]
+#[cfg(unix)]
+#[path = "support/fixture_writer.rs"]
+mod fixture_writer;
 mod support;
 use serde_json::{Value, json};
 use std::fs;
@@ -40,7 +43,7 @@ impl Project {
         let body = json!({"model":"fixture","tools":[{"type":"function","function":{"name":"fixture","parameters":{"type":"object"}}}],"messages":[]});
         fs::write(path.join("input.jsonl"), format!("{}\n",json!({"request":{"method":"POST","url":"/v1/chat/completions","body":body.to_string()},"response":{"status":200,"headers":{"content-type":"application/json"},"body":"{}"}}))).unwrap();
         let script = path.join("fixture-agent");
-        fs::write(&script, r##"#!/usr/bin/env python3
+        fixture_writer::write_file(&path, &script, r##"#!/usr/bin/env python3
 import json, os, pathlib, sys, time, urllib.request
 root = pathlib.Path(__file__).parent
 workspace = pathlib.Path.cwd()
@@ -116,7 +119,7 @@ sys.exit(7 if (root/'fail-first').exists() and batch == 1 and replica == 1 else 
 }
 impl Drop for Project {
     fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
+        let _ = fixture_writer::cleanup(&self.0);
     }
 }
 fn records(bytes: &[u8]) -> Vec<Value> {
@@ -1194,7 +1197,7 @@ assert all(name not in os.environ for name in ['CODEX_HOME','PI_CODING_AGENT_DIR
         )
         .replace("runtime.mkdir()", "runtime.mkdir(exist_ok=True)");
     assert_ne!(modified, original);
-    fs::write(&script, modified).unwrap();
+    fixture_writer::write_file(&project.0, &script, modified).unwrap();
     let mut command = Command::new(env!("CARGO_BIN_EXE_asb"));
     command
         .current_dir(&project.0)
@@ -1279,7 +1282,7 @@ fn measurement_overrides_never_choose_perfetto_authority_from_output_location() 
     fs::create_dir_all(&tools).unwrap();
     for name in ["tracebox", "trace_processor_shell"] {
         let path = tools.join(name);
-        fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
+        fixture_writer::write_file(&project.0, &path, "#!/bin/sh\nexit 0\n").unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
     }
     for destination in [
@@ -1304,7 +1307,7 @@ fn measurement_overrides_never_choose_perfetto_authority_from_output_location() 
 fn legacy_native_run_keeps_explicit_parent_home_and_xdg_state() {
     let project = Project::new();
     project.config(1);
-    fs::write(project.0.join("fixture-agent"),r#"#!/usr/bin/env python3
+    fixture_writer::write_file(&project.0, &project.0.join("fixture-agent"),r#"#!/usr/bin/env python3
 import json,os,pathlib,urllib.request
 root=pathlib.Path(__file__).parent
 (root/'legacy-state.json').write_text(json.dumps({name:os.environ.get(name) for name in ['HOME','XDG_STATE_HOME']}))
@@ -1492,7 +1495,8 @@ fn repeated_native_clients_obey_selected_execution_cap_without_stopping_later_ba
     )
     .unwrap();
     let client = project.0.join("fixture-agent");
-    fs::write(
+    fixture_writer::write_file(
+        &project.0,
         &client,
         fs::read_to_string(&client)
             .unwrap()
