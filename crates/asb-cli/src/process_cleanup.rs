@@ -8,14 +8,8 @@ use std::sync::{Arc, Condvar, Mutex};
 
 fn poll_owned(child: &mut Child) -> std::io::Result<Option<std::process::ExitStatus>> {
     #[cfg(all(test, target_os = "linux"))]
-    test_support::observation_fault()?;
+    test_support::observation_fault(child)?;
     child.try_wait()
-}
-
-fn wait_owned(child: &mut Child) -> std::io::Result<std::process::ExitStatus> {
-    #[cfg(all(test, target_os = "linux"))]
-    test_support::observation_fault()?;
-    child.wait()
 }
 
 #[derive(Default)]
@@ -53,29 +47,25 @@ impl OwnedReaper {
                 while !state.closed {
                     state = ready.wait(state).unwrap_or_else(|error| error.into_inner());
                 }
-                let children = std::mem::take(&mut state.children);
+                let mut children = std::mem::take(&mut state.children);
                 drop(state); // Never hold the handoff lock across a kernel wait.
-                for (mut child, policy) in children {
-                    loop {
-                        if matches!(policy, ReapPolicy::Terminate) {
-                            match poll_owned(&mut child) {
-                                Ok(Some(_)) => break, // Actual exit/reap confirmed.
-                                Ok(None) => {
-                                    let _ = child.kill();
-                                }
-                                Err(_) => {
-                                    // Observation uncertainty is not permission
-                                    // to signal a cached identity or drop Child.
-                                    std::thread::sleep(std::time::Duration::from_millis(10));
-                                    continue;
-                                }
+                while !children.is_empty() {
+                    // One nonblocking observation per owner in each round.
+                    // A held/uncertain first child must not prevent independent
+                    // siblings from receiving termination or actual reap work.
+                    children.retain_mut(|(child, policy)| match poll_owned(child) {
+                        Ok(Some(_)) => false, // Actual exit/reap confirmed.
+                        Ok(None) => {
+                            if matches!(policy, ReapPolicy::Terminate) {
+                                let _ = child.kill();
                             }
+                            true
                         }
-                        if wait_owned(&mut child).is_ok() {
-                            break;
-                        }
-                        // The same pre-established worker retains this exact
-                        // Child through errors. WaitOnly is NEVER killed.
+                        // Observation uncertainty never authorizes a signal or
+                        // discarding this exact Child. WaitOnly NEVER signals.
+                        Err(_) => true,
+                    });
+                    if !children.is_empty() {
                         std::thread::sleep(std::time::Duration::from_millis(10));
                     }
                 }
@@ -124,7 +114,7 @@ pub(crate) mod test_support {
     use std::cell::{Cell, RefCell};
     use std::sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU32, Ordering},
     };
     use std::time::{Duration, Instant};
 
@@ -137,6 +127,7 @@ pub(crate) mod test_support {
     pub(super) struct ObservationState {
         enabled: AtomicBool,
         observed: AtomicBool,
+        target: Option<AtomicU32>,
     }
 
     /// Parent control is local to the worker created while this thread is armed.
@@ -144,12 +135,29 @@ pub(crate) mod test_support {
     pub(crate) struct ObservationFault(Arc<ObservationState>);
     impl ObservationFault {
         pub(crate) fn arm() -> Self {
+            Self::arm_inner(false)
+        }
+        pub(crate) fn arm_targeted() -> Self {
+            Self::arm_inner(true)
+        }
+        fn arm_inner(targeted: bool) -> Self {
             let state = Arc::new(ObservationState {
                 enabled: AtomicBool::new(true),
                 observed: AtomicBool::new(false),
+                target: targeted.then(|| AtomicU32::new(0)),
             });
             OBSERVATION_FAULT.with_borrow_mut(|fault| *fault = Some(Arc::clone(&state)));
             Self(state)
+        }
+        /// Select only a Child already owned by this fixture, before handoff.
+        /// This keeper-local ID filters an injected observation error; it never
+        /// authorizes signaling, discovery or acquisition by numeric PID.
+        pub(crate) fn select_owned(&self, child: &std::process::Child) {
+            self.0
+                .target
+                .as_ref()
+                .expect("targeted observation fixture")
+                .store(child.id(), Ordering::Release);
         }
         pub(crate) fn observed(&self) -> bool {
             self.0.observed.load(Ordering::Acquire)
@@ -169,10 +177,14 @@ pub(crate) mod test_support {
     pub(super) fn bind_worker_fault(fault: Option<Arc<ObservationState>>) {
         OBSERVATION_FAULT.with_borrow_mut(|current| *current = fault);
     }
-    pub(super) fn observation_fault() -> std::io::Result<()> {
+    pub(super) fn observation_fault(child: &std::process::Child) -> std::io::Result<()> {
         OBSERVATION_FAULT.with_borrow(|fault| {
             if let Some(fault) = fault
                 && fault.enabled.load(Ordering::Acquire)
+                && fault
+                    .target
+                    .as_ref()
+                    .is_none_or(|target| target.load(Ordering::Acquire) == child.id())
             {
                 fault.observed.store(true, Ordering::Release);
                 return Err(std::io::Error::other(
@@ -244,6 +256,11 @@ pub(crate) mod test_support {
                     .unwrap()
                     .iter()
                     .all(|receipt| receipt.load(Ordering::Acquire))
+            })
+        }
+        pub(crate) fn worker_finished(&self, index: usize) -> bool {
+            WORKERS.with_borrow(|workers| {
+                workers.as_ref().expect("fixture scope")[index].load(Ordering::Acquire)
             })
         }
     }

@@ -5,6 +5,8 @@ must escape to the owning task's stopped-preservation path: terminating Docker
 exec's local transport alone does not prove its guest process has exited.
 """
 import json
+import os
+import selectors
 import subprocess
 import threading
 import time
@@ -13,6 +15,137 @@ from asb_material import MaterialError
 
 
 def run(command, payload=b"", *, deadline, cancelled=None, output_limit=4096):
+    if (not isinstance(payload, bytes) or len(payload) > 1024**2
+            or not 0 < output_limit <= 65536):
+        raise MaterialError("material helper transport exceeds its input/output bounds")
+    if time.monotonic() >= deadline or (cancelled is not None and cancelled.is_set()):
+        raise MaterialError("material helper observation was cancelled or timed out")
+    if os.name != "posix":
+        # Preserve healthy legacy platforms; this threaded path is NOT covered
+        # by the Unix no-pump guarantee or Linux outer descendant custody.
+        return _run_legacy(command, payload, deadline=deadline,
+                           cancelled=cancelled, output_limit=output_limit)
+    try:
+        child = subprocess.Popen(command, stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    except OSError:
+        raise MaterialError("material helper transport could not start") from None
+    selector, error, result = None, None, None
+    try:
+        selector = selectors.DefaultSelector()
+        buffers = [bytearray(), bytearray()]
+        sent = 0
+        for source in [child.stdin, child.stdout, child.stderr]:
+            os.set_blocking(source.fileno(), False)
+        selector.register(child.stdout, selectors.EVENT_READ, buffers[0])
+        selector.register(child.stderr, selectors.EVENT_READ, buffers[1])
+        if payload:
+            selector.register(child.stdin, selectors.EVENT_WRITE, None)
+        else:
+            child.stdin.close()
+        while selector.get_map() or child.poll() is None:
+            if (time.monotonic() >= deadline
+                    or (cancelled is not None and cancelled.is_set())):
+                raise MaterialError("material helper observation was cancelled or timed out")
+            try:
+                ready = selector.select(min(.02, max(0, deadline-time.monotonic())))
+            except InterruptedError:
+                continue
+            for key, event in ready:
+                try:
+                    if event & selectors.EVENT_WRITE:
+                        count = os.write(key.fd, payload[sent:sent+4096])
+                        if count == 0:
+                            raise MaterialError("material helper input stopped before completion")
+                        sent += count
+                        if sent == len(payload):
+                            selector.unregister(key.fileobj)
+                            key.fileobj.close()
+                    else:
+                        buffer = key.data
+                        chunk = os.read(key.fd, min(4096, output_limit-len(buffer)+1))
+                        if not chunk:
+                            selector.unregister(key.fileobj)
+                            key.fileobj.close()
+                        elif len(buffer)+len(chunk) > output_limit:
+                            raise MaterialError("material helper output exceeded its bound")
+                        else:
+                            buffer.extend(chunk)
+                except (InterruptedError, BlockingIOError):
+                    continue
+                except OSError:
+                    raise MaterialError("material helper pipe read or write failed") from None
+        if child.returncode or buffers[1]:
+            raise MaterialError("material helper did not return a successful private observation")
+        result = bytes(buffers[0])
+    except (OSError, ValueError):
+        error = MaterialError("material helper transport IO could not be configured or observed")
+    except BaseException as caught:
+        error = caught
+    finally:
+        # No worker owns a buffered lock or a stream after this call. Close
+        # every independent descriptor even if another close fails.
+        if selector is not None:
+            try:
+                selector.close()
+            except BaseException as caught:
+                if error is None:
+                    error = caught
+        for source in [child.stdin, child.stdout, child.stderr]:
+            try:
+                source.close()
+            except BaseException as caught:
+                if error is None:
+                    error = (MaterialError("material helper pipe closure failed")
+                             if isinstance(caught, Exception) else caught)
+        try:
+            settled = _stop_owned(child, time.monotonic()+1)
+        except BaseException as caught:
+            settled = False
+            if error is None:
+                error = caught
+    if not settled:
+        cleanup = "material helper transport could not be reaped; owned workload preservation is required"
+        if isinstance(error, MaterialError):
+            raise MaterialError(str(error)+"; "+cleanup) from None
+        if error is None:
+            raise MaterialError(cleanup)
+        error.add_note(cleanup)
+    if error is not None:
+        raise error
+    return result
+
+
+def _stop_owned(child, deadline):
+    """Finite direct-child settlement; Linux's outer gate owns uncertainty.
+
+    No child.wait, pipe pump, thread join, process group or PID discovery.
+    Outside the owning controller this is direct-child-only, not a tree proof.
+    """
+    try:
+        if child.poll() is not None:
+            return True
+        while time.monotonic() < deadline:
+            try:
+                child.kill()
+                break
+            except InterruptedError:
+                continue
+            except OSError:
+                break  # Still observe actual exit; denial is not settlement.
+        while time.monotonic() < deadline:
+            try:
+                if child.poll() is not None:
+                    return True
+            except InterruptedError:
+                continue
+            time.sleep(min(.01, max(0, deadline-time.monotonic())))
+    except OSError:
+        pass
+    return False
+
+
+def _run_legacy(command, payload=b"", *, deadline, cancelled=None, output_limit=4096):
     if (not isinstance(payload, bytes) or len(payload) > 1024**2
             or not 0 < output_limit <= 65536):
         raise MaterialError("material helper transport exceeds its input/output bounds")

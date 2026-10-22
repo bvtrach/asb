@@ -316,6 +316,8 @@ mod tests {
 
     fn bounded_exchange_case(case: &str) {
         use crate::test_support::IsolatedEnvironment;
+        use std::io::Read;
+        use std::os::unix::fs::OpenOptionsExt;
         use std::os::unix::fs::PermissionsExt;
         const CASE: &str = "ASB_RUNTIME_DISCOVERY_RED_CASE";
         const ROOT: &str = "ASB_RUNTIME_DISCOVERY_RED_ROOT";
@@ -429,6 +431,22 @@ mod tests {
                 .stderr(Stdio::null());
             if fixture {
                 command.env(CASE, case).env(ROOT, &root.0);
+                // Keep child assertion failures distinct from an outer timeout.
+                // These files belong to this isolated fixture, not a terminal
+                // reader or a live provider; read only after owned settlement.
+                for (name, stdout) in [("child.stdout", true), ("child.stderr", false)] {
+                    let file = std::fs::OpenOptions::new()
+                        .write(true)
+                        .create_new(true)
+                        .mode(0o600)
+                        .open(root.0.join(name))
+                        .unwrap();
+                    if stdout {
+                        command.stdout(file);
+                    } else {
+                        command.stderr(file);
+                    }
+                }
             }
             let mut gate =
                 crate::process_gate::Admission::new(route.validate_gate(&mut command).unwrap())
@@ -464,18 +482,15 @@ mod tests {
             "unrelated sentinel was affected"
         );
         sentinel.stop().unwrap();
-        assert!(
-            root.0.join("helper-parent-exited").is_file(),
-            "fixture never reached successful helper exit"
-        );
-        let descendant: u32 = std::fs::read_to_string(root.0.join("descendant.pid"))
-            .unwrap()
-            .parse()
-            .unwrap();
-        assert!(
-            !Path::new(&format!("/proc/{descendant}")).exists(),
-            "watchdog left an owned descendant"
-        );
+        let helper_exited = root.0.join("helper-parent-exited").is_file();
+        let descendant = std::fs::read_to_string(root.0.join("descendant.pid")).and_then(|pid| {
+            pid.parse::<u32>()
+                .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+        });
+        let descendant_exited = descendant
+            .as_ref()
+            .is_ok_and(|pid| !Path::new(&format!("/proc/{pid}")).exists());
+        let returned = root.0.join("returned").exists();
         let observation = std::fs::File::open(root.0.join("exchange-observation.json"))
             .ok()
             .and_then(|file| {
@@ -493,10 +508,27 @@ mod tests {
                 Some(format!("{code}, {} ms", value["elapsed_ms"].as_u64()?))
             })
             .unwrap_or_else(|| "no completed fixture observation".into());
-        assert!(
-            status.is_some_and(|status| status.success()) && root.0.join("returned").exists(),
-            "runtime discovery exceeded its short exchange budget after zero-exit helper ({case}); outer watchdog reaped the entire fixture tree; {observation}"
-        );
+        if !helper_exited
+            || !descendant_exited
+            || !status.is_some_and(|status| status.success())
+            || !returned
+        {
+            let retained = root.0.clone();
+            std::mem::forget(root); // Preserve before even diagnostic I/O can fail.
+            let excerpt = |name: &str| -> std::io::Result<String> {
+                let mut bytes = Vec::new();
+                std::fs::File::open(retained.join(name))?
+                    .take(16 * 1024)
+                    .read_to_end(&mut bytes)?;
+                Ok(String::from_utf8_lossy(&bytes).into_owned())
+            };
+            let stdout = excerpt("child.stdout");
+            let stderr = excerpt("child.stderr");
+            panic!(
+                "runtime discovery fixture {case}: status={status:?}, returned={returned}, helper_exited={helper_exited}, descendant={descendant:?}, descendant_exited={descendant_exited}; owned tree reaped; {observation}; inspect {}\nchild stdout (first16KiB): {stdout:?}\nchild stderr (first16KiB): {stderr:?}",
+                retained.display()
+            );
+        }
     }
 
     #[test]
