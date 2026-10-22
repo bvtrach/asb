@@ -15,7 +15,7 @@ const METADATA: u64 = 64 * 1024;
 const SCOPE: &str = "settled-campaign-slot-declared-evidence";
 
 #[path = "continuation.rs"]
-mod continuation;
+pub(in crate::sweep::checkpoint::campaigns) mod continuation;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -59,6 +59,7 @@ struct Candidate {
 // pass. Both sealing and verification derive their authority from this view,
 // never from roots or task identities supplied by an existing receipt.
 struct Inspection {
+    identities: BTreeMap<usize, crate::cassette::Compatibility>,
     layouts: Vec<Layout>,
     candidates: Vec<Candidate>,
     records: Vec<Record>,
@@ -66,6 +67,7 @@ struct Inspection {
 }
 
 struct DeclaredInspection {
+    identities: BTreeMap<usize, crate::cassette::Compatibility>,
     layouts: Vec<Layout>,
     candidates: Vec<Candidate>,
     records: Vec<Record>,
@@ -77,6 +79,7 @@ impl DeclaredInspection {
     fn prove(self) -> Result<Inspection, Error> {
         let _validated = self.proofs.verify()?;
         Ok(Inspection {
+            identities: self.identities,
             layouts: self.layouts,
             candidates: self.candidates,
             records: self.records,
@@ -210,6 +213,7 @@ impl Inputs {
             candidates,
             records,
             unsettled,
+            ..
         } = declarations.prove()?;
         // Finish every read-only validation before the first receipt write.
         let mut newly_completed = Vec::new();
@@ -479,6 +483,7 @@ impl Inputs {
         declarations.retain_candidates(&eligible);
         let unsettled = declarations.unsettled().to_vec();
         Ok(DeclaredInspection {
+            identities,
             layouts,
             candidates,
             records,

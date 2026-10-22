@@ -238,9 +238,51 @@ pub(super) fn stage_batch(
     batch: u64,
     concurrency: usize,
 ) -> Result<String, Error> {
-    let base = root.join(format!("batch-{batch}/replay.jsonl"));
+    stage_selected(
+        root,
+        plan,
+        batch,
+        &(1..=concurrency).collect::<Vec<_>>(),
+        &root.join(format!("batch-{batch}")),
+    )
+}
+
+pub(super) fn saved_batch_choices(plan: &Plan, batch: u64) -> Option<BatchChoices> {
+    let start = (batch as usize - 1) * plan.concurrency;
+    let slots = &plan.slots[start..start + plan.concurrency];
+    let tracks = slots
+        .iter()
+        .map(|slot| slot.replay_track)
+        .collect::<Option<Vec<_>>>()?;
+    Some(BatchChoices {
+        seed: plan
+            .replay_selection
+            .as_ref()
+            .map(|selection| selection.seed),
+        algorithm: plan
+            .replay_selection
+            .as_ref()
+            .map(|selection| selection.algorithm.clone()),
+        tracks,
+    })
+}
+
+/// Derive aliases only from saved private inputs and original replica IDs.
+/// This route never opens the public source or samples a replacement track.
+pub(super) fn stage_selected(
+    root: &Path,
+    plan: &Plan,
+    batch: u64,
+    members: &[usize],
+    destination: &Path,
+) -> Result<String, Error> {
+    let concurrency = plan.concurrency;
+    let base = destination.join("replay.jsonl");
     let start = (batch as usize - 1) * concurrency;
-    for slot in &plan.slots[start..start + concurrency] {
+    for slot in plan.slots[start..start + concurrency]
+        .iter()
+        .filter(|slot| members.contains(&slot.replica))
+    {
         let input = &plan.replay_inputs[slot.replay_input.expect("planned replay input")];
         let destination = if concurrency == 1 {
             base.clone()
@@ -264,13 +306,13 @@ fn generated_seed() -> u64 {
 
 /// Explicit selection permits incomplete traces but must disclose their status
 /// before any material/client admission. Unknown legacy status stays unknown.
-pub(super) fn disclose_incomplete(
-    inputs: &[ReplayInput],
+pub(super) fn disclose_incomplete<'a>(
+    inputs: impl IntoIterator<Item = &'a ReplayInput>,
     json: bool,
     output: &mut dyn std::io::Write,
 ) -> Result<(), Error> {
     let ids: Vec<_> = inputs
-        .iter()
+        .into_iter()
         .filter(|input| input.complete == Some(false))
         .filter_map(|input| input.track)
         .collect();

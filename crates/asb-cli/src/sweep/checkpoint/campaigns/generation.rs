@@ -1,15 +1,4 @@
-//! Consuming, all-configuration generation publication. Not yet public resume.
-//!
-//! Runtime activation/sealing must consume these capabilities rather than
-//! reconstructing them from manifests. Until that vertical path is complete,
-//! the public pending-slot route still refuses without publishing anything.
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "generation execution/sealing integration is the next delivery slice"
-    )
-)]
+//! Consuming, all-configuration generation publication and owned activation.
 
 use super::*;
 use crate::measurements::ExecutionCohort;
@@ -24,6 +13,7 @@ use std::fs;
 
 /// Not Clone/Deserialize. Original observation budgets never enter workers.
 struct Campaign {
+    compatibility: Option<crate::cassette::Compatibility>,
     invocation: PathBuf,
     root: PathBuf,
     plan: Plan,
@@ -34,13 +24,13 @@ struct Campaign {
 
 /// Parent retains every campaign lock, including already completed campaigns,
 /// through worker settlement and final report publication.
-struct Guard {
+pub(in crate::sweep) struct Guard {
     inputs: Inputs,
     owners: Vec<crate::output_lock::OutputLock>,
 }
 
 /// Planning owns the original input owner and cannot mint a second generation.
-struct Prepared {
+pub(in crate::sweep) struct Prepared {
     guard: Guard,
     parent: PathBuf,
     origin: Origin,
@@ -51,13 +41,71 @@ struct Prepared {
 
 /// Only a fully published generation can produce worker capabilities. This is
 /// not deserializable; a future recovery path must positively revalidate state.
-struct AdmittedCampaign {
+pub(in crate::sweep) struct AdmittedCampaign {
+    compatibility: Option<crate::cassette::Compatibility>,
     invocation: PathBuf,
     root: PathBuf,
     plan: Plan,
     completed: BTreeMap<u64, Value>,
     manifest: Manifest,
     manifest_reference: Blob,
+    admission_reference: Blob,
+}
+
+impl Guard {
+    pub(in crate::sweep) fn inputs(&self) -> &Inputs {
+        &self.inputs
+    }
+
+    pub(in crate::sweep) fn verify_stable(&mut self) -> Result<(), Error> {
+        if self.inputs.final_fingerprint()? != self.inputs.initial {
+            return Err(recovery("declared inputs changed during continuation"));
+        }
+        // Keep all campaign owners, including completed-only configurations,
+        // structurally live through comparison rather than transferring inputs.
+        debug_assert!(!self.owners.is_empty());
+        Ok(())
+    }
+}
+
+impl AdmittedCampaign {
+    pub(in crate::sweep) fn settlement_root(&self) -> PathBuf {
+        self.root
+            .join(".asb-generations")
+            .join(&self.manifest.generation)
+    }
+
+    pub(in crate::sweep) fn execute(
+        self,
+        json: bool,
+        show_output: bool,
+        policy: Option<&crate::planning::ResolvedPlan>,
+        output: &mut dyn std::io::Write,
+        warnings: &std::sync::Mutex<BTreeSet<String>>,
+    ) -> Result<(), Error> {
+        let reference = crate::runner::campaign::generation::StartReference {
+            generation: self.manifest.generation.clone(),
+            configuration: self.manifest.configuration,
+            manifest: self.manifest_reference,
+            admission: self.admission_reference,
+        };
+        crate::runner::repeated::continue_campaign(
+            crate::runner::repeated::Continuation {
+                invocation: self.invocation,
+                root: self.root,
+                plan: self.plan,
+                completed: self.completed,
+                pending: self.manifest.pending,
+                compatibility: self.compatibility,
+                reference,
+            },
+            json,
+            show_output,
+            policy,
+            output,
+            warnings,
+        )
+    }
 }
 
 fn encode(value: &impl Serialize) -> Result<Vec<u8>, Error> {
@@ -74,7 +122,7 @@ fn root(inputs: &Inputs) -> PathBuf {
 }
 
 impl Prepared {
-    fn plan(
+    pub(super) fn plan(
         inputs: Inputs,
         classified: Classified,
         parent: &Path,
@@ -98,7 +146,17 @@ impl Prepared {
                 "completed-only reuse needs no continuation generation",
             ));
         }
+        if classified
+            .layouts
+            .iter()
+            .any(|layout| layout.plan.mode == crate::planning::ExecutionMode::Record)
+        {
+            return Err(recovery(
+                "recording continuation requires union publication recovery",
+            ));
+        }
         let Classified {
+            mut identities,
             origin,
             layouts,
             mut completed,
@@ -194,6 +252,7 @@ impl Prepared {
             });
             // Drop the Layout here, retaining only its owned Send plan and root.
             campaigns.push(Campaign {
+                compatibility: identities.remove(&configuration),
                 invocation: origin
                     .invocation_parent
                     .join(&sweep.entries[configuration].reference),
@@ -338,7 +397,7 @@ impl Prepared {
         Ok(())
     }
 
-    fn publish(
+    pub(in crate::sweep) fn publish(
         self,
         results: &Path,
         sweep: &SweepPlan,
@@ -388,12 +447,14 @@ impl Prepared {
             .campaigns
             .into_iter()
             .map(|campaign| AdmittedCampaign {
+                compatibility: campaign.compatibility,
                 invocation: campaign.invocation,
                 root: campaign.root,
                 plan: campaign.plan,
                 completed: campaign.completed,
                 manifest_reference: Blob::of(&campaign.bytes),
                 manifest: campaign.manifest,
+                admission_reference: Blob::of(&self.admission_bytes),
             })
             .collect();
         Ok((self.guard, entries))

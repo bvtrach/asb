@@ -399,9 +399,24 @@ The generation-resolution fixtures cover substituted metadata, stripped start
 references, changed old receipt bytes, bounded new material and mixed sealing.
 The public repeated-sweep interruption fixture uses C4/N2/jobs1 and a closed
 output pipe to retain four genuine first-batch receipts (including a false grade)
-and an untouched second batch. Its current resume refusal is an intermediate
-activation boundary, not completed continuation qualification. These fixtures
-use local synthetic clients and offline replay, not an installed agent or SDK.
+and an untouched second batch. Public continuation consumes the classified owner,
+publishes all configuration manifests before any new client, and retains all
+campaign locks through settlement and comparison. Shared batch execution preserves
+original IDs and emits new generation references/material without overwriting
+old receipts or input seals. Recording continuation still requires immutable
+union publication/recovery and is not delivered by the replay/live activation.
+These fixtures use local synthetic clients, not installed agents or SDKs.
+The public matrix additionally qualifies seeded ZIP/private payload routing,
+known-incomplete numeric selection disclosure, measured dispatch/reporting and
+live mode against an owned synthetic provider. All preserve the false grade,
+eight original result slots and zero new clients on the second resume. A corrupt
+last old receipt prevents any new admission. The source checkpoint passed the
+complete offline suite (1,289 library cases, 13 opt-in cases ignored), strict
+all-target/all-feature Clippy, build and unchanged-binary verification. After a
+test-only fixture deadline adjustment, all 47 repeated-run cases and Clippy
+passed again. Rust docs, UML, flow SVGs and interactive diagrams regenerated;
+Graphviz retained its straight-edge fallback warning, with no graph content
+removed. This is not original-SDK, live LLM, packaged-install or hosted-CI proof.
 Campaign input-root regressions in `sweep::checkpoint::campaigns` check exact
 shared plan binding, private-input/configuration changes, original-source
 replacement and output independence without clients. The actual `repeated_run`

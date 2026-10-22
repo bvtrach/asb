@@ -9,6 +9,7 @@ const MAX_BYTES: u64 = 256 * 1024 * 1024;
 
 #[path = "generation.rs"]
 mod generation;
+pub(in crate::sweep) use generation::{AdmittedCampaign, Guard, Prepared as PreparedContinuation};
 
 /// A classification cannot be combined with another sweep/input owner, even
 /// when both happen to have the same number of configurations and slots.
@@ -62,6 +63,7 @@ impl Origin {
 /// Locks remain owned until this classification is consumed. Pending slots
 /// still need generation publication and exclusive create-new start admission.
 pub(in crate::sweep) struct Classified {
+    identities: BTreeMap<usize, crate::cassette::Compatibility>,
     origin: Origin,
     layouts: Vec<Layout>,
     completed: BTreeMap<usize, BTreeMap<u64, Value>>,
@@ -379,6 +381,7 @@ impl Inputs {
                 .insert(candidate.slot, candidate.summary);
         }
         Ok(Classified {
+            identities: inspection.identities,
             origin,
             layouts: inspection.layouts,
             completed,
@@ -388,6 +391,7 @@ impl Inputs {
         })
     }
 
+    #[cfg(test)]
     pub(in crate::sweep) fn resume_campaign_outcomes(
         &self,
         parent: &Path,
@@ -395,6 +399,16 @@ impl Inputs {
         plan: &SweepPlan,
     ) -> Result<crate::sweep::resume::State, Error> {
         let classification = self.classify_campaigns(parent, results, plan)?;
+        self.consume_completed_campaigns(classification, parent, results, plan)
+    }
+
+    fn consume_completed_campaigns(
+        &self,
+        classification: Classified,
+        parent: &Path,
+        results: &Path,
+        plan: &SweepPlan,
+    ) -> Result<crate::sweep::resume::State, Error> {
         if classification.origin != Origin::read(self, parent, results, plan)? {
             return Err(recovery("classification origin changed before consumption"));
         }
@@ -417,4 +431,26 @@ impl Inputs {
         state.campaign_owners = classification._owners;
         Ok(state)
     }
+
+    pub(in crate::sweep) fn prepare_campaign_continuation(
+        self,
+        parent: &Path,
+        results: &Path,
+        plan: &SweepPlan,
+    ) -> Result<CampaignContinuation, Error> {
+        let classified = self.classify_campaigns(parent, results, plan)?;
+        if classified.pending.is_empty() {
+            let reused = self.consume_completed_campaigns(classified, parent, results, plan)?;
+            Ok(CampaignContinuation::Completed(Box::new(self), reused))
+        } else {
+            Ok(CampaignContinuation::Pending(Box::new(
+                PreparedContinuation::plan(self, classified, parent, results, plan)?,
+            )))
+        }
+    }
+}
+
+pub(in crate::sweep) enum CampaignContinuation {
+    Completed(Box<Inputs>, crate::sweep::resume::State),
+    Pending(Box<PreparedContinuation>),
 }

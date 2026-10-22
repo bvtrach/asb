@@ -1,10 +1,12 @@
 //! Fresh sequential batches with a durable intended-slot plan and outcome links.
+mod execution;
 mod legacy;
 mod replay;
 pub(crate) use super::campaign::ExecutionIdentity;
 use super::campaign::{MAX_EXECUTIONS, Plan, ReplayInput, Slot, planned_slots};
 use super::{RunOptions, batch, replica};
 use crate::{Error, benchmark::BenchmarkConfig, cassette::Compatibility, io_error};
+pub(crate) use execution::{Continuation, continue_campaign};
 use serde::Serialize;
 use serde_json::json;
 use std::collections::BTreeSet;
@@ -544,17 +546,6 @@ pub(crate) fn execute(
     let total = plan.slots.len();
     let admission = plan.admission;
     let campaign = plan.campaign.clone();
-    let measurement_root = plan.measurement_root.clone();
-    let mode = match plan.mode {
-        crate::planning::ExecutionMode::Live => None,
-        crate::planning::ExecutionMode::Record => Some(crate::tape::Mode::Record),
-        crate::planning::ExecutionMode::Replay => Some(crate::tape::Mode::Replay),
-        crate::planning::ExecutionMode::Unknown => {
-            return Err(Error::Input(
-                "unknown campaign execution mode cannot be activated".into(),
-            ));
-        }
-    };
     let recording = plan.recording.as_ref().map(|destination| {
         Arc::new(super::recording::Recorder::new(
             destination.clone(),
@@ -626,48 +617,13 @@ pub(crate) fn execute(
         private_directory(&batch_root.join("starts"), false)?;
         private_directory(&batch_root.join("outcomes"), false)?;
         private_directory(&batch_root.join("allocations"), false)?;
-        let observer = Arc::new(Observer {
-            root: root.clone(),
-            directory: batch_root.clone(),
-            identity: identity.clone(),
-            completed: Mutex::new(BTreeSet::new()),
-            cleanup_confirmed: AtomicBool::new(true),
-        });
         let prepared = batch_root.join("prepared.json");
-        let batch_recorder = recording.clone();
-        let dispatch = batch::Admission::new(config.concurrency, (1..=config.concurrency).collect(), reference.clone(), admission)?.observe(Arc::new(move |compatibility| {
-            publish(&prepared, &json!({"schema_version":1,"scope":"verified-prepared-material","compatibility":compatibility}))?;
-            if let Some(recorder) = &batch_recorder { recorder.prepare(compatibility,number)?; }
-            Ok(())
-        }));
-        let mut selected = config.clone();
-        selected
-            .planning
-            .get_or_insert_with(Default::default)
-            .repetition = crate::planning::Repetition {
-            index: number as usize,
-            total: repeat as usize,
-        };
-        let mut policy = crate::planning::resolve_for_run(&selected, options.measurement_override)?;
-        if let Some(saved) = &options.policy {
-            policy.task_requirements = saved.task_requirements.clone();
-        }
-        selected.workspace = path_text(&batch_root.join("workspace"))?;
-        selected.log_file = path_text(&batch_root.join("run.jsonl"))?;
-        let measures = measurement_root
-            .as_ref()
-            .map(|root| root.join(format!("batch-{number}/measurements")));
-        if let Some(measurements) = selected.measurements.as_mut() {
-            measurements.directory = path_text(
-                measures
-                    .as_deref()
-                    .unwrap_or(&batch_root.join("measurements")),
-            )?;
-        }
-        let override_measurements = options
-            .measurement_override
-            .then(|| path_text(measures.as_deref().expect("explicit override is measured")))
-            .transpose()?;
+        let dispatch = batch::Admission::new(
+            config.concurrency,
+            (1..=config.concurrency).collect(),
+            reference.clone(),
+            admission,
+        )?;
         let batch_cassette = if recording.is_some() {
             Some(path_text(&super::recording::base(&root, number))?)
         } else if replay.is_some() {
@@ -680,68 +636,40 @@ pub(crate) fn execute(
         } else {
             private_cassette.clone()
         };
-        let result = super::run_admitted_batch(
-            &config_path,
-            selected,
-            RunOptions {
-                json: options.json,
-                show_output: options.show_output,
-                mode,
-                respect_record_timings: plan.respect_record_timings,
-                policy: Some(&policy),
-                batch: Some(&identity),
-                measurement_dir: override_measurements.as_deref(),
-                cassette: batch_cassette.as_deref(),
-                recording: recording.as_deref(),
-                on_completion: Some(observer.as_ref()),
-                ..Default::default()
-            },
-            &dispatch,
-            output,
-            warnings,
-        );
-        let prepared = dispatch.material().confirmed_identity();
-        let completed = observer
-            .completed
-            .lock()
-            .map_err(|_| Error::Run("execution completion state was interrupted".into()))?
-            .len();
-        let batch_failed = result.is_err();
-        producers_quiescent &=
-            completed == dispatch.count() && observer.cleanup_confirmed.load(Ordering::Acquire);
-        // A published outcome for every admitted slot distinguishes ordinary
-        // completed failures from setup, output or evidence-publication failure.
-        stopped = must_stop(
-            &result,
-            completed,
-            dispatch.count(),
-            prepared.is_ok(),
-            observer.cleanup_confirmed.load(Ordering::Acquire),
-        );
-        let reason = result
-            .as_ref()
-            .err()
-            .map(|error| error.to_string().chars().take(4096).collect::<String>())
-            .or_else(|| {
-                stopped.then(|| {
-                    "execution evidence or cleanup was not confirmed; inspect retained outcomes"
-                        .into()
-                })
-            });
+        let settled = execution::BatchRun {
+            config_path: &config_path,
+            plan: &plan,
+            root: &root,
+            options: &options,
+            identity,
+            batch_root: &batch_root,
+            material_path: prepared,
+            finished_path: batch_root.join("finished.json"),
+            generation: None,
+            cassette: batch_cassette.as_deref(),
+            recording: recording.clone(),
+            reused: None,
+        }
+        .execute(dispatch, output, warnings)?;
+        let execution::SettledBatch {
+            prepared,
+            failed: batch_failed,
+            stopped: batch_stopped,
+            reason,
+            quiescent,
+        } = settled;
+        stopped = batch_stopped;
+        producers_quiescent &= quiescent;
         if first_reason.is_none() {
             first_reason = reason.clone();
         }
-        publish(
-            &batch_root.join("finished.json"),
-            &json!({"schema_version":1,"completed_executions":completed,"failed":batch_failed||stopped,"stopped":stopped,"failure_reason":reason}),
-        )?;
         if batch_failed || stopped {
             failures += 1;
         }
         if stopped {
             break;
         }
-        reference = Some(prepared?);
+        reference = prepared;
         completed_batches += 1;
     }
     let publication = recording
@@ -836,6 +764,7 @@ fn must_stop(
 }
 
 struct Observer {
+    generation: Option<super::campaign::generation::StartReference>,
     root: PathBuf,
     directory: PathBuf,
     identity: BatchIdentity,
@@ -880,7 +809,7 @@ impl replica::CompletionObserver for Observer {
                 scope: "execution-start-intent-not-actual-attempt".into(),
                 execution: self.identity.execution(replica),
                 execution_cohort: Some(cohort.clone()),
-                generation: None,
+                generation: self.generation.clone(),
             },
         )
     }
@@ -1323,6 +1252,7 @@ mod tests {
         private_directory(&root, false).unwrap();
         private_directory(&root.join("outcomes"), false).unwrap();
         let observer = Observer {
+            generation: None,
             root: root.clone(),
             directory: root.clone(),
             identity: BatchIdentity {
@@ -1446,6 +1376,7 @@ mod tests {
             private_directory(&root, false).unwrap();
             private_directory(&root.join("outcomes"), false).unwrap();
             let observer = Observer {
+                generation: None,
                 root: root.clone(),
                 directory: root.clone(),
                 identity: BatchIdentity {

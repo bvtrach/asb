@@ -5,12 +5,14 @@ use super::*;
 
 enum PreparedMode {
     Fresh,
+    Continued(Box<checkpoint::campaigns::PreparedContinuation>),
     Resumed {
         checkpoint: Box<checkpoint::Inputs>,
         reused: resume::State,
     },
 }
 enum ActiveMode {
+    Continued(checkpoint::campaigns::Guard),
     Campaigns(Option<checkpoint::Inputs>),
     Fresh(Option<checkpoint::Inputs>),
     Resumed(checkpoint::Inputs),
@@ -20,16 +22,9 @@ impl ActiveMode {
     fn checkpoint(&self) -> Option<&checkpoint::Inputs> {
         match self {
             // Legacy completion observers must never consume campaign inputs.
-            Self::Campaigns(_) | Self::ReusedCampaigns(_) => None,
+            Self::Campaigns(_) | Self::ReusedCampaigns(_) | Self::Continued(_) => None,
             Self::Fresh(value) => value.as_ref(),
             Self::Resumed(value) => Some(value),
-        }
-    }
-    fn into_checkpoint(self) -> Option<checkpoint::Inputs> {
-        match self {
-            Self::Campaigns(value) => value,
-            Self::Fresh(value) => value,
-            Self::Resumed(value) | Self::ReusedCampaigns(value) => Some(value),
         }
     }
 }
@@ -174,14 +169,21 @@ impl<'a> PreparedSweep<'a> {
             if options.reconcile_completed {
                 checkpoint.reconcile_completed(parent, &results, &plan)?;
             }
-            let reused = if plan.execution.is_some() {
-                checkpoint.resume_campaign_outcomes(parent, &results, &plan)?
+            if plan.execution.is_some() {
+                match checkpoint.prepare_campaign_continuation(parent, &results, &plan)? {
+                    checkpoint::campaigns::CampaignContinuation::Completed(checkpoint, reused) => {
+                        PreparedMode::Resumed { checkpoint, reused }
+                    }
+                    checkpoint::campaigns::CampaignContinuation::Pending(prepared) => {
+                        PreparedMode::Continued(prepared)
+                    }
+                }
             } else {
-                checkpoint.resume_outcomes(parent, &results, &plan)?
-            };
-            PreparedMode::Resumed {
-                checkpoint: Box::new(checkpoint),
-                reused,
+                let reused = checkpoint.resume_outcomes(parent, &results, &plan)?;
+                PreparedMode::Resumed {
+                    checkpoint: Box::new(checkpoint),
+                    reused,
+                }
             }
         } else {
             PreparedMode::Fresh
@@ -211,6 +213,15 @@ impl<'a> PreparedSweep<'a> {
     pub fn activate(self) -> Result<ActivatedSweep<'a>, Error> {
         let mut campaigns = None;
         let (mode, reused, initial_warning) = match self.mode {
+            PreparedMode::Continued(prepared) => {
+                let (guard, admitted) = prepared.publish(&self.results, &self.plan)?;
+                campaigns = Some(campaigns::Pool::continued(
+                    admitted,
+                    &self.plan,
+                    self.options,
+                ));
+                (ActiveMode::Continued(guard), resume::State::default(), None)
+            }
             PreparedMode::Resumed { checkpoint, reused } => {
                 let mode = if self.plan.execution.is_some() {
                     ActiveMode::ReusedCampaigns(*checkpoint)
@@ -484,7 +495,7 @@ impl SettledSweep<'_> {
             source,
             parent,
             plan,
-            mode,
+            mut mode,
             options,
             results,
             warnings,
@@ -492,7 +503,12 @@ impl SettledSweep<'_> {
             _output_lock,
             ..
         } = activated;
-        if let ActiveMode::Campaigns(Some(checkpoint)) = &mode
+        let campaign_inputs = match &mode {
+            ActiveMode::Campaigns(Some(checkpoint)) => Some(checkpoint),
+            ActiveMode::Continued(guard) => Some(guard.inputs()),
+            _ => None,
+        };
+        if let Some(checkpoint) = campaign_inputs
             && let Err(error) = checkpoint.seal_campaigns(&parent, &results, &plan)
         {
             let presentation = crate::runner::diagnostics::Warning::new(
@@ -513,14 +529,15 @@ impl SettledSweep<'_> {
         }
         #[cfg(all(test, unix))]
         tests::before_input_finish(&results);
-        let read_only_reuse = matches!(&mode, ActiveMode::ReusedCampaigns(_));
-        if let Some(checkpoint) = mode.into_checkpoint()
-            && let Err(error) = if read_only_reuse {
-                checkpoint.verify_stable()
-            } else {
-                checkpoint.finish()
+        let stability = match &mut mode {
+            ActiveMode::Continued(guard) => guard.verify_stable(),
+            ActiveMode::ReusedCampaigns(checkpoint) => checkpoint.verify_stable_borrowed(),
+            ActiveMode::Campaigns(checkpoint) | ActiveMode::Fresh(checkpoint) => {
+                checkpoint.take().map_or(Ok(()), |inputs| inputs.finish())
             }
-        {
+            ActiveMode::Resumed(checkpoint) => checkpoint.finish_borrowed(),
+        };
+        if let Err(error) = stability {
             // A broken terminal cannot prevent final input settlement or
             // report generation; the original terminal error is retained.
             if !output.failed() {
@@ -582,6 +599,7 @@ impl SettledSweep<'_> {
             schedule_error.map_or(Ok(()), Err),
         );
         drop(reused_guard);
+        drop(mode);
         drop(_output_lock);
         outcome
     }

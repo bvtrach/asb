@@ -561,6 +561,22 @@ of selected-payload identity or permission to resume. Record cassettes are
 outputs, not replay inputs. Interpreter and native
 loader dependencies are added by shared runtime discovery, not inferred merely
 from an executable's pathname.
+
+Campaign continuation consumes the original input owner and a whole-population
+classification under every campaign lock. Only positively untouched slots enter
+a new dispatch; completed false grades remain reused failures. All configuration
+manifests are published and rechecked before one final admission marker returns
+consuming worker capabilities. The parent `ActiveMode::Continued` retains its
+input/campaign guard through scoped worker joins, strict receipt sealing,
+read-only input verification and comparison. Passive generation wire/resolution
+lives with the runner's campaign model, not in a runner-to-sweep dependency.
+Fresh and continued runs share `BatchRun`; continued material/finished metadata
+is generation-scoped while original slot starts/outcomes remain create-new.
+Replay routes saved private JSONL and frozen choices without reopening sources.
+Inherited receipt bytes are verified before new receipts publish; original seals
+are not rewritten. Recording continuation still needs the separate immutable
+union/recovery contract in MULTITRACK-RECORDING-CONTINUATION.md.
+
 On Unix, runtime discovery owns one nonblocking duplex exchange, with a 1 MiB
 serialized request and 4 MiB complete response, a single 60-second exchange
 deadline and bounded cleanup. Linux launches the exact typed command through

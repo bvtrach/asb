@@ -12,6 +12,7 @@ fn sweep(project: &Project, provider: Option<&RecordingProvider>, arguments: &[&
         .args(arguments);
     if let Some(provider) = provider {
         command
+            .env("ASB_PROVIDER_BASE_URL", &provider.endpoint)
             .env("OPENROUTER_API_KEY", "fixture-only-key")
             .env("OPENROUTER_BASE_URL", format!("{}/v1", provider.endpoint))
             .env(
@@ -60,7 +61,7 @@ fn registered_project(concurrency: usize) -> Project {
             "root = pathlib.Path({})",
             serde_json::to_string(project.0.to_str().unwrap()).unwrap()
         ),
-    );
+    ).replace("if (root/'reverse-arrivals').exists()", "if batch == 1 and (root/'hold-first-batch').exists():\n    hold_deadline = time.monotonic()+45\n    while not (root/'release-first-batch').exists():\n        assert time.monotonic()<hold_deadline, 'fixture owner did not release first batch'\n        time.sleep(.005)\nif (root/'reverse-arrivals').exists()");
     fs::write(&executable, script).unwrap();
     fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
     let config_path = project.0.join("benchmark.toml");
@@ -331,9 +332,39 @@ fn campaign_input_seals_stay_stable_after_record_publication_and_offline_replay(
 
 #[test]
 fn interrupted_modern_sweep_keeps_genuine_first_batch_receipts_and_untouched_next_batch() {
+    check_interrupted_continuation("legacy", false);
+}
+
+#[test]
+fn interrupted_modern_sweep_resumes_saved_zip_choices_with_measurements() {
+    check_interrupted_continuation("zip", true);
+}
+
+#[test]
+fn interrupted_modern_sweep_discloses_pending_incomplete_selection_before_execution() {
+    check_interrupted_continuation("incomplete", false);
+}
+
+#[test]
+fn interrupted_modern_sweep_continues_live_batches_without_retrying_old_clients() {
+    check_interrupted_continuation("live", true);
+}
+
+fn check_interrupted_continuation(source_kind: &str, measured: bool) {
     use std::io::BufRead;
     use std::process::Stdio;
     let project = registered_project(4);
+    fs::write(
+        project.0.join("hold-first-batch"),
+        "bounded fixture barrier",
+    )
+    .unwrap();
+    if measured {
+        let path = project.0.join("benchmark.toml");
+        let configuration = fs::read_to_string(&path).unwrap();
+        fs::write(path, format!("{configuration}\n[measurements]\nenabled=true\ndirectory='measurements'\ncollectors=[]\n")).unwrap();
+    }
+    let provider = (source_kind == "live").then(RecordingProvider::new);
     fs::write(
         project.0.join("false-grade-first"),
         "keep a genuine false grade",
@@ -341,12 +372,32 @@ fn interrupted_modern_sweep_keeps_genuine_first_batch_receipts_and_untouched_nex
     .unwrap();
     let input = project.0.join("replay-input/000-benchmark/cassettes");
     fs::create_dir_all(&input).unwrap();
-    fs::copy(
-        project.0.join("input.jsonl"),
-        input.join("benchmark-pi-bug-fix-fixture.jsonl"),
-    )
-    .unwrap();
-    let mut child = Command::new(env!("CARGO_BIN_EXE_asb"))
+    let source_path = if matches!(source_kind, "zip" | "incomplete") {
+        let source = registered_project(2);
+        let provider = RecordingProvider::new();
+        let recorded = record(&source, &provider, Some("2"));
+        assert!(
+            recorded.status.success(),
+            "{}",
+            String::from_utf8_lossy(&recorded.stderr)
+        );
+        if source_kind == "incomplete" {
+            rewrite_bundle(&source, |manifest, _| {
+                manifest.tracks[0].complete = false;
+            });
+        }
+        let destination = input.join("recording.asb.zip");
+        fs::copy(source.0.join("new-recording.jsonl"), &destination).unwrap();
+        Some(destination)
+    } else if source_kind == "legacy" {
+        let destination = input.join("benchmark-pi-bug-fix-fixture.jsonl");
+        fs::copy(project.0.join("input.jsonl"), &destination).unwrap();
+        Some(destination)
+    } else {
+        None
+    };
+    let mut command = Command::new(env!("CARGO_BIN_EXE_asb"));
+    command
         .current_dir(&project.0)
         .isolated_env()
         .env("HOME", &project.0)
@@ -354,15 +405,31 @@ fn interrupted_modern_sweep_keeps_genuine_first_batch_receipts_and_untouched_nex
         .args([
             "sweep",
             "sweep.toml",
-            "--replay",
             "--repeat",
             "2",
             "--jobs",
             "1",
-            "--cassette-root",
-            "replay-input",
             "--json",
-        ])
+        ]);
+    if let Some(provider) = &provider {
+        command
+            .env("ASB_PROVIDER_BASE_URL", &provider.endpoint)
+            .env("OPENROUTER_API_KEY", "fixture-only-key")
+            .env("OPENROUTER_BASE_URL", format!("{}/v1", provider.endpoint))
+            .env(
+                "OPENROUTER_MODELS_URL",
+                format!("{}/models", provider.endpoint),
+            );
+    } else {
+        command.args(["--replay", "--cassette-root", "replay-input"]);
+        if matches!(source_kind, "zip" | "incomplete") {
+            command.args(["--seed", "73"]);
+        }
+        if source_kind == "incomplete" {
+            command.args(["--track", "1"]);
+        }
+    }
+    let mut child = command
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -372,13 +439,34 @@ fn interrupted_modern_sweep_keeps_genuine_first_batch_receipts_and_untouched_nex
     source.read_line(&mut line).unwrap();
     let event: Value = serde_json::from_str(&line).unwrap();
     assert_eq!(event["type"], "execution-plan", "{event}");
+    // Wait until actual clients have started, not merely the execution-plan
+    // prelude (ZIP selection or measured preflight may still emit output).
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while !(1..=4).all(|replica| project.0.join(format!("barrier-1-{replica}")).exists()) {
+        if child.try_wait().unwrap().is_some() || std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            drop(source);
+            let output = child.wait_with_output().unwrap();
+            panic!(
+                "clients never reached first batch: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
     // The shared four-way batch still settles after presentation fails. This
     // is an actual supported broken-pipe route, not erased start observations.
     drop(source);
+    fs::write(
+        project.0.join("release-first-batch"),
+        "continue owned clients",
+    )
+    .unwrap();
     let output = child.wait_with_output().unwrap();
     assert!(!output.status.success());
     let plan = PathBuf::from(event["path"].as_str().unwrap());
     let root = plan.parent().unwrap();
+    let saved: Value = serde_json::from_slice(&fs::read(&plan).unwrap()).unwrap();
     assert!(!root.join("batch-2").exists());
     let attempts = records(&fs::read(project.0.join("attempts.jsonl")).unwrap());
     assert_eq!(attempts.len(), 4);
@@ -427,21 +515,184 @@ fn interrupted_modern_sweep_keeps_genuine_first_batch_receipts_and_untouched_nex
                 .exists()
         );
     }
-    // Until runtime continuation is connected, current CLI must reject only
-    // at the explicit pending-generation boundary, not strict old evidence.
-    let rejected = sweep(&project, None, &["--replay", "--resume"]);
+    // Freeze actual original evidence, not merely receipt names. Continue from
+    // the private inputs after removing this fixture's public replay source.
+    for path in [
+        project.0.join("sweep-results/plan.json"),
+        checkpoint.join("inputs.json"),
+        root.join("plan.json"),
+    ] {
+        frozen.push((path.clone(), fs::read(path).unwrap()));
+    }
+    for id in 1..=4 {
+        for name in ["starts", "outcomes"] {
+            let path = root.join(format!("batch-1/{name}/{id}.json"));
+            frozen.push((path.clone(), fs::read(path).unwrap()));
+        }
+        let path = root.join(format!("batch-1/outcomes/{id}.json"));
+        let reference: Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+        let path = root.join(reference["path"].as_str().unwrap());
+        frozen.push((path.clone(), fs::read(path).unwrap()));
+    }
+    for slot in saved["slots"].as_array().unwrap().iter().take(4) {
+        for path in [
+            root.join(slot["log"].as_str().unwrap()),
+            root.join(slot["workspace"].as_str().unwrap())
+                .join("src/parser.py"),
+        ] {
+            frozen.push((path.clone(), fs::read(path).unwrap()));
+        }
+        if measured {
+            let path = root
+                .join(slot["measurements"].as_str().unwrap())
+                .join("run.json");
+            frozen.push((path.clone(), fs::read(path).unwrap()));
+        }
+    }
+    // Invalid old evidence must prevent ALL new admission and publication.
+    let last = checkpoint.join("campaign-completed/000000/000004.json");
+    let original = fs::read(&last).unwrap();
+    fs::write(&last, b"{}").unwrap();
+    let arguments: &[&str] = if provider.is_some() {
+        &["--resume"]
+    } else {
+        &["--replay", "--resume"]
+    };
+    let rejected = sweep(&project, provider.as_ref(), arguments);
     assert!(!rejected.status.success());
-    assert!(
-        String::from_utf8_lossy(&rejected.stderr).contains("generation admission"),
-        "{}",
-        String::from_utf8_lossy(&rejected.stderr)
-    );
     assert_eq!(
         records(&fs::read(project.0.join("attempts.jsonl")).unwrap()).len(),
         4
     );
-    for (path, bytes) in frozen {
-        assert_eq!(fs::read(path).unwrap(), bytes);
+    assert!(!checkpoint.join("campaign-continuation").exists());
+    fs::write(last, original).unwrap();
+    if let Some(path) = source_path {
+        fs::remove_file(path).unwrap();
+    }
+    for iteration in 0..2 {
+        let resumed = sweep(&project, provider.as_ref(), arguments);
+        // The genuine false grade remains an overall failure, not a reason to
+        // retry its client or suppress the four new batch-two attempts.
+        assert!(!resumed.status.success());
+        let rows = records(&resumed.stdout)
+            .into_iter()
+            .filter(|row| row.get("task").is_some())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            rows.len(),
+            8,
+            "iteration {iteration}: {}\n{}",
+            String::from_utf8_lossy(&resumed.stdout),
+            String::from_utf8_lossy(&resumed.stderr)
+        );
+        if saved["replay_selection"].is_object() {
+            let expected = saved["replay_selection"]["tracks"].as_array().unwrap();
+            for row in &rows {
+                let slot = row["execution"]["slot"].as_u64().unwrap() as usize;
+                assert_eq!(row["execution"]["replay_track"], expected[slot - 1]);
+                assert_eq!(row["execution"]["replay_seed"], 73);
+                assert_eq!(
+                    row["execution"]["replay_algorithm"],
+                    saved["replay_selection"]["algorithm"]
+                );
+            }
+        }
+        if source_kind == "incomplete" && iteration == 0 {
+            let events = records(&resumed.stdout);
+            let warning = events
+                .iter()
+                .position(|row| row["code"] == "incomplete-track")
+                .expect("disclose incomplete pending track");
+            let execution = events
+                .iter()
+                .position(|row| row["task"].is_object() && row["reused"] != true)
+                .unwrap();
+            assert!(warning < execution);
+        }
+        assert_eq!(
+            rows.iter()
+                .filter(|row| row["workload_success"] == false)
+                .count(),
+            1
+        );
+        assert_eq!(
+            rows.iter().filter(|row| row["reused"] == true).count(),
+            if iteration == 0 { 4 } else { 8 }
+        );
+        let attempts = records(&fs::read(project.0.join("attempts.jsonl")).unwrap());
+        assert_eq!(attempts.len(), 8);
+        assert_eq!(
+            attempts
+                .iter()
+                .filter(|attempt| attempt["batch"] == 2)
+                .count(),
+            4
+        );
+        if matches!(source_kind, "zip" | "incomplete") {
+            for attempt in &attempts {
+                let index = ((attempt["batch"].as_u64().unwrap() - 1) * 4
+                    + attempt["replica"].as_u64().unwrap()
+                    - 1) as usize;
+                let input_index = saved["slots"][index]["replay_input"].as_u64().unwrap() as usize;
+                let path = root.join(
+                    saved["replay_inputs"][input_index]["private"]
+                        .as_str()
+                        .unwrap(),
+                );
+                let tape = records(&fs::read(path).unwrap());
+                let response: Value =
+                    serde_json::from_str(tape[0]["response"]["body"].as_str().unwrap()).unwrap();
+                assert_eq!(attempt["response_tag"], response["recorded_track"]);
+            }
+        }
+        let report: Value = serde_json::from_slice(
+            &fs::read(project.0.join("results/sweep-comparison/comparison.json")).unwrap(),
+        )
+        .unwrap();
+        let reported = report["benchmarks"].as_array().unwrap();
+        assert_eq!(reported.len(), 8);
+        let mut ids = std::collections::BTreeSet::new();
+        for row in reported {
+            assert!(ids.insert(row["execution"]["slot"].as_u64().unwrap()));
+            assert_eq!(row["execution_cohort"]["selected_replicas"], 4);
+            assert_eq!(row["execution_cohort"]["dispatch"]["configured"], 4);
+            assert_eq!(row["execution_cohort"]["dispatch"]["admitted"], 4);
+        }
+        if measured {
+            for slot in saved["slots"].as_array().unwrap().iter().skip(4) {
+                let path = root
+                    .join(slot["measurements"].as_str().unwrap())
+                    .join("run.json");
+                let observation: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+                assert_eq!(observation["execution"]["slot"], slot["id"]);
+                assert_eq!(observation["execution_cohort"]["dispatch"]["admitted"], 4);
+                if iteration == 0 {
+                    frozen.push((path.clone(), fs::read(path).unwrap()));
+                }
+            }
+        }
+        for (path, bytes) in &frozen {
+            assert_eq!(
+                &fs::read(path).unwrap(),
+                bytes,
+                "changed {}",
+                path.display()
+            );
+        }
+        for id in 5..=8 {
+            let receipt = checkpoint.join(format!("campaign-completed/000000/{id:06}.json"));
+            assert!(
+                receipt.is_file(),
+                "missing new receipt {id}: {}",
+                String::from_utf8_lossy(&resumed.stderr)
+            );
+            if iteration == 0 {
+                frozen.push((receipt.clone(), fs::read(receipt).unwrap()));
+            }
+        }
+        if let Some(provider) = &provider {
+            assert_eq!(provider.calls.load(std::sync::atomic::Ordering::SeqCst), 8);
+        }
     }
 }
 

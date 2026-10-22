@@ -13,7 +13,7 @@ use std::time::Duration;
 use std::time::Instant;
 
 const HELPER: &str = include_str!("../../assets/benchmarks/asb_fingerprint.py");
-mod campaigns;
+pub(super) mod campaigns;
 const MAX_REQUEST: usize = 16 * 1024 * 1024;
 pub(super) mod completed;
 pub(super) use completed::replicas::Observer as ReplicaObserver;
@@ -535,6 +535,10 @@ impl Inputs {
     }
 
     pub(super) fn finish(mut self) -> Result<(), Error> {
+        self.finish_borrowed()
+    }
+
+    pub(super) fn finish_borrowed(&mut self) -> Result<(), Error> {
         match self.final_fingerprint() {
             Ok(after) => self.publish(
                 if after.digest == self.initial.digest {
@@ -553,7 +557,7 @@ impl Inputs {
 
     /// Completed-only campaign reuse has no newly admitted work to settle.
     /// Recheck inputs without rewriting the original seal/provenance locators.
-    pub(super) fn verify_stable(mut self) -> Result<(), Error> {
+    pub(super) fn verify_stable_borrowed(&mut self) -> Result<(), Error> {
         if self.final_fingerprint()? != self.initial {
             return Err(resume_error(
                 "declared inputs changed while reusing completed campaigns",

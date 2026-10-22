@@ -17,9 +17,20 @@ pub(super) struct Pool {
     entries: Vec<Entry>,
 }
 struct Entry {
-    published: Mutex<Option<runner::repeated::PublishedCampaign>>,
+    published: Mutex<Option<Worker>>,
     root: PathBuf,
     stop: AtomicBool,
+}
+
+enum Worker {
+    Fresh(Box<runner::repeated::PublishedCampaign>),
+    Continued(Box<ContinuedWorker>),
+}
+struct ContinuedWorker {
+    admitted: super::checkpoint::campaigns::AdmittedCampaign,
+    json: bool,
+    show_output: bool,
+    policy: Option<crate::planning::ResolvedPlan>,
 }
 
 fn error(reason: &str) -> Error {
@@ -254,7 +265,7 @@ impl Prepared {
             .into_iter()
             .map(|(prepared, root)| {
                 runner::repeated::publish_campaign(prepared).map(|published| Entry {
-                    published: Mutex::new(Some(published)),
+                    published: Mutex::new(Some(Worker::Fresh(Box::new(published)))),
                     root,
                     stop: AtomicBool::new(false),
                 })
@@ -270,6 +281,32 @@ impl Prepared {
 }
 
 impl Pool {
+    pub(super) fn continued(
+        admitted: Vec<super::checkpoint::campaigns::AdmittedCampaign>,
+        plan: &plan::SweepPlan,
+        options: Options<'_>,
+    ) -> Self {
+        Self {
+            entries: admitted
+                .into_iter()
+                .zip(&plan.entries)
+                .map(|(admitted, entry)| {
+                    let root = admitted.settlement_root();
+                    Entry {
+                        published: Mutex::new(Some(Worker::Continued(Box::new(ContinuedWorker {
+                            admitted,
+                            json: options.json,
+                            show_output: options.show_output,
+                            policy: entry.policy.clone(),
+                        })))),
+                        root,
+                        stop: AtomicBool::new(false),
+                    }
+                })
+                .collect(),
+        }
+    }
+
     pub fn run(
         &self,
         index: usize,
@@ -286,7 +323,16 @@ impl Pool {
                 .take()
                 .ok_or_else(|| error("campaign was already consumed"))?
         };
-        let result = runner::repeated::execute(published, output, warnings);
+        let result = match published {
+            Worker::Fresh(published) => runner::repeated::execute(*published, output, warnings),
+            Worker::Continued(worker) => worker.admitted.execute(
+                worker.json,
+                worker.show_output,
+                worker.policy.as_ref(),
+                output,
+                warnings,
+            ),
+        };
         let finished =
             runner::campaign::reading::bounded(&entry.root.join("finished.json"), 16 * 1024)
                 .and_then(|bytes| {

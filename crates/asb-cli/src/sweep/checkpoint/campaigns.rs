@@ -5,6 +5,9 @@ use std::path::Path;
 
 mod reservations;
 mod settled;
+pub(in crate::sweep) use settled::continuation::{
+    AdmittedCampaign, CampaignContinuation, Guard, PreparedContinuation,
+};
 
 pub(super) fn input_roots(results: &Path, plan: &SweepPlan) -> Result<Vec<Root>, Error> {
     // Share the exact index/configuration/selection/capacity binding used by
