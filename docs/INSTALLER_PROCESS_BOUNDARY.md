@@ -1079,3 +1079,39 @@ the preserved isolated-cli before/final hash transcripts both show179fa45a,
 matching the frozen isolated-cli copy. No binary mutation occurred during tests.
 All handles terminal. Other existing historical parent-generated fixtures
 remain separate migration/shared-writer work; no full-suite clearance is claimed.
+
+### Original obligations and primary-error RED (22 October)
+
+037eecaa migrated the original four observed-red obligations to actual typed
+ProcessScope; 27da62a8 corrected one remaining coverage-only raw command_output
+caller after removing that raw wrapper and LoggedStatus.logged_status. The
+initial E0425 compile transcript remains original-obligations-focus.log. The
+next original-obligations-focus-v2.log records2PASS/2FAIL in1.08s: its two
+normal-principal fixtures incorrectly required Deadline/nullstatus. Actual
+existing guardian behavior quiesces adopted descendants BEFORE its receipt;
+both returned exit0 with consumed matching proof. Staging remained initial
+after releasing the writer, with no writer-mutated marker, and the separately
+owned sentinel survived. Failed libtest is frozen as
+qualification/installer44-original-obligations-failed-libtests, SHA
+`6a189f63a67a09b043241573dc8386cec03a4a38388f8547e67274f02c65507c`.
+
+Root approved TEST-only0ab2f410 to accept truthful exit0 after that proof,
+while retaining unchanged-stage/no-late-writer assertions and checking exact
+valid-prefix bytes, not only length. After actual-FIRST rebuild,
+original-obligations-focus-v3.log records4PASS/0FAIL/0ignored in1.08s.
+Stuck and overflow still require Deadline/CaptureOverflow respectively,
+confirmed cleanup and null process status. Actual/frozen before/after SHA is
+`aad9b505b09fc06aaf5f8056c9b3552e8c850fbebdc8fbe1e51a2ff510c1698e`.
+
+Separate approved TEST-onlyf34eb7f1 proves a remaining diagnostic defect through
+actual install_input_in: a local validator cancels its operation and returns
+Ordinary("specific original validation reason"). After actual Stage Drop
+completion, retained raw/unchanged destination and Abort classification all
+pass; the final assertion fails because later Cancelled Abort erased that
+original reason. primary-error-red.log records0PASS/1FAIL/0ignored in0.00s,
+after23.77s compilation; primary-error-red-build.log actual-FIRST passed.
+The same aad9 actual/frozen hash was unchanged. Failed libtest is preserved
+as qualification/installer44-primary-error-red-libtests. No production repair
+is included in this observed-red checkpoint. All handles terminal; no full
+qualification claim. Remaining Source/DownloadChild test-shadow migration is
+explicitly unfinished.
