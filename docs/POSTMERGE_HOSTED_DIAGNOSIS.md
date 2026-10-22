@@ -295,3 +295,53 @@ the permanent test-only BusyBox image opt-in, skip or budget relaxation.
 This stripped source checkpoint has NOT been built or run. Independent net-diff
 review precedes fresh actual-FIRST/frozen final full/package qualification and
 any new push. PR312 stays draft and root owns eventual merge/postmerge/release.
+
+## Stripped263 local full proof, NOT promotion clearance
+
+After independent net-source review, actual ASB built FIRST13.38s and froze as
+target/qualification/loader-final-263bdb51-asb, SHA256
+`c375acf525fe23dc1fdd896c98cdb6ca3456fdaeb7e677137981b3ab783a346f`.
+Fresh locked/offline workspace/all-target/all-feature full suite exited0:
+**1466passed/0failed/21existing opt-in ignored across24outer targets**. Compact
+loader-final-full-outer-summaries.log excludes nested child rows. Actual/frozen
+before/after-full and after-normal-gates hashes match; no source edit or actual
+executable relink occurred during runtime. Doctests0/0, strict workspace/all-target/
+all-feature Clippy -Dwarnings16.27s, fmt/diffcheck, private Rustdocs, pinned
+AutoUML0.7.2/type/function-flow/interactive generation, both completion syntax
+checks, checkout-update7/0 and actionlint (only existing custom-label warning
+excluded) passed sequentially. This is update testing, not make update.
+
+After all those handles terminated, the verified generated regular/nonsymlink/
+zero-byte install.log was moved recoverably with source/dev/inode/mode metadata
+to target/fixture-preservation; only its empty .asb parent was removed with
+rmdir. Every diagnostic namespace and crate target artifact remains. Locked/
+offline cargo package passed512files/13.24s verification, with archived parser,
+permanent regression/golden/launch source and shared writer/allocator bytes
+matching checkout; mock gate mode0755 is preserved. Temporary Python diagnostic
+and all generated target artifacts are absent. Package help passed. Archive
+SHA256 is `2b91702aa0a972830dd5196173156b351c5badaab5c79e3698036bf9f7128de2`.
+Packaging legitimately relinked ordinary debug ASB afterward; its separately
+frozen help-only loader-final-263bdb51-packaged-asb hash is
+`67e06f9d77abd855f53188e04c89d001f774e66f145c7a2da4eed55d08b03356`,
+NOT full-qualified c375. The full executable and exact post-runtime libtest
+5aa5c547 are preserved separately. All handles are terminal. Evidence uses
+target/loader-final-* logs/digests; local Linux x86_64, not extracted-package
+full tests, Windows/ARM, SDK/provider/privileged tracing qualification.
+
+Meanwhile earlier draft4d049 normal CI39715179418 failed AFTER the original
+four parser-dependent regressions passed: offline_cli94passed/4failed/5ignored.
+Preserved target/pr312-repaired-normal-ci-failed.log records unexpected EOF in
+two SOCKS fixtures, unexpected CONNECT prefix in HTTPS proxy fixture, and
+DirectoryNotEmpty when removing an assumed-empty .asb-tools reset fixture.
+These NEW failures block readiness; local full success does not erase them.
+
+Read-only source hypothesis: project::init always calls python_runtime::ensure;
+that accepts only Python3.12/3.13, while hosted26 defaults3.14. If no compatible
+interpreter is on PATH/known to uv, fallback installs uv into .asb-tools through
+the already saved project proxy before these fixtures start their server thread.
+This could explain both nonempty tools and unexpected queued bootstrap traffic,
+but actual bootstrap invocation/connection provenance is NOT yet controlled
+proof. No fixture assumption is silently relaxed and no compatibility policy is
+changed. Root was notified before any further source change/retry. PR312 remains
+draft; independent diagnosis/repair approval, fresh final exact-head CI and both
+postmerge jobs remain required. No final proof push/ready/merge/release occurred.
