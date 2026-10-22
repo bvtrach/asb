@@ -1055,3 +1055,24 @@ relink occurred: actual/frozen final SHA remains
 `f9886a273216f4f28c5d2faac2282b8b7c4ff9f48aa9d6b5659968f6967a616f`.
 All handles terminal. Original four RED fixtures and other historical raw test
 helpers still require migration/removal before any full-suite claim.
+
+Independent review found fd974's parent script writes could expose executable
+writable descriptions to unrelated parallel libtest forks. Its focused result
+is real, but NOT evidence excluding that hazard. Signed TEST-only77d7b4fc keeps
+all six cases/assertions/bytes/modes while moving generation into one exact-case
+child before its first local spawn. Outer libtest creates only directories,
+uses the existing bounded ProcessScope/Inspect, and consumes actual matching
+directory proof BEFORE interpreting child status. Only the exact one-test
+child receives --test-threads=1; the suite stays parallel. e5130a8b forwards
+optional LLVM_PROFILE_FILE through both env_clear boundaries, never credentials
+or other inherited settings. This does not restore any coverage gate.
+
+Actual rebuilt FIRST13.41s, then installer44-isolated-cli-focus.log records
+2PASS/0FAIL/0ignored in2.90s after23.50s compilation, outer default parallel.
+Both original six-case assertions and nested CLI/sentinel cleanup survive;
+outer exact-child tree settlement has its own retained marker. Strict
+workspace/alltargets/allfeatures Clippy -Dwarnings passed9.12s, fmt/diffcheck
+passed. Before/final/frozen actual SHA remains
+`f9886a273216f4f28c5d2faac2282b8b7c4ff9f48aa9d6b5659968f6967a616f`.
+All handles terminal. Other existing historical parent-generated fixtures
+remain separate migration/shared-writer work; no full-suite clearance is claimed.
