@@ -614,17 +614,40 @@ fn is_install_key(key: &KeyEvent) -> bool {
         && matches!(key.code, KeyCode::Char('i') | KeyCode::Tab)
 }
 
-fn set_message(
-    message: &mut String,
-    color: &mut Color,
-    until: &mut Option<std::time::Instant>,
-    text: impl Into<String>,
-    status: Color,
-    temporary: bool,
-) {
-    *message = text.into();
-    *color = status;
-    *until = temporary.then(|| std::time::Instant::now() + TEMPORARY_MESSAGE);
+trait MessagePane {
+    fn message(&mut self) -> &mut String;
+    fn message_color(&mut self) -> &mut Color;
+    fn message_until(&mut self) -> &mut Option<std::time::Instant>;
+
+    fn set_message(&mut self, text: impl Into<String>, color: Color, temporary: bool) {
+        *self.message() = text.into();
+        *self.message_color() = color;
+        *self.message_until() = temporary.then(|| std::time::Instant::now() + TEMPORARY_MESSAGE);
+    }
+}
+
+impl MessagePane for App {
+    fn message(&mut self) -> &mut String {
+        &mut self.message
+    }
+    fn message_color(&mut self) -> &mut Color {
+        &mut self.message_color
+    }
+    fn message_until(&mut self) -> &mut Option<std::time::Instant> {
+        &mut self.message_until
+    }
+}
+
+impl MessagePane for WorkloadApp {
+    fn message(&mut self) -> &mut String {
+        &mut self.message
+    }
+    fn message_color(&mut self) -> &mut Color {
+        &mut self.message_color
+    }
+    fn message_until(&mut self) -> &mut Option<std::time::Instant> {
+        &mut self.message_until
+    }
 }
 
 fn visible_message(message: &str, until: Option<std::time::Instant>) -> &str {
@@ -874,10 +897,7 @@ fn install_workload_selection(
     app: &mut WorkloadApp,
 ) -> Result<bool, Error> {
     if app.wizard.editing() {
-        set_message(
-            &mut app.message,
-            &mut app.message_color,
-            &mut app.message_until,
+        app.set_message(
             "Trials are configured locally; return to workloads before installing.",
             Color::Red,
             true,
@@ -885,14 +905,7 @@ fn install_workload_selection(
         return Ok(false);
     }
     let Some(choice) = app.workloads.choices.get(app.workloads.cursor) else {
-        set_message(
-            &mut app.message,
-            &mut app.message_color,
-            &mut app.message_until,
-            "Nothing is highlighted to install.",
-            Color::Red,
-            true,
-        );
+        app.set_message("Nothing is highlighted to install.", Color::Red, true);
         return Ok(false);
     };
     let name = choice
@@ -900,14 +913,7 @@ fn install_workload_selection(
         .workload()
         .expect("workload pane identity")
         .to_owned();
-    set_message(
-        &mut app.message,
-        &mut app.message_color,
-        &mut app.message_until,
-        format!("Installing `{name}` (8%)..."),
-        Color::Cyan,
-        false,
-    );
+    app.set_message(format!("Installing `{name}` (8%)..."), Color::Cyan, false);
     let directory = project::resolve(&app.root, &app.project.workloads_dir);
     let result = drive_install(
         app.root.clone(),
@@ -916,14 +922,7 @@ fn install_workload_selection(
             directory,
         },
         |status| {
-            set_message(
-                &mut app.message,
-                &mut app.message_color,
-                &mut app.message_until,
-                status,
-                Color::Cyan,
-                false,
-            );
+            app.set_message(status, Color::Cyan, false);
             terminal
                 .draw(|frame| draw_workload(frame, app))
                 .map_err(|error| {
@@ -940,28 +939,19 @@ fn install_workload_selection(
             .get(app.workloads.cursor)
             .is_some_and(|choice| choice.availability == Availability::Available);
     match result {
-        Ok(()) if !ready => set_message(
-            &mut app.message,
-            &mut app.message_color,
-            &mut app.message_until,
+        Ok(()) if !ready => app.set_message(
             format!(
                 "Installation of `{name}` finished but it is not ready; check .asb/install.log."
             ),
             Color::Red,
             false,
         ),
-        Ok(()) => set_message(
-            &mut app.message,
-            &mut app.message_color,
-            &mut app.message_until,
+        Ok(()) => app.set_message(
             format!("Installed or refreshed `{name}`; status is ready."),
             Color::Green,
             true,
         ),
-        Err(error) => set_message(
-            &mut app.message,
-            &mut app.message_color,
-            &mut app.message_until,
+        Err(error) => app.set_message(
             format!("Cannot install `{name}`: {error}"),
             Color::Red,
             false,
@@ -1433,14 +1423,7 @@ fn install_setup_dependencies(
             directory: tools_root.clone(),
         },
         |status| {
-            set_message(
-                &mut app.message,
-                &mut app.message_color,
-                &mut app.message_until,
-                status,
-                Color::Cyan,
-                false,
-            );
+            app.set_message(status, Color::Cyan, false);
             terminal.draw(|frame| draw(frame, app)).map_err(|error| {
                 Error::Io(format!("cannot draw dependency install status: {error}"))
             })?;
@@ -1463,10 +1446,7 @@ fn finish_dependency_install(
                 .iter()
                 .all(|id| install::tool_installed_locally(id, tools_root)) =>
         {
-            set_message(
-                &mut app.message,
-                &mut app.message_color,
-                &mut app.message_until,
+            app.set_message(
                 "Required collector tools are installed and selected.",
                 Color::Green,
                 true,
@@ -1474,10 +1454,7 @@ fn finish_dependency_install(
             Ok(true)
         }
         Ok(()) => {
-            set_message(
-                &mut app.message,
-                &mut app.message_color,
-                &mut app.message_until,
+            app.set_message(
                 "Required collector installation finished but a dependency is not ready; check .asb/install.log.",
                 Color::Red,
                 false,
@@ -1485,10 +1462,7 @@ fn finish_dependency_install(
             Ok(false)
         }
         Err(error) => {
-            set_message(
-                &mut app.message,
-                &mut app.message_color,
-                &mut app.message_until,
+            app.set_message(
                 format!("Cannot install required collector tool: {error}"),
                 Color::Red,
                 false,
@@ -1565,10 +1539,7 @@ where
         if step == PaneKind::Measurements {
             app.sync_collector_dependencies();
             if app.panes[step.index()].selected[index] {
-                set_message(
-                    &mut app.message,
-                    &mut app.message_color,
-                    &mut app.message_until,
+                app.set_message(
                     "This collector is required by another selected collector.",
                     Color::Yellow,
                     true,
@@ -1886,22 +1857,12 @@ fn install_setup_selection(
         .choices
         .get(app.panes[app.step.index()].cursor)
     else {
-        set_message(
-            &mut app.message,
-            &mut app.message_color,
-            &mut app.message_until,
-            "Nothing is highlighted to install.",
-            Color::Red,
-            true,
-        );
+        app.set_message("Nothing is highlighted to install.", Color::Red, true);
         return Ok(false);
     };
     let label = choice.label.clone();
     let Some(request) = setup_install_request(app, choice) else {
-        set_message(
-            &mut app.message,
-            &mut app.message_color,
-            &mut app.message_until,
+        app.set_message(
             "This item is discovered or configured, not installed by ASB.",
             Color::Red,
             true,
@@ -1909,23 +1870,9 @@ fn install_setup_selection(
         return Ok(false);
     };
     let step = app.step;
-    set_message(
-        &mut app.message,
-        &mut app.message_color,
-        &mut app.message_until,
-        format!("Installing `{label}`..."),
-        Color::Cyan,
-        false,
-    );
+    app.set_message(format!("Installing `{label}`..."), Color::Cyan, false);
     let result = drive_install(app.root.clone(), request, |status| {
-        set_message(
-            &mut app.message,
-            &mut app.message_color,
-            &mut app.message_until,
-            status,
-            Color::Cyan,
-            false,
-        );
+        app.set_message(status, Color::Cyan, false);
         terminal
             .draw(|frame| draw(frame, app))
             .map_err(|error| Error::Io(format!("cannot draw setup install status: {error}")))?;
@@ -1938,28 +1885,19 @@ fn install_setup_selection(
             .get(app.panes[step.index()].cursor)
             .is_some_and(|choice| choice.availability == Availability::Available);
     match result {
-        Ok(()) if !ready => set_message(
-            &mut app.message,
-            &mut app.message_color,
-            &mut app.message_until,
+        Ok(()) if !ready => app.set_message(
             format!(
                 "Installation of `{label}` finished but it is not ready; check .asb/install.log."
             ),
             Color::Red,
             false,
         ),
-        Ok(()) => set_message(
-            &mut app.message,
-            &mut app.message_color,
-            &mut app.message_until,
+        Ok(()) => app.set_message(
             format!("Installed or refreshed `{label}`; status is ready."),
             Color::Green,
             true,
         ),
-        Err(error) => set_message(
-            &mut app.message,
-            &mut app.message_color,
-            &mut app.message_until,
+        Err(error) => app.set_message(
             format!("Cannot install `{label}`: {error}"),
             Color::Red,
             false,
