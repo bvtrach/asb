@@ -74,8 +74,11 @@ pub(crate) fn list_relative(
     relative: &Path,
     maximum: usize,
 ) -> Result<Vec<OsString>, Error> {
-    if maximum > 65_533 {
-        return Err(invalid("completion inventory exceeds population bound"));
+    // Generation metadata has one final admission marker in addition to its
+    // bounded population of configuration manifests. Slot callers still pass
+    // their independent 65,533-record maximum.
+    if maximum > 65_534 {
+        return Err(invalid("directory inventory exceeds its bound"));
     }
     #[cfg(unix)]
     {

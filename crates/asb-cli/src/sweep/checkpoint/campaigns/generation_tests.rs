@@ -3,6 +3,9 @@ use super::*;
 use crate::sweep::checkpoint::campaigns::tests::settlement_tests::fixture_concurrency;
 use crate::sweep::checkpoint::campaigns::tests::{Fixture, published, reservations_tests};
 
+#[path = "generation_resolution_tests.rs"]
+mod resolution;
+
 fn inputs(results: &Path, sweep: &SweepPlan) -> Inputs {
     let mut inputs = reservations_tests::inputs(results, sweep);
     // Match real initial/final input hashing, including environment. The
@@ -132,13 +135,11 @@ fn interrupted_publication_retains_exact_partial_generation_and_never_mints_anot
         assert!(!directory.join("admitted.json").exists());
         no_starts(&sweep, &results);
         let state = inputs(&results, &sweep);
-        let classification = state
-            .classify_campaigns(&fixture.0, &results, &sweep)
-            .unwrap();
-        let error = Prepared::plan(state, classification, &fixture.0, &results, &sweep)
-            .err()
-            .unwrap();
-        assert!(error.to_string().contains("prior continuation generation"));
+        assert!(
+            state
+                .classify_campaigns(&fixture.0, &results, &sweep)
+                .is_err()
+        );
         assert_eq!(fs::read(directory.join(manifest_path(0))).unwrap(), frozen);
     }
 }

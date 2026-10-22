@@ -880,6 +880,7 @@ impl replica::CompletionObserver for Observer {
                 scope: "execution-start-intent-not-actual-attempt".into(),
                 execution: self.identity.execution(replica),
                 execution_cohort: Some(cohort.clone()),
+                generation: None,
             },
         )
     }

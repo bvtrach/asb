@@ -3,100 +3,24 @@
 //! Runtime activation/sealing must consume these capabilities rather than
 //! reconstructing them from manifests. Until that vertical path is complete,
 //! the public pending-slot route still refuses without publishing anything.
-#![expect(
-    dead_code,
-    reason = "generation execution/sealing integration is the next delivery slice"
+#![cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "generation execution/sealing integration is the next delivery slice"
+    )
 )]
 
 use super::*;
 use crate::measurements::ExecutionCohort;
-use crate::runner::campaign::{Plan, Reference};
+use crate::runner::campaign::Plan;
+use crate::runner::campaign::generation::{
+    Admission, Batch, Blob, Completed, MAX_GENERATION, MAX_MANIFEST, Manifest, ManifestReference,
+    ROOT, SCOPE, manifest_path,
+};
 use crate::runner::repeated::publish_bytes;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::fs;
-
-const SCOPE: &str = "pending-campaign-generation-not-execution-evidence";
-const ROOT: &str = "campaign-continuation";
-const MAX_MANIFEST: usize = 16 * 1024 * 1024;
-const MAX_GENERATION: usize = 64 * 1024 * 1024;
-
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Blob {
-    bytes: u64,
-    sha256: String,
-}
-
-impl Blob {
-    fn of(bytes: &[u8]) -> Self {
-        Self {
-            bytes: bytes.len() as u64,
-            sha256: crate::cassette::digest(bytes),
-        }
-    }
-
-    fn matches(&self, bytes: &[u8]) -> bool {
-        self.bytes == bytes.len() as u64 && self.sha256 == crate::cassette::digest(bytes)
-    }
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Completed {
-    slot: u64,
-    receipt: Blob,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Batch {
-    batch: u64,
-    cohort: ExecutionCohort,
-}
-
-impl Batch {
-    // No stored arbitrary prepared/finished path. The shared resolver and the
-    // future runner must derive these from the bound generation and batch.
-    fn directory(&self, generation: &str) -> PathBuf {
-        PathBuf::from(".asb-generations")
-            .join(generation)
-            .join(format!("batch-{}", self.batch))
-    }
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Manifest {
-    schema_version: u32,
-    scope: String,
-    generation: String,
-    run_id: String,
-    input_digest: String,
-    configuration: usize,
-    campaign: String,
-    original: Reference,
-    completed: Vec<Completed>,
-    pending: Vec<Batch>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ManifestReference {
-    configuration: usize,
-    content: Blob,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Admission {
-    schema_version: u32,
-    scope: String,
-    generation: String,
-    run_id: String,
-    input_digest: String,
-    original_index: Blob,
-    manifests: Vec<ManifestReference>,
-}
 
 /// Not Clone/Deserialize. Original observation budgets never enter workers.
 struct Campaign {
@@ -147,10 +71,6 @@ fn encode(value: &impl Serialize) -> Result<Vec<u8>, Error> {
 
 fn root(inputs: &Inputs) -> PathBuf {
     inputs.directory.join(ROOT)
-}
-
-fn manifest_path(index: usize) -> PathBuf {
-    PathBuf::from(format!("{index:06}.json"))
 }
 
 impl Prepared {
@@ -327,12 +247,15 @@ impl Prepared {
         // This does not reacquire locks and reads no public replay archive.
         let layouts = shared_layouts(results, sweep)?;
         let inventory = Inventory::read(&layouts, &inputs.directory)?;
-        let declarations = inputs.declare_campaign_layouts(
+        // This generation has not published its final marker yet. Only the
+        // original completed starts may be checked during this owned phase.
+        let declarations = inputs.declare_campaign_layouts_with_catalog(
             &self.parent,
             results,
             sweep,
             layouts,
             crate::workloads::recovery::verify_retained,
+            None,
         )?;
         if !inventory.unsettled.is_empty() || !declarations.unsettled.is_empty() {
             return Err(recovery(

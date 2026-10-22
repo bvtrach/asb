@@ -6,11 +6,12 @@ use std::path::PathBuf;
 
 mod layout;
 pub(super) use layout::{MAX_EXECUTIONS, planned_slots};
+pub(crate) mod generation;
 pub(crate) mod reading;
 
 /// Exact retained campaign plan beneath an owning sweep's results directory.
 /// This references intended slots, never completion or continuation authority.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Reference {
     pub root: PathBuf,
@@ -57,9 +58,11 @@ pub(crate) struct StartIntent {
     pub execution: ExecutionIdentity,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution_cohort: Option<crate::measurements::ExecutionCohort>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generation: Option<generation::StartReference>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Slot {
     #[serde(skip_serializing_if = "Option::is_none")]

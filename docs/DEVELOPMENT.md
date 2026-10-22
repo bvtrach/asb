@@ -391,6 +391,17 @@ These are protocol-only fixtures: no agent/provider is executed. See the
 [independently checked repair ledger](CODE_SMELL_REPAIRS.md) for the broader
 code-smell audit and remaining delivery classes.
 Continuation metadata is optional for a fresh grade, not optional for reuse.
+The generation resolver shares passive manifest/start-reference wire types with
+the publisher, validates the entire original population before payload proofs,
+and derives new prepared-material paths without granting execution authority.
+Settlement binds inherited receipt bytes exactly and publishes only new slots.
+The generation-resolution fixtures cover substituted metadata, stripped start
+references, changed old receipt bytes, bounded new material and mixed sealing.
+The public repeated-sweep interruption fixture uses C4/N2/jobs1 and a closed
+output pipe to retain four genuine first-batch receipts (including a false grade)
+and an untouched second batch. Its current resume refusal is an intermediate
+activation boundary, not completed continuation qualification. These fixtures
+use local synthetic clients and offline replay, not an installed agent or SDK.
 Campaign input-root regressions in `sweep::checkpoint::campaigns` check exact
 shared plan binding, private-input/configuration changes, original-source
 replacement and output independence without clients. The actual `repeated_run`

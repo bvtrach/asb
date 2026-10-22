@@ -47,11 +47,10 @@ fn legacy_name(project: &Project) -> String {
     format!("benchmark-{component}-bug-fix-fixture")
 }
 
-#[test]
-fn campaign_input_seals_stay_stable_after_record_publication_and_offline_replay() {
+fn registered_project(concurrency: usize) -> Project {
     use std::os::unix::fs::PermissionsExt;
     let project = Project::new();
-    project.config(2);
+    project.config(concurrency);
     let original_agent = project.0.join("fixture-agent");
     let executable = project.0.join("tools/pi/bin/pi");
     fs::create_dir_all(executable.parent().unwrap()).unwrap();
@@ -74,6 +73,12 @@ fn campaign_input_seals_stay_stable_after_record_publication_and_offline_replay(
         .replace("provider='fixture'", "provider='openrouter'");
     fs::write(config_path, configuration).unwrap();
     fs::write(project.0.join("sweep.toml"), "configs=['benchmark.toml']\n").unwrap();
+    project
+}
+
+#[test]
+fn campaign_input_seals_stay_stable_after_record_publication_and_offline_replay() {
+    let project = registered_project(2);
     let provider = RecordingProvider::new();
     let recorded = sweep(
         &project,
@@ -322,6 +327,122 @@ fn campaign_input_seals_stay_stable_after_record_publication_and_offline_replay(
         12,
         "unknown grades are recovery-required, never implicit retries"
     );
+}
+
+#[test]
+fn interrupted_modern_sweep_keeps_genuine_first_batch_receipts_and_untouched_next_batch() {
+    use std::io::BufRead;
+    use std::process::Stdio;
+    let project = registered_project(4);
+    fs::write(
+        project.0.join("false-grade-first"),
+        "keep a genuine false grade",
+    )
+    .unwrap();
+    let input = project.0.join("replay-input/000-benchmark/cassettes");
+    fs::create_dir_all(&input).unwrap();
+    fs::copy(
+        project.0.join("input.jsonl"),
+        input.join("benchmark-pi-bug-fix-fixture.jsonl"),
+    )
+    .unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_asb"))
+        .current_dir(&project.0)
+        .isolated_env()
+        .env("HOME", &project.0)
+        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+        .args([
+            "sweep",
+            "sweep.toml",
+            "--replay",
+            "--repeat",
+            "2",
+            "--jobs",
+            "1",
+            "--cassette-root",
+            "replay-input",
+            "--json",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut source = std::io::BufReader::new(child.stdout.take().unwrap());
+    let mut line = String::new();
+    source.read_line(&mut line).unwrap();
+    let event: Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(event["type"], "execution-plan", "{event}");
+    // The shared four-way batch still settles after presentation fails. This
+    // is an actual supported broken-pipe route, not erased start observations.
+    drop(source);
+    let output = child.wait_with_output().unwrap();
+    assert!(!output.status.success());
+    let plan = PathBuf::from(event["path"].as_str().unwrap());
+    let root = plan.parent().unwrap();
+    assert!(!root.join("batch-2").exists());
+    let attempts = records(&fs::read(project.0.join("attempts.jsonl")).unwrap());
+    assert_eq!(attempts.len(), 4);
+    assert!(attempts.iter().all(|attempt| attempt["batch"] == 1));
+    let checkpoint = project.0.join("sweep-results/.checkpoint");
+    let seal: Value =
+        serde_json::from_slice(&fs::read(checkpoint.join("inputs.json")).unwrap()).unwrap();
+    assert_eq!(seal["status"], "stable", "{seal}");
+    assert_eq!(seal["initial"], seal["final"]);
+    assert!(checkpoint.join("campaign-admission.json").is_file());
+    assert!(
+        checkpoint
+            .join("campaign-reservations/000000.json")
+            .is_file()
+    );
+    let mut false_grades = 0;
+    let mut frozen = Vec::new();
+    for id in 1..=4 {
+        let receipt = checkpoint.join(format!("campaign-completed/000000/{id:06}.json"));
+        assert!(
+            receipt.is_file(),
+            "missing genuine receipt {id}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let reference: Value = serde_json::from_slice(
+            &fs::read(root.join(format!("batch-1/outcomes/{id}.json"))).unwrap(),
+        )
+        .unwrap();
+        let outcome: Value = serde_json::from_slice(
+            &fs::read(root.join(reference["path"].as_str().unwrap())).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(outcome["summary"]["execution"]["slot"], id);
+        assert_eq!(outcome["workload_cleanup_confirmed"], true);
+        assert_eq!(outcome["proxy_cleanup_confirmed"], true);
+        if outcome["summary"]["workload_success"] == false {
+            false_grades += 1;
+        }
+        frozen.push((receipt.clone(), fs::read(receipt).unwrap()));
+    }
+    assert_eq!(false_grades, 1);
+    for id in 5..=8 {
+        assert!(
+            !checkpoint
+                .join(format!("campaign-completed/000000/{id:06}.json"))
+                .exists()
+        );
+    }
+    // Until runtime continuation is connected, current CLI must reject only
+    // at the explicit pending-generation boundary, not strict old evidence.
+    let rejected = sweep(&project, None, &["--replay", "--resume"]);
+    assert!(!rejected.status.success());
+    assert!(
+        String::from_utf8_lossy(&rejected.stderr).contains("generation admission"),
+        "{}",
+        String::from_utf8_lossy(&rejected.stderr)
+    );
+    assert_eq!(
+        records(&fs::read(project.0.join("attempts.jsonl")).unwrap()).len(),
+        4
+    );
+    for (path, bytes) in frozen {
+        assert_eq!(fs::read(path).unwrap(), bytes);
+    }
 }
 
 #[test]
