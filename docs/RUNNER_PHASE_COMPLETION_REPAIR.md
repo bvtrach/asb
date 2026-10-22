@@ -324,6 +324,26 @@ release before merging. Own exact-head hosted/package CI, both post-merge jobs
 and signed release remain required. The coverage threshold remains removed.
 # Current-main integration for renewed qualification
 
+The first combined full at `36629325` failed1207/1/13existingignored in the
+library target, before later targets ran: the legacy gate command fixture's
+runtime-written executable returned actual `ETXTBSY`. Its actual/frozen ASB
+remained537766d7; failed full log and readonly failed libtest
+`runner45-36629325-failed-libtests` (SHA256
+`0e226718748c84a2c565c6af56b3e70a7a32d08a72256ede5010c46ddad5ee8c`)
+are preserved. No exact inherited writable-FD holder is inferred from errno26.
+
+The narrow TEST-ONLY follow-up copies byte-for-byte the independently reviewed
+class46 gate fixtures from `ede2ffc7`: executable body is a committed mode0755
+asset (SHA256 `d16a2513892ab4503e31e120de3527e6125783a081e4435279da321b0382b7a2`),
+never opened for writing in the parallel harness. Its original argv/environment,
+removal, missing-program and NUL checks remain unchanged. The truncated-control
+fixture observes real EOF within the existing one-second owner-loss allowance,
+asserting never-READY throughout; it no longer assumes every parallel fork has
+already executed and closed the peer. Both files exactly match that reviewed
+source. No production guardian, runner or publication policy changed. Fresh
+owning gates and complete qualification remain required; this is not a blind
+rerun of unchanged failed source.
+
 The earlier PR #308 head `6e21f19a` remains held after its failed hosted offline
 CLI test; no historical failure cause is inferred from later reproductions.
 The compatibility-listener and exact descriptor-inheritance repair is a
