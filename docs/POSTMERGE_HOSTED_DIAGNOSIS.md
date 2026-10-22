@@ -209,3 +209,25 @@ cases; original legacy parser assertions remain unchanged. Independent review
 precedes deterministic pure-Python baseline RED, then any production delta and
 actual Ubuntu26 rerun of all four owning filters. No tests have run on this new
 candidate; PR312 remains draft and no repair qualification is claimed.
+
+## Deterministic baseline RED and unrun parser correction
+
+At signed e2ab9817, the approved pure offline captured-format positive ran1test
+and errored at UNCHANGED production asb_runtime.py217, exactly the hosted
+ExecutionError. The separately selected14 negative controls plus unchanged
+legacy parser assertions passed2outer/0. Logs are
+target/loader-ubuntu26-baseline-red-correct-filter.log and
+target/loader-ubuntu26-baseline-controls.log. An initial operator command used
+wrong class RuntimeBundle (actual RuntimeTests); that loader-error transcript
+is separately preserved in loader-ubuntu26-baseline-red.log and is NOT the
+intended RED or a product failure. No unchanged-source CI retry occurred.
+
+The proposed production correction only recognizes one exact first-nonempty
+`(0x1..16hex)` anonymous mapping, does not insert it in results, and requires at
+least one ordinary resolved library afterward. Once any nonempty line has been
+seen, an anonymous line still reaches the unchanged strict rejection path.
+Static/legacy input, normal library grammar, unresolved/conflicting/named checks,
+64-entry bound, actual program/process binding, capture budgets, loader invocation
+and redaction remain unchanged. This source has NOT been built or run; independent
+root review precedes fixed-source Python/actual ASB/gated owning qualification
+and any push. All original hosted/local diagnostics remain immutable evidence.
