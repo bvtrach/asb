@@ -348,3 +348,60 @@ Its unchanged at-most300 one-byte writes/10ms cadence take at least3s naturally,
 so a deadline reset by activity would reach schema failure rather than the
 required deadline error. All original three300ms/<2s negative controls remain
 unchanged. No production timer or qualification claim changes.
+
+## Final local qualification at c93d0653 (hosted promotion pending)
+
+Root reviewed every functional delta before the fresh runtime sequence. Exact
+signed source c93d0653 built actual ASB FIRST13.90s, then froze
+`target/qualification/fixture-deadlines-c93d0653-asb` at SHA256
+`68f6b9a811174f1c00cddbc931d339710e4308b5106b17ec5c6f2e6de8db13b0`.
+Runtime/checkpoint/helper/reaper/gate focus passed92/0/0; strict workspace
+all-target/all-feature Clippy16.76s, fmt and diffcheck finished EXIT0. The six
+allocator integration targets had already passed188/0/5ignored at f8e11fdb;
+their source remains unchanged. No skip/retry/serialization was introduced.
+
+The authorized NEW locked/offline workspace/all-target/all-feature full suite
+at c93d0653 completed EXIT0: **1466PASS/0FAIL/21ignored across24 outer targets**.
+`target/fixture-deadlines-full.log` is complete; the compact
+`fixture-deadlines-full-outer-summaries.log` selects only the last summary for
+each outer Running section, not nested child summaries. Library1211/0/13ignored,
+offline_cli98/0/5ignored and repeated_run33/0 all passed. Before/after-full and
+after-normal-gates SHA256 logs confirm actual and frozen68f6 remained equal.
+All source/executable inputs stayed frozen during runtime; each handle reached
+terminal status before the next build/gate. Stopped29bf and f8 full logs and
+failed binaries remain immutable evidence, not erased or counted as passes.
+
+After full terminal: separated doctests0/0, strict Clippy, fmt/diffcheck,
+sequential make build (private Rustdocs, pinned AutoUML0.7.2, Graphviz type/flow
+diagrams, interactive HTML and bash/zsh completions), both shell syntax checks,
+and all7 checkout-update tests completed EXIT0. This is the update-test gate,
+NOT make update or mutation of the real checkout. Logs use
+`target/fixture-deadlines-{doctests,final-clippy,final-fmt,final-diffcheck,make,update-tests,completion-syntax}.log`.
+
+With all runtime/gates terminal, root-approved preservation verified the exact
+generated `crates/asb-cli/.asb/install.log` was a regular nonsymlink zero-byte
+file, recorded source path/device/inode/mode, then moved it recoverably to
+`target/fixture-preservation/install-c93d0653.log`; its metadata record is beside
+it. Only the now-empty .asb directory was removed with rmdir. Generated artifact
+diagnostics under untracked `crates/asb-cli/target` remain untouched.
+
+Locked/offline cargo package verified compilation EXIT0:511 files,6.0MiB
+uncompressed/1.3MiB compressed. Archive source/assets checks include both shared
+support files and the immutable mock gate (executable mode and matching digest);
+no generated crate target artifacts are archived. Package --help passed.
+Packaging legitimately replaced ordinary target/debug/asb with the packaged
+source build, SHA256
+`e48b5bc834ee8ee1151db38d82cae1837971b4d241f08115b7d87e7d5895da49`,
+preserved as `target/qualification/fixture-deadlines-c93d0653-packaged-asb`.
+That help-only package binary is NOT the full-suite68f6 binary, which remains
+unchanged. Archive SHA256 is
+`5e7e02b602f9a66b0ba9b6aeaaa10426aad6947576885e12ea25d9f637cd55e7`.
+Exact98 gate/control and73e reaper parity checks still pass.
+
+Scope: local Linux x86-64 offline fixtures; no installed clients, live providers,
+SDK/Docker/privileged collectors, Windows runtime or packaged full-test suite
+qualification is claimed. Prior optional/live ignores remain. The known
+historical CI errno26 holder and historical timestamp-collision identity remain
+unproven; only the controlled mechanisms are established. Source/functionality
+is frozen for independent root review. Hosted CI/PR update/merge/release remain
+pending; no worker push or promotion occurred.
