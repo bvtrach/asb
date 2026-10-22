@@ -1095,3 +1095,124 @@ fn consumed_commit_guard_rejects_a_later_attempt_on_the_same_actual_owner() {
     assert!(matches!(guard.check(), Err(InstallFailure::Abort(_))));
     assert!(!root.join("forbidden").exists());
 }
+
+#[test]
+fn ordinary_preexec_failure_must_retain_actual_stage_after_observer_release() {
+    use std::os::unix::{net::UnixStream, process::CommandExt};
+    let root = root();
+    let context = context(&root);
+    let source = root.join("input");
+    let destination = root.join("installed");
+    fs::write(&source, "new fixture bytes").unwrap();
+    fs::write(&destination, "old installed bytes").unwrap();
+    let mut sentinel = Sentinel::start();
+    let reached = Arc::new(AtomicBool::new(false));
+    let release = Arc::new((Mutex::new(false), Condvar::new()));
+    let releasing = Release(Arc::clone(&release));
+    let (read, mut write) = UnixStream::pair().unwrap();
+    write
+        .set_write_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    let (owner_send, owner_receive) = mpsc::sync_channel(1);
+    let (send, receive) = mpsc::sync_channel(1);
+    let observed = Arc::clone(&reached);
+    let held = Arc::clone(&release);
+    let target = destination.clone();
+    let worker = std::thread::spawn(move || {
+        let command_root = context.root.clone();
+        let result = crate::install::source::install_input_in(
+            &context,
+            &crate::install::source::Input::pin_local(source).unwrap(),
+            &target,
+            crate::install::source::Options {
+                kind: "ordinary preexec custody fixture",
+                limit: 4096,
+                checksum: None,
+                executable: false,
+            },
+            move |path, scope| {
+                let weak = Arc::downgrade(scope.lease._owner.as_ref().unwrap());
+                owner_send.send((path.to_owned(), weak)).unwrap();
+                let mut step = scope.prepare("/bin/sh", Purpose::Probe, "preexec failure")?;
+                step.command_mut()
+                    .current_dir(&command_root)
+                    .args(["-c", "printf forbidden > forbidden-client"]);
+                let descriptor = read.as_raw_fd();
+                // SAFETY: this child callback uses only async-signal-safe read
+                // and constructs the fixed OS error. No mutex, allocator, or
+                // test framework code executes between fork and failed exec.
+                unsafe {
+                    step.command_mut().pre_exec(move || {
+                        let mut byte = 0u8;
+                        loop {
+                            let result = libc::read(descriptor, (&mut byte as *mut u8).cast(), 1);
+                            if result >= 0 {
+                                break;
+                            }
+                            if io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
+                                break;
+                            }
+                        }
+                        Err(io::Error::from_raw_os_error(libc::EIO))
+                    });
+                }
+                let mut first = true;
+                step.observation = Some(Box::new(move || {
+                    if first {
+                        first = false;
+                        return Ok(());
+                    }
+                    observed.store(true, Ordering::Release);
+                    let (lock, wake) = &*held;
+                    let mut released = lock.lock().unwrap();
+                    while !*released {
+                        released = wake.wait(released).unwrap();
+                    }
+                    Ok(())
+                }));
+                let result = scope.run(step).map(drop);
+                drop(read);
+                result
+            },
+            crate::install::source::Publication::Replace,
+        );
+        let _ = send.send(result);
+    });
+    let (raw, weak) = owner_receive.recv_timeout(Duration::from_secs(5)).unwrap();
+    let end = Instant::now() + Duration::from_secs(5);
+    while !reached.load(Ordering::Acquire) {
+        if Instant::now() >= end {
+            // Even a failed handshake must release only this owned preexec.
+            let _ = write.write_all(&[1]);
+            panic!("required observer did not enter its held second sample");
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    write.write_all(&[1]).unwrap();
+    let result = receive.recv_timeout(Duration::from_secs(8)).unwrap();
+    worker.join().unwrap();
+    let was_abort = matches!(result, Err(InstallFailure::Abort(_)));
+    let retained_before = raw.exists();
+    assert!(sentinel.0.try_wait().unwrap().is_none());
+    drop(releasing);
+    let end = Instant::now() + Duration::from_secs(5);
+    while weak.upgrade().is_some() {
+        assert!(
+            Instant::now() < end,
+            "actual observer did not release its Stage"
+        );
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    let sentinel_alive_after_release = sentinel.0.try_wait().unwrap().is_none();
+    sentinel.0.stop().unwrap();
+    let sentinel_settled = sentinel.0.try_wait().unwrap().is_some();
+    fs::write(root.join("ordinary-observer-review-confirmed"),
+        "real preexec failed without client admission; held observer released; actual owner dropped; unrelated sentinel stopped separately").unwrap();
+    assert!(sentinel_alive_after_release && sentinel_settled);
+    assert!(
+        was_abort && retained_before && raw.exists(),
+        "ordinary spawn failure's observer deleted actual raw after reported custody Abort"
+    );
+    assert_eq!(fs::read(destination).unwrap(), b"old installed bytes");
+    assert!(!root.join("forbidden-client").exists());
+}
