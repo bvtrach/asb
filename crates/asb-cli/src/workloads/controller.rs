@@ -32,7 +32,7 @@ impl ControllerCommand {
             #[cfg(not(test))]
             let gate = crate::process_gate::executable().map_err(|error| error.to_string())?;
             #[cfg(test)]
-            let gate = crate::test_support::material_guardian::actual_asb()?;
+            let gate = crate::material_guardian::actual_asb()?;
             let (command, route) = launch.native(Some(&gate));
             Ok(Self {
                 command,

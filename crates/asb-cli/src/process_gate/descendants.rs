@@ -325,7 +325,7 @@ mod tests {
             .join("../../target/material50-fixtures")
             .join(crate::workloads::TaskIdentity::local("sibling-denial", None).attempt_id);
         std::fs::create_dir_all(&root).unwrap();
-        let status = crate::test_support::material_guardian::run(&root,
+        let status = crate::material_guardian::run(&root,
             "process_gate::descendants::tests::one_owned_signal_denial_does_not_starve_later_owned_siblings","sibling").unwrap();
         let read = |name| -> serde_json::Value {
             serde_json::from_slice(&std::fs::read(root.join(name)).unwrap()).unwrap()
@@ -414,7 +414,7 @@ mod tests {
             .join("../../target/material50-fixtures")
             .join(crate::workloads::TaskIdentity::local("fair-reap", None).attempt_id);
         std::fs::create_dir_all(&root).unwrap();
-        let status = crate::test_support::material_guardian::run(&root,
+        let status = crate::material_guardian::run(&root,
             "process_gate::descendants::tests::reap_exited_continues_after_first_error_without_signalling_live_siblings","reap").unwrap();
         let read = |name| -> serde_json::Value {
             serde_json::from_slice(&std::fs::read(root.join(name)).unwrap()).unwrap()

@@ -166,7 +166,7 @@ fn whole_path(test: &str, scenario: &str) {
     std::fs::create_dir_all(&root).unwrap();
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
-    let status = crate::test_support::material_guardian::run(
+    let status = crate::material_guardian::run(
         &root,
         &format!("workloads::controller::material_custody_tests::{test}"),
         scenario,

@@ -1,6 +1,6 @@
 //! Test-only outer process custody. Never terminate an admitted guardian.
-use super::IsolatedEnvironment;
 use crate::process_cleanup::OwnedReaper;
+use crate::test_support::IsolatedEnvironment;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
