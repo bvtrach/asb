@@ -33,7 +33,7 @@ pub(crate) struct LogReport {
     pub(crate) retained: usize,
     pub(crate) accepted: usize,
     pub(crate) discarded: usize,
-    pub(crate) fault: Option<io::ErrorKind>,
+    pub(crate) fault: Option<LogFault>,
     pub(crate) settled: bool,
     pub(crate) truncated: bool,
 }
@@ -44,12 +44,29 @@ struct LogSink {
 }
 impl LogSink {
     fn new(root: &Path, #[cfg(test)] factory: Option<WriterFactory>) -> Self {
+        Self::new_inner(
+            root,
+            #[cfg(test)]
+            factory,
+            #[cfg(test)]
+            None,
+        )
+    }
+    fn new_inner(
+        root: &Path,
+        #[cfg(test)] factory: Option<WriterFactory>,
+        #[cfg(test)] worker_start_error: Option<io::ErrorKind>,
+    ) -> Self {
         let report = Arc::new(Mutex::new(LogReport::default()));
         let prepared = private_log(root);
         let (file, path) = match prepared {
             Ok(value) => value,
             Err(error) => {
-                report.lock().unwrap().fault = Some(error.kind());
+                let mut state = report.lock().unwrap();
+                state.path = Some(error.path);
+                state.fault = Some(error.fault);
+                state.settled = true; // No writer was admitted, not a pending flush.
+                drop(state);
                 return Self {
                     queue: None,
                     report,
@@ -59,55 +76,76 @@ impl LogSink {
         report.lock().unwrap().path = Some(path);
         let (queue, receive) = mpsc::sync_channel::<Vec<u8>>(16);
         let state = Arc::clone(&report);
-        let spawned = std::thread::Builder::new()
-            .name("asb-install-log".into())
-            .spawn(move || {
-                // This thread owns only the log file, never the gate or source stage.
-                // An uninterruptible regular-file write cannot block cancellation.
-                #[cfg(test)]
-                let mut file: Box<dyn Write + Send> = match factory {
-                    Some(factory) => factory(file),
-                    None => Box::new(file),
-                };
-                #[cfg(not(test))]
-                let mut file = file;
-                let mut failed = false;
-                for bytes in receive {
-                    let mut offset = 0;
-                    let mut interruptions = 0;
-                    while !failed && offset < bytes.len() {
-                        match file.write(&bytes[offset..]) {
-                            Ok(0) => {
-                                state.lock().unwrap().fault = Some(io::ErrorKind::WriteZero);
-                                failed = true;
-                            }
-                            Ok(count) => {
-                                offset += count;
-                                interruptions = 0;
-                                state.lock().unwrap().retained += count;
-                            }
-                            Err(error)
-                                if error.kind() == io::ErrorKind::Interrupted
-                                    && interruptions < 32 =>
-                            {
-                                interruptions += 1;
-                            }
-                            Err(error) => {
-                                state.lock().unwrap().fault = Some(error.kind());
-                                failed = true;
+        let spawn = move || {
+            std::thread::Builder::new()
+                .name("asb-install-log".into())
+                .spawn(move || {
+                    // This thread owns only the log file, never the gate or source stage.
+                    // An uninterruptible regular-file write cannot block cancellation.
+                    #[cfg(test)]
+                    let mut file: Box<dyn Write + Send> = match factory {
+                        Some(factory) => factory(file),
+                        None => Box::new(file),
+                    };
+                    #[cfg(not(test))]
+                    let mut file = file;
+                    let mut failed = false;
+                    for bytes in receive {
+                        let mut offset = 0;
+                        let mut interruptions = 0;
+                        while !failed && offset < bytes.len() {
+                            match file.write(&bytes[offset..]) {
+                                Ok(0) => {
+                                    state.lock().unwrap().fault.get_or_insert(LogFault {
+                                        phase: LogPhase::Write,
+                                        kind: io::ErrorKind::WriteZero,
+                                    });
+                                    failed = true;
+                                }
+                                Ok(count) => {
+                                    offset += count;
+                                    interruptions = 0;
+                                    state.lock().unwrap().retained += count;
+                                }
+                                Err(error)
+                                    if error.kind() == io::ErrorKind::Interrupted
+                                        && interruptions < 32 =>
+                                {
+                                    interruptions += 1;
+                                }
+                                Err(error) => {
+                                    state.lock().unwrap().fault.get_or_insert(LogFault {
+                                        phase: LogPhase::Write,
+                                        kind: error.kind(),
+                                    });
+                                    failed = true;
+                                }
                             }
                         }
+                        let mut report = state.lock().unwrap();
+                        report.discarded = report.discarded.saturating_add(bytes.len() - offset);
                     }
-                    let mut report = state.lock().unwrap();
-                    report.discarded = report.discarded.saturating_add(bytes.len() - offset);
-                }
-                if !failed && let Err(error) = file.flush() {
-                    state.lock().unwrap().fault = Some(error.kind());
-                }
-                state.lock().unwrap().settled = true;
-            });
+                    if !failed && let Err(error) = file.flush() {
+                        state.lock().unwrap().fault.get_or_insert(LogFault {
+                            phase: LogPhase::Flush,
+                            kind: error.kind(),
+                        });
+                    }
+                    state.lock().unwrap().settled = true;
+                })
+        };
+        #[cfg(test)]
+        let spawned = worker_start_error.map_or_else(spawn, |kind| Err(io::Error::from(kind)));
+        #[cfg(not(test))]
+        let spawned = spawn();
         if let Err(error) = spawned {
-            report.lock().unwrap().fault = Some(error.kind());
+            let mut state = report.lock().unwrap();
+            state.fault.get_or_insert(LogFault {
+                phase: LogPhase::WorkerStart,
+                kind: error.kind(),
+            });
+            state.settled = true;
+            drop(state);
             return Self {
                 queue: None,
                 report,
@@ -142,11 +180,18 @@ impl LogSink {
                 report.truncated |= count != bytes.len();
             }
             Err(mpsc::TrySendError::Full(_)) => {
+                report.fault.get_or_insert(LogFault {
+                    phase: LogPhase::Queue,
+                    kind: io::ErrorKind::WouldBlock,
+                });
                 report.discarded = report.discarded.saturating_add(bytes.len());
                 report.truncated = true;
             }
             Err(mpsc::TrySendError::Disconnected(_)) => {
-                report.fault.get_or_insert(io::ErrorKind::BrokenPipe);
+                report.fault.get_or_insert(LogFault {
+                    phase: LogPhase::Queue,
+                    kind: io::ErrorKind::BrokenPipe,
+                });
                 report.truncated = true;
                 report.discarded = report.discarded.saturating_add(bytes.len());
             }
@@ -160,36 +205,61 @@ impl LogSink {
     }
 }
 
-fn private_log(root: &Path) -> io::Result<(File, PathBuf)> {
-    private_log_at(
-        root,
-        &format!(".asb-install-step-{}", crate::tools::runtime::unique_id()),
-    )
+#[derive(Debug)]
+struct LogPreparationFailure {
+    fault: LogFault,
+    path: PathBuf,
+}
+fn private_log(root: &Path) -> Result<(File, PathBuf), LogPreparationFailure> {
+    let attempt = format!(".asb-install-step-{}", crate::tools::runtime::unique_id());
+    private_log_at(root, &attempt).map_err(|fault| LogPreparationFailure {
+        fault,
+        path: root.join(attempt).join("output.log"),
+    })
 }
 
-fn private_log_at(root: &Path, attempt: &str) -> io::Result<(File, PathBuf)> {
+fn private_log_at(root: &Path, attempt: &str) -> Result<(File, PathBuf), LogFault> {
+    private_log_prepared(
+        root,
+        attempt,
+        #[cfg(test)]
+        None,
+    )
+}
+#[cfg(test)]
+type BeforeLogOpen = Box<dyn FnOnce(&Path)>;
+fn private_log_prepared(
+    root: &Path,
+    attempt: &str,
+    #[cfg(test)] before_open: Option<BeforeLogOpen>,
+) -> Result<(File, PathBuf), LogFault> {
+    let namespace = |error: io::Error| LogFault {
+        phase: LogPhase::Namespace,
+        kind: error.kind(),
+    };
     // Walk each existing directory without symlink following. The new private
     // namespace is unique and create-new; foreign logs are never touched.
     let root = if root.is_absolute() {
         root.to_owned()
     } else {
-        std::env::current_dir()?.join(root)
+        std::env::current_dir().map_err(namespace)?.join(root)
     };
     let mut current = PathBuf::from("/");
     let mut directory = OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
-        .open(&current)?;
+        .open(&current)
+        .map_err(namespace)?;
     for component in root.components() {
         use std::path::Component;
         match component {
             Component::RootDir | Component::CurDir => continue,
             Component::Normal(name) => current.push(name),
             _ => {
-                return Err(io::Error::new(
+                return Err(namespace(io::Error::new(
                     io::ErrorKind::InvalidInput,
                     "installer project path must not contain parent traversal",
-                ));
+                )));
             }
         }
         directory = OpenOptions::new()
@@ -198,22 +268,33 @@ fn private_log_at(root: &Path, attempt: &str) -> io::Result<(File, PathBuf)> {
             .open(
                 PathBuf::from(format!("/proc/self/fd/{}", directory.as_raw_fd()))
                     .join(component.as_os_str()),
-            )?;
+            )
+            .map_err(namespace)?;
     }
     let parent = PathBuf::from(format!("/proc/self/fd/{}", directory.as_raw_fd()));
     fs::DirBuilder::new()
         .mode(0o700)
-        .create(parent.join(attempt))?;
+        .create(parent.join(attempt))
+        .map_err(namespace)?;
     let pinned = OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
-        .open(parent.join(attempt))?;
+        .open(parent.join(attempt))
+        .map_err(namespace)?;
+    #[cfg(test)]
+    if let Some(before_open) = before_open {
+        before_open(&root.join(attempt).join("output.log"));
+    }
     let log = OpenOptions::new()
         .write(true)
         .create_new(true)
         .mode(0o600)
         .custom_flags(libc::O_NOFOLLOW)
-        .open(PathBuf::from(format!("/proc/self/fd/{}", pinned.as_raw_fd())).join("output.log"))?;
+        .open(PathBuf::from(format!("/proc/self/fd/{}", pinned.as_raw_fd())).join("output.log"))
+        .map_err(|error| LogFault {
+            phase: LogPhase::Open,
+            kind: error.kind(),
+        })?;
     Ok((log, root.join(attempt).join("output.log")))
 }
 
@@ -221,6 +302,7 @@ struct Pipe {
     reader: Box<dyn Read + Send>,
     output: Vec<u8>,
     ended: bool,
+    failure: Option<io::ErrorKind>,
 }
 impl Pipe {
     fn read_turn(
@@ -258,7 +340,8 @@ impl Pipe {
                 }
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(()),
-                Err(_) => {
+                Err(error) => {
+                    self.failure.get_or_insert(error.kind());
                     self.ended = true;
                     return Err(AbortCause::CaptureRead);
                 }
@@ -266,6 +349,13 @@ impl Pipe {
         }
         Ok(())
     }
+}
+
+fn capture_failure(pipes: &[Pipe; 2]) -> Option<String> {
+    pipes
+        .iter()
+        .find_map(|pipe| pipe.failure)
+        .map(|kind| format!("required capture pipe read/configuration failed ({kind:?})"))
 }
 
 fn nonblocking(file: &impl AsRawFd) -> io::Result<()> {
@@ -485,9 +575,11 @@ fn supervise(
     let mut cause = None;
     let stdout = gate.take_stdout().expect("configured stdout pipe");
     let stderr = gate.take_stderr().expect("configured stderr pipe");
-    let unusable = nonblocking(&stdout)
+    let configuration_failure = nonblocking(&stdout)
         .and_then(|_| nonblocking(&stderr))
-        .is_err();
+        .err()
+        .map(|error| error.kind());
+    let unusable = configuration_failure.is_some();
     if unusable {
         cause = Some(AbortCause::CaptureRead);
     }
@@ -502,11 +594,13 @@ fn supervise(
             reader: stdout,
             output: Vec::new(),
             ended: unusable,
+            failure: configuration_failure,
         },
         Pipe {
             reader: Box::new(stderr),
             output: Vec::new(),
             ended: unusable,
+            failure: configuration_failure,
         },
     ];
     #[cfg(test)]
@@ -615,7 +709,7 @@ fn supervise(
                     status.is_some(),
                     false,
                     evidence,
-                ).detail(observation.failure().map(str::to_owned).or_else(||
+                ).detail(observation.failure().map(str::to_owned).or_else(|| capture_failure(&pipes)).or_else(||
                     (!observation.finished()).then(|| "required resource observation remains pending; its owned worker retains staging".into()))))));
                 sent = true;
                 // Keep exact gate, pumps, and the actual producer dependency in
@@ -643,7 +737,12 @@ fn supervise(
                             false,
                             _lease.evidence.clone().or(log.path),
                         )
-                        .detail(observation.failure().map(str::to_owned)),
+                        .detail(
+                            observation
+                                .failure()
+                                .map(str::to_owned)
+                                .or_else(|| capture_failure(&pipes)),
+                        ),
                     )),
                     None => {
                         let [stdout, stderr] = pipes;

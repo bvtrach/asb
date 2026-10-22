@@ -35,10 +35,26 @@ fn ancillary_zero_and_enospc_do_not_claim_retained_bytes_or_complete_logs() {
         loop {
             let state = sink.report.lock().unwrap().clone();
             if state.settled {
-                assert_eq!(state.fault, Some(expected));
+                assert_eq!(
+                    state.fault,
+                    Some(LogFault {
+                        phase: LogPhase::Write,
+                        kind: expected
+                    })
+                );
                 assert_eq!(state.retained, 0);
                 assert_eq!(state.discarded, b"inert-private-secret".len());
                 assert_eq!(fs::metadata(state.path.unwrap()).unwrap().len(), 0);
+                // Later queue disconnection/loss cannot replace the first
+                // actual write failure's phase or kind.
+                sink.push(b"later-discarded");
+                assert_eq!(
+                    sink.report.lock().unwrap().fault,
+                    Some(LogFault {
+                        phase: LogPhase::Write,
+                        kind: expected
+                    })
+                );
                 break;
             }
             assert!(Instant::now() < deadline);
@@ -203,4 +219,108 @@ fn core_review_log_pressure_must_preserve_only_the_first_bytes_prefix() {
     assert_eq!(report.accepted, 17);
     assert_eq!(report.retained, 17);
     assert_eq!(report.discarded, 8);
+    assert_eq!(
+        report.fault,
+        Some(LogFault {
+            phase: LogPhase::Queue,
+            kind: io::ErrorKind::WouldBlock
+        })
+    );
+}
+
+struct FlushFaultWriter(File);
+impl Write for FlushFaultWriter {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.0.write(bytes)
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        Err(io::Error::from_raw_os_error(libc::ENOSPC))
+    }
+}
+
+#[test]
+fn log_fault_phases_distinguish_namespace_open_start_and_flush() {
+    let root = root();
+    let foreign = root.join("foreign");
+    fs::write(&foreign, "keep foreign bytes").unwrap();
+    let mut namespace = LogSink::new(&foreign, None);
+    namespace.push(b"inert-not-retained");
+    let namespace = namespace.finish();
+    assert!(namespace.settled, "a never-started writer is not pending");
+    assert_eq!(namespace.fault.unwrap().phase, LogPhase::Namespace);
+    assert_eq!(fs::read(&foreign).unwrap(), b"keep foreign bytes");
+
+    for symlink_collision in [false, true] {
+        let attempt = format!(".asb-install-open-{symlink_collision}");
+        let target = foreign.clone();
+        let fault = private_log_prepared(
+            &root,
+            &attempt,
+            Some(Box::new(move |path| {
+                if symlink_collision {
+                    symlink(target, path).unwrap();
+                } else {
+                    fs::write(path, "keep arriving bytes").unwrap();
+                }
+            })),
+        )
+        .unwrap_err();
+        assert_eq!(
+            fault,
+            LogFault {
+                phase: LogPhase::Open,
+                kind: io::ErrorKind::AlreadyExists
+            }
+        );
+        let log = root.join(attempt).join("output.log");
+        if symlink_collision {
+            assert!(fs::symlink_metadata(log).unwrap().file_type().is_symlink());
+            assert_eq!(fs::read(&foreign).unwrap(), b"keep foreign bytes");
+        } else {
+            assert_eq!(fs::read(log).unwrap(), b"keep arriving bytes");
+        }
+    }
+    let mut missing_worker = LogSink::new_inner(&root, None, Some(io::ErrorKind::Other));
+    missing_worker.push(b"inert-not-written");
+    let missing_worker = missing_worker.finish();
+    assert!(missing_worker.settled);
+    assert_eq!(
+        missing_worker.fault,
+        Some(LogFault {
+            phase: LogPhase::WorkerStart,
+            kind: io::ErrorKind::Other
+        })
+    );
+    assert_eq!(missing_worker.retained, 0);
+
+    let mut sink = LogSink::new(
+        &root,
+        Some(Box::new(|file| Box::new(FlushFaultWriter(file)))),
+    );
+    sink.push(b"inert-actually-written");
+    sink.queue.take();
+    let end = Instant::now() + Duration::from_secs(5);
+    let report = loop {
+        let report = sink.report.lock().unwrap().clone();
+        if report.settled {
+            break report;
+        }
+        assert!(Instant::now() < end, "flush fault writer did not settle");
+        std::thread::sleep(Duration::from_millis(2));
+    };
+    assert_eq!(report.retained, b"inert-actually-written".len());
+    assert_eq!(report.discarded, 0);
+    assert_eq!(
+        report.fault,
+        Some(LogFault {
+            phase: LogPhase::Flush,
+            kind: io::ErrorKind::StorageFull
+        })
+    );
+    let mut output = Vec::new();
+    render_log(&report, &mut output).unwrap();
+    let output = String::from_utf8(output).unwrap();
+    assert!(output.contains("log flush failed (StorageFull)"));
+    assert!(!output.contains("log write failed"));
+    assert!(!output.contains("inert-actually-written"));
 }

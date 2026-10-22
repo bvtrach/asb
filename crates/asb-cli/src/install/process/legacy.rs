@@ -1,7 +1,6 @@
 //! Compatibility backend only: retains the previous direct-child policy.
 //! This is NOT Linux tree-custody or bounded-pipe qualification for other hosts.
 use super::*;
-use std::io;
 use std::process::Stdio;
 
 #[derive(Clone, Debug, Default)]
@@ -10,7 +9,7 @@ pub(crate) struct LogReport {
     pub(crate) retained: usize,
     pub(crate) accepted: usize,
     pub(crate) discarded: usize,
-    pub(crate) fault: Option<io::ErrorKind>,
+    pub(crate) fault: Option<LogFault>,
     pub(crate) settled: bool,
     pub(crate) truncated: bool,
 }

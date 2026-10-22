@@ -220,6 +220,33 @@ struct Diagnostics {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LogPhase {
+    Namespace,
+    Open,
+    WorkerStart,
+    Queue,
+    Write,
+    Flush,
+}
+impl std::fmt::Display for LogPhase {
+    fn fmt(&self, output: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        output.write_str(match self {
+            Self::Namespace => "private log namespace preparation",
+            Self::Open => "private log file creation",
+            Self::WorkerStart => "log writer start",
+            Self::Queue => "bounded log queue",
+            Self::Write => "log write",
+            Self::Flush => "log flush",
+        })
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct LogFault {
+    phase: LogPhase,
+    kind: std::io::ErrorKind,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum AbortCause {
     Cancelled,
     Deadline,
@@ -661,11 +688,10 @@ fn render_log(log: &native::LogReport, output: &mut dyn std::io::Write) -> Insta
             } else {
                 "pending (completion unconfirmed)"
             },
-            if log.fault.is_some() {
-                "; a log write failed"
-            } else {
-                ""
-            }
+            log.fault.map_or_else(String::new, |fault| format!(
+                "; {} failed ({:?})",
+                fault.phase, fault.kind
+            ))
         )
         .map_err(crate::io_error)?;
     }

@@ -1303,7 +1303,10 @@ fn operation_reports_one_bounded_diagnostic_summary_and_drains_it_once() {
             retained: 3,
             accepted: 5,
             discarded: 2,
-            fault: (index % 2 == 0).then_some(io::ErrorKind::WriteZero),
+            fault: (index % 2 == 0).then_some(LogFault {
+                phase: LogPhase::Write,
+                kind: io::ErrorKind::WriteZero,
+            }),
             settled: index % 2 == 0,
             truncated: true,
         });
@@ -1313,7 +1316,7 @@ fn operation_reports_one_bounded_diagnostic_summary_and_drains_it_once() {
     let output = String::from_utf8(output).unwrap();
     assert_eq!(output.matches("Warning:").count(), 1);
     assert_eq!(output.lines().count(), 130); // One heading,128 paths,one omitted count.
-    assert!(output.contains("private-step-0/output.log: 3 bytes retained, 5 bytes accepted, 2 bytes discarded; writer settled; a log write failed"));
+    assert!(output.contains("private-step-0/output.log: 3 bytes retained, 5 bytes accepted, 2 bytes discarded; writer settled; log write failed (WriteZero)"));
     assert!(output.contains("private-step-1/output.log: 3 bytes retained, 5 bytes accepted, 2 bytes discarded; writer pending (completion unconfirmed)"));
     assert!(output.contains("2 additional diagnostic log snapshots omitted"));
     assert!(!output.contains("private-step-128/"));
@@ -1430,6 +1433,12 @@ fn migrated_source_callback_faults_cannot_continue_publish_or_destroy_raw() {
             "{fault}: no actual matching tree settlement"
         );
         assert!(!abort.capture_complete);
+        if fault == "read" {
+            assert!(abort.detail.as_deref().unwrap().contains(&format!(
+                "capture pipe read/configuration failed ({:?})",
+                io::Error::from_raw_os_error(libc::EIO).kind()
+            )));
+        }
         assert!(
             !fs::read(directory.join("descendant.pid"))
                 .unwrap()
@@ -1541,4 +1550,86 @@ fn actual_duplex_binary_capture_and_stdin_preserve_configured_command() {
     assert_eq!(&result.stdout()[262144..], bytes);
     assert_eq!(result.stderr(), vec![b'B'; 262144]);
     assert!(std::str::from_utf8(result.stdout()).is_err());
+}
+
+struct AncillaryFaultWriter {
+    file: fs::File,
+    flush_failure: bool,
+    observed: Arc<AtomicBool>,
+}
+impl Write for AncillaryFaultWriter {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if self.flush_failure {
+            self.file.write(bytes)
+        } else {
+            self.observed.store(true, Ordering::Release);
+            Ok(0)
+        }
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        self.observed.store(true, Ordering::Release);
+        if self.flush_failure {
+            Err(io::Error::from_raw_os_error(libc::ENOSPC))
+        } else {
+            Ok(())
+        }
+    }
+}
+
+#[test]
+fn actual_source_installation_succeeds_despite_ancillary_write_or_flush_failure() {
+    let root = root();
+    for flush_failure in [false, true] {
+        let directory = root.join(if flush_failure { "flush" } else { "write" });
+        fs::create_dir(&directory).unwrap();
+        let context = context(&directory);
+        let source = directory.join("input");
+        let destination = directory.join("installed");
+        fs::write(&source, "valid product bytes").unwrap();
+        let observed = Arc::new(AtomicBool::new(false));
+        let receipt = Arc::clone(&observed);
+        crate::install::source::install_input_in(
+            &context,
+            &crate::install::source::Input::pin_local(source).unwrap(),
+            &destination,
+            crate::install::source::Options {
+                kind: "healthy installation with ancillary failure",
+                limit: 4096,
+                checksum: None,
+                executable: false,
+            },
+            |_, scope| {
+                let mut step = scope.prepare("/bin/sh", Purpose::Version, "valid product probe")?;
+                step.command_mut()
+                    .args(["-c", "printf inert-private-diagnostic; exit 0"]);
+                step.log_writer = Some(Box::new(move |file| {
+                    Box::new(AncillaryFaultWriter {
+                        file,
+                        flush_failure,
+                        observed,
+                    })
+                }));
+                assert!(scope.run(step)?.status.success());
+                Ok(())
+            },
+            crate::install::source::Publication::Replace,
+        )
+        .unwrap();
+        assert_eq!(fs::read(destination).unwrap(), b"valid product bytes");
+        let end = Instant::now() + Duration::from_secs(5);
+        while !receipt.load(Ordering::Acquire) {
+            assert!(
+                Instant::now() < end,
+                "actual ancillary fault was not reached"
+            );
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let mut output = Vec::new();
+        context.report_diagnostics(&mut output).unwrap();
+        assert!(
+            !String::from_utf8(output)
+                .unwrap()
+                .contains("inert-private-diagnostic")
+        );
+    }
 }
