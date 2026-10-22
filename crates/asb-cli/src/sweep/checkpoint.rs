@@ -6,11 +6,15 @@ use std::collections::BTreeSet;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+#[cfg(any(not(unix), test))]
 use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(any(not(unix), test))]
+use std::time::Instant;
 
 const HELPER: &str = include_str!("../../assets/benchmarks/asb_fingerprint.py");
 mod campaigns;
+const MAX_REQUEST: usize = 16 * 1024 * 1024;
 pub(super) mod completed;
 pub(super) use completed::replicas::Observer as ReplicaObserver;
 
@@ -75,6 +79,86 @@ impl Fingerprint {
 pub(super) struct Snapshotter {
     key: [u8; 32],
     python: PathBuf,
+}
+
+/// Borrow every potentially large value. Field order matches the old sorted
+/// serde_json::Value projection, including each root object, byte for byte.
+#[derive(Serialize)]
+struct Request<'a> {
+    context: &'a Value,
+    environment: bool,
+    exclude: &'a [&'a str],
+    key: &'a str,
+    roots: RootViews<'a>,
+}
+struct RootViews<'a>(&'a [Root]);
+impl Serialize for RootViews<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        #[derive(Serialize)]
+        struct View<'a> {
+            bind_location: bool,
+            direct_file: bool,
+            name: &'a str,
+            path: &'a Path,
+        }
+        serializer.collect_seq(self.0.iter().map(|root| View {
+            bind_location: root.bind_location,
+            direct_file: root.direct_file,
+            name: &root.name,
+            path: &root.path,
+        }))
+    }
+}
+fn encode_request(
+    key: &[u8; 32],
+    roots: &[Root],
+    context: &Value,
+    environment: bool,
+    exclude: &[&str],
+) -> Result<Vec<u8>, Error> {
+    struct Buffer {
+        bytes: Vec<u8>,
+        exceeded: bool,
+    }
+    impl Write for Buffer {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            if bytes.len() > MAX_REQUEST.saturating_sub(self.bytes.len()) {
+                self.exceeded = true;
+                return Err(std::io::Error::other(
+                    "checkpoint request exceeds its bound",
+                ));
+            }
+            self.bytes.reserve_exact(bytes.len());
+            self.bytes.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let key: String = key.iter().map(|byte| format!("{byte:02x}")).collect();
+    let mut buffer = Buffer {
+        bytes: Vec::new(),
+        exceeded: false,
+    };
+    let request = Request {
+        context,
+        environment,
+        exclude,
+        key: &key,
+        roots: RootViews(roots),
+    };
+    if serde_json::to_writer(&mut buffer, &request).is_err() {
+        return Err(Error::Input(
+            if buffer.exceeded {
+                "checkpoint input description exceeds 16 MiB; select a smaller batch"
+            } else {
+                "cannot encode private checkpoint inputs; no input values were logged"
+            }
+            .into(),
+        ));
+    }
+    Ok(buffer.bytes)
 }
 
 impl Snapshotter {
@@ -146,14 +230,57 @@ impl Snapshotter {
         environment: bool,
         exclude: &[&str],
     ) -> Result<Fingerprint, Error> {
-        let key: String = self.key.iter().map(|byte| format!("{byte:02x}")).collect();
-        let request = serde_json::to_vec(&json!({"key":key,"roots":roots,"context":context,"environment":environment,"exclude":exclude}))
-            .map_err(|_| Error::Input("cannot encode private checkpoint inputs".into()))?;
-        if request.len() > 16 * 1024 * 1024 {
-            return Err(Error::Input(
-                "checkpoint input description exceeds 16 MiB; select a smaller batch".into(),
+        self.fingerprint_with_timeout(
+            roots,
+            context,
+            environment,
+            exclude,
+            Duration::from_secs(130),
+        )
+    }
+
+    // Real-child tests exercise the same exchange with a short allowance.
+    fn fingerprint_with_timeout(
+        &self,
+        roots: &[Root],
+        context: &Value,
+        environment: bool,
+        exclude: &[&str],
+        timeout: Duration,
+    ) -> Result<Fingerprint, Error> {
+        let request = encode_request(&self.key, roots, context, environment, exclude)?;
+        #[cfg(unix)]
+        let bytes = crate::helper_exchange::run(
+            &self.python,
+            HELPER,
+            &request,
+            crate::helper_exchange::Policy {
+                request_bytes: MAX_REQUEST,
+                response_bytes: 2048,
+                timeout,
+            },
+        )
+        .map_err(|reason| {
+            Error::Run(format!(
+                "checkpoint inputs could not be sealed; no input values were logged; {reason}"
+            ))
+        })?;
+        #[cfg(not(unix))]
+        let bytes = self.legacy_exchange(&request, timeout)?;
+        let fingerprint: Fingerprint = serde_json::from_slice(&bytes)
+            .map_err(|_| Error::Run("checkpoint helper returned an invalid digest".into()))?;
+        if !fingerprint.valid() {
+            return Err(Error::Run(
+                "checkpoint helper returned an invalid or unbounded digest".into(),
             ));
         }
+        Ok(fingerprint)
+    }
+
+    // Preserve the former non-Unix route without claiming cancellable Windows
+    // pipes or Linux descendant-custody qualification for it.
+    #[cfg(not(unix))]
+    fn legacy_exchange(&self, request: &[u8], timeout: Duration) -> Result<Vec<u8>, Error> {
         let mut child = Command::new(&self.python)
             .args(["-I", "-S", "-B", "-c", HELPER])
             .stdin(Stdio::piped())
@@ -175,7 +302,7 @@ impl Snapshotter {
                 "cannot send private checkpoint input description".into(),
             ));
         }
-        let deadline = Instant::now() + Duration::from_secs(130);
+        let deadline = Instant::now() + timeout;
         loop {
             match child.try_wait() {
                 Ok(Some(_)) => break,
@@ -197,16 +324,13 @@ impl Snapshotter {
         if output.stdout.len() > 2048 || !output.status.success() {
             return Err(Error::Run("checkpoint inputs could not be sealed (missing, changing, unsupported or excessive input); no input values were logged".into()));
         }
-        let fingerprint: Fingerprint = serde_json::from_slice(&output.stdout)
-            .map_err(|_| Error::Run("checkpoint helper returned an invalid digest".into()))?;
-        if !fingerprint.valid() {
-            return Err(Error::Run(
-                "checkpoint helper returned an invalid or unbounded digest".into(),
-            ));
-        }
-        Ok(fingerprint)
+        Ok(output.stdout)
     }
 }
+
+#[cfg(all(test, target_os = "linux"))]
+#[path = "../../tests/unit/checkpoint_transport.rs"]
+mod transport_tests;
 
 pub(super) struct Inputs {
     directory: PathBuf,
