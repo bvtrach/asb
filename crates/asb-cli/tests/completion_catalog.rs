@@ -70,7 +70,7 @@ fn completion_values_cover_every_registry_and_project_local_catalog() {
         ("agent", "opencode"),
         ("provider", "openrouter"),
         ("tool", "cli2key"),
-        ("collector", "runtime"),
+        ("collector", "cpu-accounting"),
         ("workload", "local-catalog"),
         ("trial-set", "local-catalog"),
         ("model", "gpt-6.1-sol"),
