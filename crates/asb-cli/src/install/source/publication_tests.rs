@@ -42,6 +42,7 @@ test "$bounded" = 1; test "$timed" = 1; test -f "$destination"
 printf '%s\n' "$destination" > "$ASB_FIXTURE_ROOT/download-path"
 case "$source" in
  https://fixture.invalid/failure) printf 'truncated' > "$destination"; exit 22 ;;
+ https://fixture.invalid/exit127) printf started > "$ASB_FIXTURE_ROOT/curl127-started"; exit 127 ;;
  https://fixture.invalid/oversize) printf 'much too large' > "$destination" ;;
  https://fixture.invalid/empty) : > "$destination" ;;
  https://fixture.invalid/symlink)
@@ -185,6 +186,11 @@ fn timeout_reaps_the_owned_downloader_and_retains_incomplete_raw() {
 #[test]
 fn staged_version_probe_failure_and_timeout_preserve_the_ready_installation() {
     Fixture::new().run("probe");
+}
+
+#[test]
+fn valid_exit127_and_postfailure_checks_do_not_invent_launch_failure() {
+    Fixture::new().run("probe127");
 }
 
 #[test]
@@ -356,10 +362,8 @@ fn scratch(destination: &Path) -> std::collections::BTreeSet<PathBuf> {
         .unwrap()
         .map(|entry| entry.unwrap().path())
         .filter(|path| {
-            path.file_name()
-                .unwrap()
-                .to_string_lossy()
-                .starts_with(".asb-install-")
+            let name = path.file_name().unwrap().to_string_lossy();
+            name.starts_with(".asb-install-") && !name.starts_with(".asb-install-step-")
         })
         .collect()
 }
@@ -384,6 +388,7 @@ fn publication_fixture_child() {
         "failures" => {
             for (source, limit, checksum, expected) in [
                 ("failure", 1024, None, "curl exited"),
+                ("exit127", 1024, None, "curl exited with exit status: 127"),
                 ("oversize", 3, None, "size limit"),
                 ("empty", 1024, None, "is empty"),
                 ("success", 1024, Some("wrong"), "checksum mismatch"),
@@ -399,6 +404,11 @@ fn publication_fixture_child() {
                 .unwrap_err();
                 assert!(error.to_string().contains(expected), "{error}");
                 assert_old_ready(&root, &destination);
+                if source == "exit127" {
+                    assert!(root.join("curl127-started").is_file());
+                    assert!(matches!(&error, InstallFailure::Ordinary(_)));
+                    assert!(!error.to_string().contains("needs `curl`"));
+                }
                 if source == "oversize" {
                     assert!(matches!(error, InstallFailure::Abort(_)));
                     assert!(
@@ -555,6 +565,61 @@ fn publication_fixture_child() {
             assert_old_ready(&root, &destination);
             let raw = fs::read_to_string(root.join("download-path")).unwrap();
             assert!(Path::new(raw.trim()).is_file());
+        }
+        "probe127" => {
+            let source = root.join("valid-exit127");
+            crate::write_test_file(
+                &root,
+                &source,
+                b"#!/bin/sh\nprintf started > \"$ASB_FIXTURE_ROOT/probe127-started\"\nexit 127\n",
+            )
+            .unwrap();
+            let mut raw = None;
+            let error = install_fixture(
+                &root,
+                source.to_str().unwrap(),
+                &destination,
+                options("valid exit127 fixture", None, 4096),
+                |path, scope| {
+                    raw = Some(path.to_owned());
+                    check_version_in(scope, path, "valid exit127 fixture")
+                },
+            )
+            .unwrap_err();
+            assert_old_ready(&root, &destination);
+            assert!(!raw.unwrap().exists());
+            assert!(root.join("probe127-started").is_file());
+            assert!(matches!(&error, InstallFailure::Ordinary(_)));
+            let text = error.to_string();
+            assert!(text.contains("exit status: 127"), "{text}");
+            assert!(
+                !text.contains("cannot start") && !text.contains("executable missing"),
+                "{text}"
+            );
+
+            // This real program DID start, then removed itself. Its advisory
+            // may describe only the later check, never a fabricated launch fact.
+            let removing = root.join("self-removing-probe");
+            crate::write_test_file(
+                &root,
+                &removing,
+                b"#!/bin/sh\nprintf started > \"$ASB_FIXTURE_ROOT/removing-probe-started\"\n/bin/rm -- \"$0\"\nexit 127\n",
+            ).unwrap();
+            fs::set_permissions(&removing, fs::Permissions::from_mode(0o755)).unwrap();
+            let context = OperationContext::load(&root).unwrap();
+            let owner = ProducerDirectory::open(&root).unwrap();
+            let mut scope = owner.scope(&context);
+            let error =
+                check_version_in(&mut scope, &removing, "self-removing fixture").unwrap_err();
+            owner.consume(scope.finish().unwrap()).unwrap();
+            assert!(root.join("removing-probe-started").is_file() && !removing.exists());
+            let text = error.to_string();
+            assert!(
+                text.contains("exit status: 127") && text.contains("post-failure check"),
+                "{text}"
+            );
+            assert!(!text.contains("never started"), "{text}");
+            assert_old_ready(&root, &destination);
         }
         "probe" => {
             let source = root.join("version-source");

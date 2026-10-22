@@ -14,8 +14,20 @@ pub(crate) fn check_version_in(
     step.command_mut().arg("--version").stdin(Stdio::null());
     let result = scope.run(step)?;
     if !result.status.success() {
-        return Err(Error::Io(format!("staged {label} did not report a usable version ({}); previous installation was preserved; inspect {}", result.status,
-            result.log.path.as_ref().map_or_else(|| "the installation diagnostics".into(), |path| path.display().to_string()))).into());
+        let diagnostics = result.log.path.as_ref().map_or_else(
+            || "the installation diagnostics".into(),
+            |path| path.display().to_string(),
+        );
+        // This is an advisory about the post-completion filesystem check, NOT
+        // evidence that status 127 means no process started. The producer and
+        // owner observer have already completed through the normal boundary.
+        if fs::symlink_metadata(path).is_err_and(|error| error.kind() == io::ErrorKind::NotFound) {
+            return Err(Error::Io(format!(
+                "cannot start staged {label} from {}: a post-failure check found the executable missing; the completed step reported {}; reinstall the missing artifact and retry; previous installation was preserved; inspect {diagnostics}",
+                path.display(), result.status
+            )).into());
+        }
+        return Err(Error::Io(format!("staged {label} at {} did not report a usable version ({}); previous installation was preserved; inspect {diagnostics}", path.display(), result.status)).into());
     }
     Ok(())
 }
@@ -26,7 +38,17 @@ fn download_in(
     staging: &Path,
     options: &Options<'_>,
 ) -> InstallResult<()> {
-    let mut step = scope.prepare("curl", Purpose::Download, options.kind)?;
+    // The owning download transport knows its prerequisite. Resolve it before
+    // FIRST admission; this is current availability, not pinned identity or an
+    // inference from any later process exit code. Keep legacy PATHEXT behavior
+    // on non-Linux hosts, which this lifecycle repair does not qualify.
+    #[cfg(target_os = "linux")]
+    let curl = tools::host_executable(Path::new("curl")).ok_or_else(|| Error::Io(format!(
+        "{} needs `curl`, but no executable is currently available on PATH. Install curl with your system package manager (on Debian/Ubuntu: `sudo apt-get update && sudo apt-get install -y curl`), then retry.", options.kind
+    )))?;
+    #[cfg(not(target_os = "linux"))]
+    let curl = PathBuf::from("curl");
+    let mut step = scope.prepare(curl, Purpose::Download, options.kind)?;
     step.command_mut()
         .args([
             "--disable",

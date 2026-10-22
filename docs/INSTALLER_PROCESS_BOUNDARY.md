@@ -1236,3 +1236,37 @@ TEST-only refinement: retain both actionable assertions while printing the
 actual errors, move prior-byte/cleanup observations before diagnostic REDs,
 and assert the symlink's actual typed identity-loss facts plus all unchanged
 foreign-data guarantees. No production diagnostic repair is included yet.
+
+The independently approved TEST-only07c7e6c2 refinement was rebuilt FIRST and
+executed in actual-source-diagnostic-red.log:21PASS/3FAIL/0ignored in18.73s.
+The two actual messages were only "could not download fixture: curl exited
+with exit status: 127" and "staged fixture did not report a usable version
+(exit status: 127)", each followed by preservation/log advice, but no missing
+prerequisite/artifact explanation. All prior-byte/custody checks before these
+assertions passed. Symlink typed identity/evidence/foreign-data checks also
+passed; its later no_scratch check falsely included five legitimate private
+.asb-install-step-* log namespaces. No raw staging existed at that parent.
+The failed transcript and diagnostic-red-libtests copy are preserved; c82
+actual/frozen hashes stayed identical. Its libtest SHA is
+`f59b3a78b73118294760df3e3d3b179a7896116a327542d57bd4f080a8317b97`.
+No production inference from127 is justified by these failures.
+
+Root approved the next narrow SOURCE design: Linux owning download transport
+resolves its known prerequisite before first admission and reports only current
+PATH availability, retaining non-Linux direct/PATHEXT selection unchanged.
+Found curl is still executed through the same prepared Command and owner scope;
+lookup is not pinned identity and a later127 is never classified as missing.
+Version probes still run their owner observer and process before any advisory.
+After a completed failure only, an absent-at-postcheck path gets an explicitly
+post-failure missing-artifact advisory retaining actual status/log/path. Other
+failed probes retain their factual status and usable-version explanation.
+No new gate ABI/receipt condition or generic tool-ID dispatch is introduced.
+
+Source regressions add real marker-writing curl/probe programs that exit127
+without becoming unavailable, plus a standalone probe that starts, removes
+itself, then exits127. The latter can receive only a post-check availability
+advisory, never a fabricated never-started fact. Ordinary cleanup and old-target
+proofs precede message checks. Raw/candidate test discovery now excludes ONLY
+the exact separate log prefix .asb-install-step-, retaining log evidence and
+all other .asb-install-* raw/candidate assertions. This diagnostic repair
+candidate has not yet been executed; no fresh pass/full claim is made.
