@@ -76,13 +76,36 @@ fn noninterpreters_and_missing_programs_are_not_accepted_as_python() {
             .collect::<Vec<_>>();
         assert_eq!(logs.len(), 6, "all six diagnostics belong to this fixture");
         assert!(logs.iter().all(|path| path.is_file()));
-        assert_eq!(
-            logs.iter()
-                .filter(|path| !fs::read(path).unwrap().is_empty())
-                .count(),
-            2,
-            "the two echo probes retain their real diagnostics"
-        );
+        // Ancillary log settlement does not synchronously join its writer.
+        // Observe the exact fixture bytes, not an assumed flush timing.
+        let echo = b"-I -S -c import sys; print('%d.%d' % sys.version_info[:2])\n";
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        loop {
+            let contents = logs
+                .iter()
+                .map(|path| fs::read(path).unwrap())
+                .collect::<Vec<_>>();
+            assert!(
+                contents.iter().all(|bytes| echo.starts_with(bytes)),
+                "unexpected probe diagnostic; retained {}",
+                root.display()
+            );
+            if contents
+                .iter()
+                .filter(|bytes| bytes.as_slice() == echo)
+                .count()
+                == 2
+                && contents.iter().filter(|bytes| bytes.is_empty()).count() == 4
+            {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "two exact echo diagnostics were not flushed within 3s; retained {}",
+                root.display()
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
     }
     fs::remove_dir_all(root).unwrap();
 }

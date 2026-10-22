@@ -73,3 +73,14 @@ misplaced diagnostics. Broader fresh qualification and plain packaging remain
 subject to the coordinator's authorization. Historical db034 local proof
 1556/0/21 and hosted package failure are preserved, not relabeled as proof of
 this correction.
+
+## Source-review follow-up (before runtime)
+
+The catalog fixture canonicalizes its created root before any context lookup,
+so the native private-log path has no lexical parent components. The Python
+regression observes its six exact paths for at most three seconds, requiring
+two complete echo argument records and four empty diagnostics. Prefixes are
+allowed only during bounded polling because ancillary writer settlement does
+not promise synchronous flush/close. Timeout diagnostics retain the actual
+fixture path. Neither correction changes production path or writer policy;
+runtime qualification is still pending.

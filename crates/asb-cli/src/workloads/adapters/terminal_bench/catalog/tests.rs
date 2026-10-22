@@ -30,7 +30,7 @@ impl Fixture {
             "{}",
         )
         .unwrap();
-        let fixture = Self(root);
+        let fixture = Self(root.canonicalize().unwrap());
         fixture.write(&fixture.catalog());
         fixture
     }
