@@ -114,7 +114,7 @@ fn assert_original_socket_released(identity: (u64, u64)) {
     let end = Instant::now() + Duration::from_secs(3);
     let inode = identity.1.to_string();
     loop {
-        let present = std::fs::read_to_string("/proc/net/tcp")
+        let present = std::fs::read_to_string("/proc/self/net/tcp")
             .unwrap()
             .lines()
             .any(|line| line.split_whitespace().nth(9) == Some(inode.as_str()));
@@ -513,7 +513,7 @@ http.createServer=function(...args){
         .collect::<Vec<_>>();
     assert_eq!(pids.len(), 1, "expected the hop's one directly owned curl");
     let curl_pid = pids[0];
-    let listener_inode = std::fs::read_to_string("/proc/net/tcp")
+    let listener_inode = std::fs::read_to_string("/proc/self/net/tcp")
         .unwrap()
         .lines()
         .find_map(|line| {
