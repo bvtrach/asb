@@ -32,7 +32,12 @@ fn install_bpftrace(
     root: &Path,
     progress: &mut dyn FnMut(u8, crate::install::ProgressStage),
 ) -> InstallResult<PathBuf> {
-    fs::create_dir_all(root).map_err(crate::io_error)?;
+    fs::create_dir_all(root).map_err(|error| {
+        Error::Io(format!(
+            "cannot create bpftrace installation directory {}: {error}",
+            root.display()
+        ))
+    })?;
     progress(10, crate::install::ProgressStage::CheckingHost);
     let source = match host_executable("bpftrace") {
         Ok(source) => source,
@@ -57,7 +62,12 @@ fn install_bpftrace(
     )?;
     owner.consume(scope.finish()?)?;
     let bin = root.join("bin");
-    fs::create_dir_all(&bin).map_err(crate::io_error)?;
+    fs::create_dir_all(&bin).map_err(|error| {
+        Error::Io(format!(
+            "cannot create bpftrace binary directory {}: {error}",
+            bin.display()
+        ))
+    })?;
     let destination = bin.join("bpftrace");
     fs::copy(&source, &destination).map_err(|error| {
         Error::Io(format!(
@@ -87,7 +97,12 @@ fn build_bpftrace(
     root: &Path,
     progress: &mut dyn FnMut(u8, crate::install::ProgressStage),
 ) -> InstallResult<PathBuf> {
-    fs::create_dir_all(root).map_err(crate::io_error)?;
+    fs::create_dir_all(root).map_err(|error| {
+        Error::Io(format!(
+            "cannot create bpftrace source-build directory {}: {error}",
+            root.display()
+        ))
+    })?;
     let owner = ProducerDirectory::open(root)?;
     let mut scope = owner.scope(context);
     let source_dir = root.join("source");

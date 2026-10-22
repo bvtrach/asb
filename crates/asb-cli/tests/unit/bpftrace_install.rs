@@ -249,6 +249,10 @@ esac"#,
                 _ => unreachable!(),
             };
             assert!(error.contains(expected), "{error}");
+            if case == "bin-blocked" {
+                assert!(error.contains("cannot create bpftrace binary directory"));
+                assert!(error.contains(&tool.join("bin").display().to_string()));
+            }
             assert!(!progress.contains(&100));
         }
         return;

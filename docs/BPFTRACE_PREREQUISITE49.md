@@ -55,3 +55,23 @@ The existing raw fixture Command::output collection and broader custom installer
 publication faults are unchanged, not newly bounded or cleared by this repair.
 Only formatting and diff checks have run. Actual-FIRST/frozen focus, strict lint
 and any later current-stack merge require independent source approval first.
+
+## First owning49 qualification and authorized diagnostic follow-up
+
+Source798 actual-FIRST passed13.97s and its libtest build passed24.58s. The
+initial tools command mistakenly selected a copied historical50 libtest rather
+than Cargo's newly reported75b0f629 image. Its old missing-curl reobservation,
+wrongly named frozen copy and manifests are retained, explicitly NOT798 runtime
+evidence. Correct75b0/frozen2340f0ff and actual/frozenbffa424b were then selected
+and verified before the actual owning focus. That run passed all new controls
+and source-blocked before the existing bin-blocked assertion failed: generic
+`File exists` lacked owning creation context. Tools14/1/2 is NOT qualification.
+The complete logs/namespaces and matching after-failure hashes remain unchanged.
+
+Root authorized only context repair at the existing root/bin creation sites.
+The blocked binary directory now reports its exact path, and its original
+assertion is strengthened to require that path and owning message. Root/source
+directory creation also retains exact context. Copy/metadata diagnostics,
+publication ordering/atomicity and custom52 obligations are untouched. Fresh
+actual-FIRST and the exact Cargo-reported libtest must precede another focus;
+no successful result is claimed here.
