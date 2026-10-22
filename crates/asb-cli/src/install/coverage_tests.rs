@@ -751,17 +751,22 @@ fn diagnostics_contract(root: &Path) {
             .contains("checksum mismatch: expected wrong")
     );
     assert_eq!(fs::read(&source).unwrap(), b"hello");
+    let context = OperationContext::load(root).unwrap();
+    let owner = ProducerDirectory::open(root).unwrap();
+    let mut scope = owner.scope(&context);
     for (args, expected) in [
         (["-c", "exit 7"], "command exited"),
         (["-c", "exit 0"], "command returned no output"),
     ] {
         assert!(
-            command_output(Path::new("/bin/sh"), &args, "fixture")
+            command_output_in(&mut scope, Path::new("/bin/sh"), &args, "fixture")
                 .unwrap_err()
+                .into_public()
                 .to_string()
                 .contains(expected)
         );
     }
+    owner.consume(scope.finish().unwrap()).unwrap();
     let destination = root.join("destination");
     let error = install_source(root.to_str().unwrap(), &destination, "fixture").unwrap_err();
     assert!(error.to_string().contains("source is not a file"));
