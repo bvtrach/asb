@@ -29,6 +29,52 @@ fn command(gate: &Path, program: &str, args: &[String]) -> (Command, crate::laun
 struct ReleaseOnDrop(std::path::PathBuf);
 
 #[test]
+fn delayed_readiness_checks_operation_deadline_before_continue() {
+    let root = root();
+    let marker = root.join("must-not-execute");
+    let binary = std::env::current_exe()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("asb");
+    let (mut command, route) = command(
+        &binary,
+        "/bin/sh",
+        &["-c".into(), "printf forbidden > must-not-execute".into()],
+    );
+    command.current_dir(&root);
+    let mut gate = Admission::new(route.validate_gate(&mut command).unwrap())
+        .unwrap()
+        .spawn()
+        .unwrap();
+    gate.readiness_delay = Some(Duration::from_millis(300));
+    let deadline = Instant::now() + Duration::from_millis(100);
+    let mut evaluated = None;
+    let resumed = gate
+        .resume_when(|| {
+            let now = Instant::now();
+            evaluated = Some(now);
+            now < deadline
+        })
+        .unwrap();
+    assert!(
+        !resumed,
+        "deadline was checked before slow readiness rather than before CONT"
+    );
+    assert!(evaluated.unwrap() >= deadline);
+    assert!(!marker.exists());
+    let _actual_guardian_status = gate
+        .stop()
+        .expect("no matching quiescence for unresumed guardian");
+    assert!(
+        !marker.exists(),
+        "cancelling the stopped guardian launched the client"
+    );
+}
+
+#[test]
 fn actual_observation_distinguishes_codes_from_signals_without_interruption() {
     use crate::process_termination::ProcessTermination;
     let binary = std::env::current_exe()

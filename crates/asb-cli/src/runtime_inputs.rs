@@ -14,7 +14,7 @@ use std::time::Duration;
 use std::time::Instant;
 
 #[cfg(unix)]
-mod exchange;
+use crate::helper_exchange as exchange;
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -198,7 +198,11 @@ fn discover_with_timeout(
     serde_json::to_writer(&mut request, &dependencies).map_err(|_| unavailable())?;
     let request = request.0;
     #[cfg(unix)]
-    let bytes = exchange::run(python, &source, &request, timeout).map_err(|reason| {
+    let bytes = exchange::run(python, &source, &request, exchange::Policy {
+        request_bytes: 1024 * 1024,
+        response_bytes: 4 * 1024 * 1024,
+        timeout,
+    }).map_err(|reason| {
         Error::Input(format!("runtime inputs could not be fully discovered within their limits; no input values were logged; {reason}"))
     })?;
     // Preserve the existing non-Unix route; it is not part of the Unix bounded
