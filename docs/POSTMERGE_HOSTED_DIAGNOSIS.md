@@ -48,3 +48,17 @@ environment rather than guessing a production change. New source and design
 review precede any repair implementation or public promotion.
 
 Image source: https://github.com/actions/runner-images/blob/ubuntu26/20261018.168/images/ubuntu/Ubuntu2604-Readme.md
+
+## Proposed first source checkpoint (unrun)
+
+Only the non-UTF8 launch fixture now keeps basename echo beneath its non-UTF8
+directory. It additionally checks the actual native route's collector-facing
+descriptor retains the exact raw program and argument bytes; execution still
+uses the same gate path, and the explicit non-UTF8 shell arg0 case is unchanged.
+A private test-only ASB_TEST_MULTICALL_ECHO_IMAGE override permits the same test
+to copy an already-installed BusyBox multicall image during controlled local
+qualification; absent that explicit override it uses the actual host /bin/echo.
+No new tool dependency/skip is imposed on ordinary CI and no product environment
+or executable policy changes. This proves the relevant dispatch mechanism, not
+the historical hosted uutils image identity. The other four failing cases remain
+unrepaired and unqualified pending actual helper-operation diagnostics.
