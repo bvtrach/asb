@@ -869,3 +869,48 @@ copy, SHA256
 Baseline binary/libtest copies remain under target/qualification with prefix
 installer44-retention-red; both failed transcripts and markers are preserved.
 This records observed failures BEFORE their production retention correction.
+
+### Focused retention and commit-admission correction (8939bcbe)
+
+After independent root source approval, the actual ASB rebuilt FIRST in13.50s.
+Typed Abort exits from validation, scope completion and permission consumption
+now sticky-retain the actual owner. Intrinsic state poisoning never erases the
+separate active/proof facts; a later actual settle does not clear poison.
+Source ownership acquisition precedes quiet permission consumption. Failed
+Arc::try_unwrap retains the real owner; uniqueness never substitutes for the
+intrinsic generation/proof/operation check.
+
+The unchanged observer and local regressions now PASS, with actual completed
+Stage Drop receipts before final raw inspection. Original three operation
+liveness regressions, late cancel/expiry for BOTH commit variants, same-owner
+guard invalidation and prior custody/cancellation tests also PASS.
+
+| Transcript under target/ | Result |
+| --- | --- |
+| installer44-retention-fix-build.log | actual build13.50s |
+| installer44-retention-fix-process.log |24PASS/0FAIL/0ignored,32.56s |
+| installer44-retention-fix-source.log |23PASS/1FAIL,2.04s; preserved fixture mismatch |
+| installer44-retention-fix-source-v2.log |24PASS/0FAIL/0ignored,1.99s |
+| installer44-retention-fix-source-v3.log |24PASS/0FAIL/0ignored,1.51s |
+| installer44-retention-fix-native.log |4PASS/0FAIL/0ignored,0.04s |
+| installer44-retention-fix-clippy.log | strict workspace/alltargets/allfeatures,-Dwarnings,17.01s |
+| installer44-retention-fix-fmt.log | rustfmt check PASS |
+
+The first source-family failure was an obsolete fake-curl assertion demanding
+legacy --max-time, not a downloader timeout failure. The operation deadline is
+now the authority; unchanged actual managed timeout coverage remains. Test-only
+d02ccbc1 replaced that assertion with --connect-timeout;49941554 strengthened
+the following value to10 and requires positive numeric --max-filesize, leaving
+the existing output-path, URL and payload checks intact. These are fixture
+changes only. The source family still includes explicitly historical wrappers;
+its24 passes are NOT proof that all migrated production callbacks are covered.
+No live provider, network source, SDK or privileged host collector was used.
+
+Actual binary/frozen copy and before/after/final hashes all equal
+`cda77047ae2fa77411c85c94c7e350712ae9a65c94ed12cbe45816ca60ee8525`.
+The exact actual binary and final libtest remain frozen under
+target/qualification/installer44-retention-fix-{asb,libtests}. Process/source/
+native filter sets are disjoint52 top-level passes, not an exhaustive class or
+full-stack claim. All handles are terminal. Diagnostic consolidation and the
+remaining production-callback/fault matrix remain open. No full suite, PR,
+push, merge or release is claimed or authorized by this focused evidence.
