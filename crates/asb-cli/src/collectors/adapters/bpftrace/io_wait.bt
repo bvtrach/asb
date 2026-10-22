@@ -7,7 +7,9 @@ tracepoint:sched:sched_stat_iowait /@asb_tree[args->pid]/ {
 }
 
 interval:s:1 {
+  printf("ASB_BPFTRACE_SNAPSHOT %llu\n", nsecs(monotonic));
   print(@asb_io_wait_events);
   print(@asb_io_wait_total_ns);
   print(@asb_io_wait_max_ns);
+  printf("ASB_BPFTRACE_SNAPSHOT_END\n");
 }

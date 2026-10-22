@@ -1338,6 +1338,28 @@ command. Tests never change this host-wide setting.
 
 ### Custom BPFTrace program contract
 
+Built-in cumulative time series use complete timestamp frames. A custom
+interval handler can opt into the same protocol:
+
+```bpftrace
+interval:s:1 {
+  printf("ASB_BPFTRACE_SNAPSHOT %llu\n", nsecs(monotonic));
+  print(@asb_calls);
+  printf("ASB_BPFTRACE_SNAPSHOT_END\n");
+}
+```
+
+Use `nsecs(monotonic)` explicitly: the pinned bpftrace defaults plain `nsecs`
+to the boot clock, which can differ after suspend. Frame timestamps must
+strictly increase. Each key retains only its own observed timestamps; absent
+keys remain gaps. Nested/incomplete/malformed frames fail collection instead
+of publishing partial series. Unframed maps remain scalar-only. bpftrace
+prints maps asynchronously by reference, so these are measured callback
+timestamps, not atomic map snapshots; timing JSON discloses that limitation.
+The ignored socket-profile replay test holds a synthetic local client for
+multiple intervals and checks actual native timestamps, scalar counts and
+comparison graphs. It never contacts a provider and never changes host settings.
+
 Use `ASB_MEASURE_BPFTRACE=1` and
 `ASB_BPFTRACE_PROGRAMS='/absolute/program.bt?ASB_PARAM_LIMIT=12'` when opting into
 custom programs. Separate at most eight programs with `;` and at most 32
