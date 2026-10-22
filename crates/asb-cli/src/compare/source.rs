@@ -536,7 +536,7 @@ fn load_attempt(
             artifact_sources,
         });
     }
-    let run_value = if measured {
+    let mut run_value = if measured {
         let measured = if let Some(snapshot) = &context.measurement_snapshot {
             snapshot.clone()
         } else {
@@ -551,6 +551,19 @@ fn load_attempt(
         run_path = outcome.path.clone();
         outcome.summary.clone()
     };
+    // Measurement agreement above binds the same task/execution/cohort before
+    // borrowing optional historical policy objects. Never consult today's
+    // configuration/defaults or a different/older attempt for hash inputs.
+    let planning = outcomes::recorded_object(&run_value, outcome, "planning")?;
+    let effective_budgets = outcomes::recorded_object(&run_value, outcome, "effective_budgets")?;
+    for (field, value) in [
+        ("planning", &planning),
+        ("effective_budgets", &effective_budgets),
+    ] {
+        if let Some(value) = value {
+            run_value[field] = value.clone();
+        }
+    }
     let DecodedRecord {
         task,
         replica_index,
@@ -693,8 +706,6 @@ fn load_attempt(
         .iter()
         .any(|prefix| key.starts_with(prefix))
     });
-    let planning = outcomes::recorded_object(&run_value, outcome, "planning")?;
-    let effective_budgets = outcomes::recorded_object(&run_value, outcome, "effective_budgets")?;
     if let Some(outcome) = &benchmark_outcome
         && crate::workloads::resolution_eligible(&workload_evaluation)
         && let crate::workloads::outcome::EvaluationOutcome::Completed { rewards, .. } =

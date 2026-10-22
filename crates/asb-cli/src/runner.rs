@@ -2427,6 +2427,8 @@ mod tests {
             .unwrap();
         session
             .finish(crate::measurements::RunMeasurement {
+                planning: None,
+                effective_budgets: None,
                 execution: None,
                 recording: None,
                 observation: Default::default(),

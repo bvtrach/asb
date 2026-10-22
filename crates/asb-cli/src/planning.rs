@@ -7,6 +7,31 @@ pub(crate) const DEFAULT_NATIVE_EXECUTION_SECONDS: u64 = 900;
 pub(crate) const DEFAULT_ENVIRONMENT_PREPARATION_SECONDS: u64 = 900;
 pub(crate) const DEFAULT_EVALUATION_SECONDS: u64 = 1800;
 
+/// Optional original policy metadata may come only from agreeing same-attempt
+/// evidence. Missing historical objects remain unknown, never today's defaults.
+pub(crate) fn recorded_object<'a>(
+    primary: &'a serde_json::Value,
+    retained: Option<&'a serde_json::Value>,
+    field: &str,
+) -> Result<Option<&'a serde_json::Value>, Error> {
+    let primary = primary.get(field).filter(|value| !value.is_null());
+    let retained = retained
+        .and_then(|record| record.get(field))
+        .filter(|value| !value.is_null());
+    if primary.zip(retained).is_some_and(|(a, b)| a != b) {
+        return Err(Error::Input(format!(
+            "measurement and outcome disagree on recorded {field}"
+        )));
+    }
+    let value = primary.or(retained);
+    if value.is_some_and(|value| !value.is_object()) {
+        return Err(Error::Input(format!(
+            "recorded {field} metadata must be an object"
+        )));
+    }
+    Ok(value)
+}
+
 /// Runtime dispatch population, not replay identity or observed overlap.
 /// Occurrence IDs and original slot membership deliberately do not enter it.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]

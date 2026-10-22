@@ -285,6 +285,12 @@ fn campaign_comparison_binds_measurement_only_rows_to_exact_execution() {
     let plan: Value = serde_json::from_slice(&fs::read(&plan_path).unwrap()).unwrap();
     let measures = PathBuf::from(plan["measurement_root"].as_str().unwrap());
     for batch in 1..=2 {
+        let measured: Value = serde_json::from_slice(
+            &fs::read(measures.join(format!("batch-{batch}/measurements/run.json"))).unwrap(),
+        )
+        .unwrap();
+        assert!(measured["planning"].is_object());
+        assert!(measured["effective_budgets"].is_object());
         fs::remove_file(root.join(format!("batch-{batch}/outcomes/1.json"))).unwrap();
         fs::remove_file(root.join(format!("batch-{batch}/run.jsonl"))).unwrap();
     }
@@ -308,6 +314,17 @@ fn campaign_comparison_binds_measurement_only_rows_to_exact_execution() {
         fs::write(&source, serde_json::to_vec(&value).unwrap()).unwrap();
         let result = compare_campaign(&project, &plan_path);
         assert!(!result.status.success(), "accepted foreign {field}");
+        assert_eq!(fs::read(&report).unwrap(), previous);
+    }
+    for field in ["planning", "effective_budgets"] {
+        let mut value: Value = serde_json::from_slice(&original).unwrap();
+        value.as_object_mut().unwrap().remove(field);
+        fs::write(&source, serde_json::to_vec(&value).unwrap()).unwrap();
+        let result = compare_campaign(&project, &plan_path);
+        assert!(
+            !result.status.success(),
+            "measurement-only dispatch must not guess absent {field}"
+        );
         assert_eq!(fs::read(&report).unwrap(), previous);
     }
     fs::write(source, original).unwrap();

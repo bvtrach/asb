@@ -16,22 +16,8 @@ pub(super) fn recorded_object(
     outcome: Option<&Recorded>,
     field: &str,
 ) -> Result<Option<Value>, Error> {
-    let primary = measured.get(field).filter(|value| !value.is_null());
-    let retained = outcome
-        .and_then(|record| record.summary.get(field))
-        .filter(|value| !value.is_null());
-    if primary.zip(retained).is_some_and(|(a, b)| a != b) {
-        return Err(Error::Input(format!(
-            "measurement and outcome disagree on recorded {field}"
-        )));
-    }
-    let value = primary.or(retained);
-    if value.is_some_and(|value| !value.is_object()) {
-        return Err(Error::Input(format!(
-            "recorded {field} metadata must be an object"
-        )));
-    }
-    Ok(value.cloned())
+    crate::planning::recorded_object(measured, outcome.map(|record| &record.summary), field)
+        .map(|value| value.cloned())
 }
 
 /// Called only after current-slot identity and measurement agreement checks.

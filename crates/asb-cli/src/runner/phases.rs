@@ -492,6 +492,8 @@ pub(super) fn finish_measurements(
     }
     issues.event(Some(&mut session), LifecycleEvent::RunFinishing);
     let measured = measurements::RunMeasurement {
+        planning: Some(&result.planning),
+        effective_budgets: Some(result.effective_budgets),
         execution: result.execution.as_ref(),
         recording: result.recording.as_ref(),
         observation: result.observation,

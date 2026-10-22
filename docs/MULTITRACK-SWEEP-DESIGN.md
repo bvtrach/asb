@@ -783,3 +783,21 @@ unchanged actual executable. This branch subsequently integrated main 66fb5fda
 required. Generation activation, continued recording, reconciliation/import,
 packaging/installed-SDK/hosted qualification, feature merge and release are still
 pending. This checkpoint does not claim feature-five completion.
+
+The first full dispatch regression run at 838bb3d1 exposed a producer/consumer
+mismatch across six measured-report test targets: RunMeasurement carried the
+new descriptor but omitted the policy/caps needed to verify its hash. The owning
+repair publishes the exact RunResult planning and effective budgets in new
+measurements. Common report loading resolves optional historical objects from
+agreeing same-attempt outcomes/logs before dispatch decoding, never from current
+defaults. A shared borrowed policy-object validator also makes strict settlement
+reject contradictory present metadata while permitting historical omissions.
+
+The actual stopped-output sweep matrix now checks self-contained measurements,
+successful fallback after both optional objects are removed, contradictory
+objects refusing without replacing the report, and byte-exact restoration of
+only its injected faults. The actual measurement-only campaign test removes
+outcome references/logs, requires successful reporting from measurements alone,
+and refuses missing hash inputs without guessing them. Both focused regressions
+passed after independent review. Full repaired-head gates remain required; the
+initial failed full run is not counted as qualification.

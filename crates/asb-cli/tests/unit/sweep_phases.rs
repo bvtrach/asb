@@ -289,6 +289,7 @@ fn actual_sweeps_stop_after_presentation_failure_but_settle_groups_and_partial_r
     );
     assert!(lock::OutputLock::acquire(root, "sweep").is_ok());
     assert!(outcome.is_err(), "{case}");
+    let diagnostic = outcome.as_ref().err().map(ToString::to_string);
     if case == "resume-mode" {
         assert!(
             outcome
@@ -334,9 +335,51 @@ fn actual_sweeps_stop_after_presentation_failure_but_settle_groups_and_partial_r
         assert!(!root.join("sweep-results/001-b").exists());
     }
     if case != "benchmark-output-compare" {
-        assert!(root.join("results/sweep-comparison/report.html").is_file());
+        assert!(
+            root.join("results/sweep-comparison/report.html").is_file(),
+            "{case}: {diagnostic:?}"
+        );
         let comparison = read(root.join("results/sweep-comparison/comparison.json"));
         assert!(!comparison["benchmarks"].as_array().unwrap().is_empty());
+    }
+    if case == "json" {
+        // Actual stopped-output run: measurements must remain self-contained,
+        // while old omissions can borrow only the agreeing original outcome.
+        let measurement = root.join("sweep-results/000-a/measurements/run.json");
+        let original = std::fs::read(&measurement).unwrap();
+        let measured: Value = serde_json::from_slice(&original).unwrap();
+        let summary = read(root.join("sweep-results/000-a/run.log"));
+        assert!(measured["planning"].is_object());
+        assert!(measured["effective_budgets"].is_object());
+        assert_eq!(measured["planning"], summary["planning"]);
+        assert_eq!(measured["effective_budgets"], summary["effective_budgets"]);
+        let mut omitted = measured.clone();
+        omitted.as_object_mut().unwrap().remove("planning");
+        omitted.as_object_mut().unwrap().remove("effective_budgets");
+        assert!(crate::sweep::checkpoint::completed::measurement_matches(
+            &omitted, &summary
+        ));
+        std::fs::write(&measurement, serde_json::to_vec(&omitted).unwrap()).unwrap();
+        crate::compare::generate(manifest.to_str().unwrap(), &mut Vec::new()).unwrap();
+        let report = root.join("results/sweep-comparison/comparison.json");
+        let prior = std::fs::read(&report).unwrap();
+        for field in ["planning", "effective_budgets"] {
+            let mut contradictory = omitted.clone();
+            contradictory[field] = json!({"wrong":"cannot replace original policy"});
+            assert!(!crate::sweep::checkpoint::completed::measurement_matches(
+                &contradictory,
+                &summary
+            ));
+            std::fs::write(&measurement, serde_json::to_vec(&contradictory).unwrap()).unwrap();
+            assert!(
+                crate::compare::generate(manifest.to_str().unwrap(), &mut Vec::new())
+                    .unwrap_err()
+                    .to_string()
+                    .contains("disagree on recorded")
+            );
+            assert_eq!(std::fs::read(&report).unwrap(), prior);
+        }
+        std::fs::write(&measurement, original).unwrap();
     }
     if case != "initial" && case != "json-final-seal" {
         assert_eq!(
