@@ -28,13 +28,16 @@ unproven. No connection is to be skipped or accepted under a widened protocol.
 
 The owning Linux python_runtime fixture reuses helper_exchange's bounded native
 gate, 64KiB request/256KiB response and30s exchange allowance. Its harness is
-REAL Python3.12, never a globally faked compatible runtime. It invokes the actual
+REAL Python3.12 or3.13, never a globally faked compatible runtime. It invokes the actual
 current built ASB and checks two isolated projects. Fake-only3.14 PATH/no uv
 uses a marker-only curl which records actual bootstrap arguments and exits55;
 it opens NO socket and downloads nothing. Init output and marker/cache paths
 must prove the bootstrap attempt and .asb-tools population. A paired control
-exposes real3.12 ahead of the same fake-only PATH, creates the actual project
-venv and verifies its real version, no curl marker and no uv namespace.
+exposes that real supported version ahead of the same fake-only PATH, creates
+the actual project venv and compares it with the observed harness version,
+with no curl marker or uv namespace. ASB_TEST_PYTHON_BOOTSTRAP_ASB can select an
+explicit absolute frozen ASB fixture; otherwise the current built binary beside
+the libtest is selected. A local3.12 run does not qualify native3.13.
 Both children have private cleared environments, empty stdin and finite waits;
 only LLVM_PROFILE_FILE instrumentation may be inherited. All stdout/stderr,
 observed JSON and markers are intentionally retained after success or failure.

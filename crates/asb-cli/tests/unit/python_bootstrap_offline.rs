@@ -6,11 +6,12 @@ import json, os, pathlib, subprocess, sys
 request = json.load(sys.stdin)
 base = pathlib.Path(request['root'])
 real = request['python']
-assert sys.version_info[:2] == (3, 12), 'this control requires real Python 3.12'
+assert sys.version_info[:2] in [(3, 12), (3, 13)], 'this control requires supported real Python'
+real_version = '%d.%d' % sys.version_info[:2]
 control = base / 'control-bin'
 control.mkdir()
-os.symlink(real, control / 'python3.12')
-observed = {}
+os.symlink(real, control / ('python' + real_version))
+observed = {'harness_version': real_version}
 for name, search in [('bootstrap', str(base / 'fake-bin')),
                      ('supported', str(control) + os.pathsep + str(base / 'fake-bin'))]:
     root = base / name
@@ -44,16 +45,22 @@ fn init_bootstrap_attempt_precedes_proxy_fixture_phase_and_real_python_avoids_it
     use std::os::unix::fs::PermissionsExt;
     use std::time::Duration;
 
-    let python = crate::tools::host_executable(Path::new("python3.12")).expect(
-        "offline tests require real Python 3.12 with venv support on PATH; provision it before testing",
-    );
-    let binary = std::env::current_exe()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("asb");
+    let python = ["python3.12", "python3.13"]
+        .into_iter()
+        .find_map(|name| crate::tools::host_executable(Path::new(name)))
+        .expect("offline tests require real Python 3.12 or 3.13 with venv support on PATH; provision it before testing");
+    let binary = std::env::var_os("ASB_TEST_PYTHON_BOOTSTRAP_ASB")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            std::env::current_exe()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .join("asb")
+        });
+    assert!(binary.is_absolute(), "select an absolute frozen ASB path");
     assert!(binary.is_file(), "build the current ASB binary FIRST");
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../target/python-bootstrap-offline")
@@ -117,7 +124,14 @@ fn init_bootstrap_attempt_precedes_proxy_fixture_phase_and_real_python_avoids_it
     );
     assert_eq!(observed["supported"]["status"], 0, "{observed}");
     assert_eq!(observed["supported"]["version_status"], 0, "{observed}");
-    assert_eq!(observed["supported"]["version"], "3.12", "{observed}");
+    assert!(
+        matches!(observed["harness_version"].as_str(), Some("3.12" | "3.13")),
+        "{observed}"
+    );
+    assert_eq!(
+        observed["supported"]["version"], observed["harness_version"],
+        "{observed}"
+    );
     assert!(
         !observed["supported"]["stdout"]
             .as_str()
