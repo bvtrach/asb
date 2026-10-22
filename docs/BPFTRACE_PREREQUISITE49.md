@@ -75,3 +75,23 @@ directory creation also retains exact context. Copy/metadata diagnostics,
 publication ordering/atomicity and custom52 obligations are untouched. Fresh
 actual-FIRST and the exact Cargo-reported libtest must precede another focus;
 no successful result is claimed here.
+
+## Owning49 focused qualification
+
+Reviewed3cd71843 actual-FIRST passed14.96s and libtest compilation25.91s.
+The exact compiler-artifact.executable from retained Cargo JSON selected the
+new75b0f629 image; no copied/first/latest filename heuristic was used. Frozen
+copies and before/after manifests agree for ASB
+`81e1d5f375863e617a6a7c98d2a93af9b45ecb8fe6f9edf483b64ff9d0387adc`
+and libtest
+`a52e0e715b03bbe25e768a9967713a804c8b4c55ace7e4773e22344f9160da87`.
+
+Complete tools focus passed15/0/2existing live-download opt-ins ignored(1.87s),
+including all26 BPF cases. Install focus passed104/0/0(63.21s), including Source,
+process/native and actual public-CLI ownership controls. These are119 unique
+outer tests; the26 inner cases are not added again. Strict workspace/all-target/
+all-feature Clippy passed21.88s, formatting and diff checks passed. All raw logs
+and manifests are under target/bpf49-context-*; previous failures and mistakenly
+selected historical image remain preserved separately. No source changed during
+runtime and all handles are terminal. This is focused owning49 proof, not a full
+suite or combined50 qualification; normal source integration follows separately.
