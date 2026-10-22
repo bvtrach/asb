@@ -66,3 +66,44 @@ runtime, while intentionally fake-only paths keep their negative semantics.
 No production code, hosted retries, provider/SDK/real download, full-suite or
 release claim is included in this controlled evidence checkpoint. The removed
 90% coverage gate remains removed.
+
+## Controlled evidence qualification
+
+Root reviewed da4f7106 and approved the supported-runtime/frozen-path alignment
+in signed a5a1ab9b. Actual FIRST build in the exclusive new HOME cache passed
+13.02s; only the verified-idle OWN installer debug artifacts had been copied,
+without modifying the parked installer source/cache or borrowing a peer cache.
+Actual/frozen ASB SHA256 before, after focus and after strict checks matched:
+`b7f383b30c6dda784cce498768c369e229dbd8c3fe5379f06a77175ec422b909`.
+The frozen copy is target/qualification/offline-python-a5a1ab9b-asb.
+
+The exact controlled pair passed1/0/0 in0.18s after22.28s libtest compilation.
+Its retained evidence is
+target/python-bootstrap-offline/18e0bc6a5d4b8b67-323133-0/observed.json,
+with separate init.stdout/init.stderr and bootstrap-arguments files. Actual
+fake-only3.14 init returned0 with a Python warning naming the attempted official
+uv archive and controlled curl55 failure; the marker includes actual download
+argv and a .asb-tools/uv/cache staging output. That tools directory was nonempty.
+Paired real3.12 init returned0 without the warning, created an actual version3.12
+venv, never invoked inert curl and left tools empty/no uv namespace. Declined
+host prompts and unavailable sudo caused no host changes. No socket, external
+download, provider or SDK was used. This proves bootstrap/tools mutation under
+the controlled conditions; it still does not identify the unobserved historical
+CI proxy request or assert CI's actual interpreter version.
+
+Sequential existing controls passed: Python boundary2/0/0 and path1/0/0
+(each0.00s), actual fake-uv bootstrap1/0/0(0.12s), missing-runtime warning1/0/0
+(0.02s), and incompatible tool-venv preservation1/0/0(1.86s). Together these
+are7 distinct top-level focused tests,0failures/0ignored. The separate real
+download opt-in was NOT run. Strict workspace/all-target/all-feature Clippy
+passed15.26s, fmt/diff checks passed. No source changes occurred during runtime.
+No native3.13, broad full-suite, current hosted or release qualification is claimed.
+
+Read-only native-runner checks found asb-local-ci.service using gha-asb with
+ProtectSystem=strict, ProtectHome=yes, NoNewPrivileges=yes, read-only /opt and
+only its own /srv/data/ci-runners/asb bind writable. Standard hostedtoolcache
+does not exist; no right to provision it is assumed. Existing globally readable
+/usr/bin/python3.12 reports3.12.3 and imports venv. No sudo, service/account
+change or host install was performed. Prefer a bounded prerequisite check on
+the native job, official provisioning only on the GitHub-hosted job. CI and
+test-guard repair remains source work AFTER this observed evidence checkpoint.
