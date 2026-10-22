@@ -243,3 +243,27 @@ success. Normal CI remains unchanged. Root requires removal of temporary
 workflow/harness/script AFTER actual26 success and before final full/package
 qualification; immutable artifacts, permanent captured parser tests/fixture and
 incremental0 policy remain. No new fixed-source runtime claim is made here.
+
+## Fixed-source local focus, source10ad5f13 (Ubuntu26 rerun pending)
+
+After product/workflow source approval, actual ASB built FIRST13.48s and froze
+as target/qualification/loader-fixed-10ad5f13-asb, SHA256
+`c375acf525fe23dc1fdd896c98cdb6ca3456fdaeb7e677137981b3ab783a346f`.
+Complete Python runtime/parser suite passed5/0/0 with both actual-ASB opt-ins
+enabled; complete runtime-input suite passed9/0/0. All four original exact Rust
+owning filters passed1/0/0 each, then default/actual BusyBox launch controls
+passed1/0/0 each:20focused outer passes total, no ignored cases. All15 rejecting
+parser subcases and unchanged legacy assertions remain intact. This local
+control does NOT replace actual Ubuntu26 proof for the four original failures.
+
+Actual/frozen before/after/final hashes match. Post-runtime exact libtest is
+preserved as qualification/loader-fixed-10ad5f13-libtests, SHA256
+`b5b19066cd91c89f5c1ad1e2380c995a0064fe1871a4857e423ab0250f4e204c`.
+Strict locked/offline workspace/all-target/all-feature Clippy -Dwarnings passed
+15.33s; fmt/diffcheck and actionlint (ONLY the two independently verified label
+catalog warnings excluded) passed. All handles are terminal; no source edit
+or executable relink occurred during runtime. Logs use target/loader-fixed-*;
+all baseline RED, hosted four-failure logs and real metadata artifacts remain.
+Root authorized a draft-only push after these gates. Actual26 four-filter
+success, removal/review of temporary diagnostics, final full/package/current-main
+qualification and both postmerge jobs remain required before merge/release.
