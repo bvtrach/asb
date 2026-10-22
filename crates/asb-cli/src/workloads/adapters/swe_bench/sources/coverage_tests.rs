@@ -43,7 +43,7 @@ fn isolated_pinned_source_orchestration_preserves_and_validates_local_archive_by
             let directory = root.join(case);
             fs::create_dir_all(directory.join("commands")).unwrap();
             let curl = directory.join("commands/curl");
-            fs::write(&curl,r#"#!/bin/sh
+            crate::write_test_file(&directory, &curl,r#"#!/bin/sh
 printf '%s\n' "$*" > "$ASB_SWE_SOURCE_ROOT/curl-arguments"
 [ "$ASB_SWE_SOURCE_CASE" != curl-fails ] || exit 2
 while [ "$#" -gt 0 ]; do

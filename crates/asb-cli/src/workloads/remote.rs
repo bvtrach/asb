@@ -2,7 +2,7 @@
 use super::task_protocol::{
     AgentRequest, CompletedExecution, CompletedGrade, EventKind, ReadyTask, Request,
 };
-use crate::workloads::controller::{Controller, decode_base64};
+use crate::workloads::controller::{Controller, ControllerCommand, decode_base64};
 use crate::workloads::session::{
     BaselineEvidence, ExecutionContext, ExecutionResult, PreparationContext, ResourceDisposition,
     ResourceSettlement, TaskInvocation,
@@ -10,6 +10,7 @@ use crate::workloads::session::{
 use crate::workloads::{Evaluation, TaskIdentity, WorkloadSession};
 use serde_json::{Value, json};
 use std::path::PathBuf;
+#[cfg(test)]
 use std::process::Command;
 use std::time::{Duration, Instant};
 
@@ -60,7 +61,8 @@ pub(crate) fn verify_retained(
     let tool = crate::project::resolve(recovery.project_root, &recovery.project_config.tools_dir)
         .join(tool_id);
     require_sdk(&tool, &recovery.reference.workload)?;
-    let mut command = Command::new(tool.join("venv/bin/python"));
+    let mut command =
+        ControllerCommand::new(tool.join("venv/bin/python")).map_err(crate::Error::Run)?;
     command
         .arg(tool.join("asb_retained.py"))
         .arg("--module")
@@ -126,7 +128,8 @@ fn retained_grade_request(
     let tool = crate::project::resolve(context.project_root, &context.project_config.tools_dir)
         .join(tool_id);
     require_sdk(&tool, &context.reference.workload)?;
-    let mut command = Command::new(tool.join("venv/bin/python"));
+    let mut command =
+        ControllerCommand::new(tool.join("venv/bin/python")).map_err(crate::Error::Run)?;
     command
         .arg(runtime.join("asb_retained.py"))
         .args([
@@ -363,7 +366,8 @@ pub(crate) fn recover(
     if !tool.join("asb_resources.py").is_file() {
         return Err(crate::Error::Input("the installed workload recovery helper is missing; reinstall the workload before recovery".into()));
     }
-    let mut command = Command::new(tool.join("venv/bin/python"));
+    let mut command =
+        ControllerCommand::new(tool.join("venv/bin/python")).map_err(crate::Error::Run)?;
     command
         .arg(tool.join("asb_resources.py"))
         .arg("--quiesce")
@@ -481,7 +485,7 @@ pub(crate) fn launch(
     let error_log = options
         .open(artifacts.with_extension("controller.log"))
         .map_err(|error| error.to_string())?;
-    let mut command = Command::new(tool.join("venv/bin/python"));
+    let mut command = ControllerCommand::new(tool.join("venv/bin/python"))?;
     command.stderr(error_log);
     command.arg(tool.join(helper));
     if let Some(operation) = operation {
@@ -1122,7 +1126,7 @@ mod tests {
             serde_json::json!({"event":"error","error_class":"SdkError","reason":"secret-body-must-not-leak"}),
         ] {
             let script = "import json,sys\nassert json.loads(sys.stdin.readline())['op']=='initial-material'\nprint(sys.argv[1],flush=True)\nassert not sys.stdin.readline()\nprint(json.dumps(dict(event='closed',cleanup='stopped-preserved')),flush=True)\n";
-            let mut command = std::process::Command::new("python3");
+            let mut command = ControllerCommand::new("python3").unwrap();
             command.args(["-u", "-c", script, &event.to_string()]);
             let mut controller = super::Controller::spawn(&mut command).unwrap();
             let result = super::request_initial_material(&mut controller);
@@ -1319,7 +1323,7 @@ sys.stdout.write(result['project_configuration'])
             "import json,sys\nresults=json.loads(sys.argv[1])\nprint(json.dumps(dict(event='ready')),flush=True)\nfor result in results:\n request=json.loads(sys.stdin.readline())\n assert request['op']=='evaluate'\n print(json.dumps(dict(event='evaluated',result=result)),flush=True)\nlast=sys.stdin.readline()\nassert bool(last)=={completed}\nif last: assert json.loads(last)['op']=='close'\nprint(json.dumps(dict(event='closed',cleanup='removed' if last else 'stopped-preserved')),flush=True)\n",
             completed = if completed { "True" } else { "False" },
         );
-        let mut command = Command::new("python3");
+        let mut command = ControllerCommand::new("python3").unwrap();
         command.args([
             "-u",
             "-c",
@@ -1429,7 +1433,7 @@ sys.stdout.write(result['project_configuration'])
     fn failed_close_keeps_its_diagnostic_after_confirmed_cached_preservation() {
         let mut task = session(&[], false);
         let script = "import json,sys\nprint(json.dumps(dict(event='ready')),flush=True)\nassert json.loads(sys.stdin.readline())['op']=='close'\nprint(json.dumps(dict(event='error',error_class='ExecutionError',reason='fixture close failure')),flush=True)\nassert sys.stdin.read()==''\nprint(json.dumps(dict(event='closed',cleanup='stopped-preserved')),flush=True)\nsys.exit(1)\n";
-        let mut command = Command::new("python3");
+        let mut command = ControllerCommand::new("python3").unwrap();
         command.args(["-u", "-c", script]);
         task.controller = Controller::spawn(&mut command).unwrap();
         task.controller

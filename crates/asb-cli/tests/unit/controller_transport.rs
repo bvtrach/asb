@@ -6,7 +6,7 @@ use std::process::Child;
 
 #[cfg(unix)]
 fn ready_child(script: &str) -> Controller {
-    let mut command = Command::new("python3");
+    let mut command = ControllerCommand::new("python3").unwrap();
     command.args(["-I", "-S", "-B", "-u", "-c", script]);
     let mut controller = Controller::spawn(&mut command).unwrap();
     assert_eq!(
@@ -53,7 +53,7 @@ pub(super) fn cleanup_poll_override() -> Option<std::io::Result<Option<std::proc
 #[cfg(unix)]
 #[test]
 fn nonreading_child_cannot_extend_request_write_past_response_budget() {
-    let mut command = Command::new("python3");
+    let mut command = ControllerCommand::new("python3").unwrap();
     // The one-second fixture exit is a safety bound for the pre-fix blocking
     // write, not the behavior being qualified. It never reads the private body.
     command.args([
@@ -110,7 +110,7 @@ fn owned_pipe_readers(identity: &std::path::Path) -> usize {
 #[cfg(target_os = "linux")]
 #[test]
 fn retained_stdout_writer_cannot_leave_a_background_reader_after_controller_drop() {
-    let mut command = Command::new("python3");
+    let mut command = ControllerCommand::new("python3").unwrap();
     command.args([
         "-I",
         "-S",
@@ -213,7 +213,7 @@ fn framing_bound_accepts_exact_limit_and_rejects_extra_byte_or_unterminated_line
             "import sys\nprefix=b'{{\"event\":\"completed\",\"padding\":\"';suffix=b'\"}}\\n'\nbody=prefix+b'x'*(1048576-len(prefix)-len(suffix)+{extra})+suffix\nsys.stdout.buffer.write(body if {newline} else body[:-1]);sys.stdout.buffer.flush()\n",
             newline = if newline { "True" } else { "False" }
         );
-        let mut command = Command::new("python3");
+        let mut command = ControllerCommand::new("python3").unwrap();
         command.args(["-I", "-S", "-B", "-u", "-c", &script]);
         let mut controller = Controller::spawn(&mut command).unwrap();
         let deadline = Instant::now() + Duration::from_secs(3);
@@ -295,8 +295,7 @@ mod custody {
         fd: File,
     }
     impl Pinned {
-        fn new(child: &Child) -> Self {
-            let pid = child.id();
+        fn new(pid: u32) -> Self {
             // SAFETY: pin exactly the direct child still held by its owner.
             let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) } as i32;
             assert!(fd >= 0);
@@ -349,7 +348,7 @@ mod custody {
         std::fs::create_dir_all(&root).unwrap();
         let marker = root.join("must-not-run");
         test_support::set_creation_failure(true);
-        let mut command = Command::new("python3");
+        let mut command = ControllerCommand::new("python3").unwrap();
         command
             .args([
                 "-I",
@@ -361,7 +360,7 @@ mod custody {
             .arg(&marker);
         let error = Controller::spawn(&mut command).err().unwrap();
         assert!(
-            error.contains("cannot establish workload-controller cleanup worker"),
+            error.contains("cannot establish asb-gate-custody cleanup worker"),
             "{error}"
         );
         assert_eq!(scope.count(), 0);
@@ -372,7 +371,7 @@ mod custody {
     fn pipe_setup_failure_after_spawn_retains_precreated_cleanup_owner() {
         let scope = test_support::Scope::new();
         SETUP_FAILURE.set(true);
-        let mut command = Command::new("python3");
+        let mut command = ControllerCommand::new("python3").unwrap();
         command.args(["-I", "-S", "-B", "-c", "import sys;sys.stdin.read()"]);
         let result = Controller::spawn(&mut command);
         SETUP_FAILURE.set(false);
@@ -395,7 +394,7 @@ mod custody {
             let mut controller = ready_child(
                 "import json,sys,time\nprint(json.dumps(dict(event='ready')),flush=True)\ntime.sleep(30)\n",
             );
-            let pinned = Pinned::new(controller.child());
+            let pinned = Pinned::new(controller.child().id());
             POLL_FAULT.set(Some(fault));
             let started = Instant::now();
             let result = controller.stop_for_test(Duration::from_millis(40));
@@ -422,7 +421,7 @@ mod custody {
             let mut controller = ready_child(
                 "import json,sys,time\nprint(json.dumps(dict(event='ready')),flush=True)\ntime.sleep(30)\n",
             );
-            pinned = Some(Pinned::new(controller.child()));
+            pinned = Some(Pinned::new(controller.child().id()));
             controller.expire_cleanup_for_test();
             panic!("fixture unwind after controller admission");
         }));
@@ -440,7 +439,7 @@ mod custody {
         let mut controller = ready_child(
             "import json,time\nprint(json.dumps(dict(event='ready')),flush=True)\ntime.sleep(30)\n",
         );
-        let pinned = Pinned::new(controller.child());
+        let pinned = Pinned::new(controller.child().id());
         let started = Instant::now();
         let deadline = started + Duration::from_millis(100);
         controller.limit_cleanup_to(deadline);

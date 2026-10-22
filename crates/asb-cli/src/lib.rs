@@ -10,11 +10,20 @@ mod completion;
 mod config;
 mod endpoint;
 mod evidence;
+#[cfg(all(test, target_os = "linux"))]
+#[path = "../tests/unit/executable_fixture_writer.rs"]
+mod executable_fixture_writer_tests;
 mod executables;
+#[cfg(all(test, unix))]
+#[path = "../tests/support/fixture_writer.rs"]
+pub(crate) mod fixture_writer;
 #[cfg(unix)]
 mod helper_exchange;
 mod install;
 mod launch;
+#[cfg(all(test, target_os = "linux"))]
+#[path = "../tests/support/material_guardian.rs"]
+pub(crate) mod material_guardian;
 mod measurements;
 mod models;
 mod output_lock;
@@ -38,6 +47,31 @@ mod tape;
 #[cfg(all(test, unix))]
 #[path = "../tests/support/mod.rs"]
 pub(crate) mod test_support;
+#[cfg(all(test, unix))]
+impl fixture_writer::Keeper for process_cleanup::OwnedReaper {
+    fn adopt(&self, child: std::process::Child) {
+        self.adopt(child);
+    }
+}
+#[cfg(all(test, unix))]
+pub(crate) fn write_test_script(
+    root: &std::path::Path,
+    path: &std::path::Path,
+    bytes: &[u8],
+    mode: Option<u32>,
+) -> std::io::Result<()> {
+    fixture_writer::write_with(root, path, bytes, mode, || {
+        process_cleanup::OwnedReaper::new("test-executable-writer").map_err(std::io::Error::other)
+    })
+}
+#[cfg(all(test, unix))]
+pub(crate) fn write_test_file(
+    root: &std::path::Path,
+    path: &std::path::Path,
+    bytes: impl AsRef<[u8]>,
+) -> std::io::Result<()> {
+    write_test_script(root, path, bytes.as_ref(), None)
+}
 mod tools;
 mod tui;
 mod workloads;

@@ -30,7 +30,7 @@ impl Fixture {
         use std::os::unix::fs::PermissionsExt;
         let path = self.0.join("tools/perfetto/bin/trace_processor_shell");
         fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        crate::write_test_file(&self.0, &path, format!("#!/bin/sh\n{body}\n")).unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
         path
     }
@@ -41,6 +41,9 @@ impl Fixture {
 }
 impl Drop for Fixture {
     fn drop(&mut self) {
+        #[cfg(unix)]
+        crate::fixture_writer::cleanup(&self.0).unwrap();
+        #[cfg(not(unix))]
         fs::remove_dir_all(&self.0).unwrap();
     }
 }

@@ -31,7 +31,7 @@ impl Fixture {
 }
 impl Drop for Fixture {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
+        let _ = crate::fixture_writer::cleanup(&self.0);
     }
 }
 
@@ -142,7 +142,7 @@ fn child_only_path_cwd_stdio_and_appended_args_use_the_same_command() {
     std::fs::create_dir_all(&bin).unwrap();
     std::fs::create_dir(&cwd).unwrap();
     let client = bin.join("launch-client");
-    std::fs::write(&client, "#!/bin/sh\nprintf '%s;%s;%s;' \"$PWD\" \"$ASB_VALUE\" \"$1\"\n/bin/cat\nprintf diagnostic >&2\n").unwrap();
+    crate::write_test_file(&fixture.0, &client, "#!/bin/sh\nprintf '%s;%s;%s;' \"$PWD\" \"$ASB_VALUE\" \"$1\"\n/bin/cat\nprintf diagnostic >&2\n").unwrap();
     std::fs::set_permissions(&client, std::fs::Permissions::from_mode(0o700)).unwrap();
     let input = fixture.0.join("input");
     let output_path = fixture.0.join("stdout");

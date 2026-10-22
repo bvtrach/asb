@@ -357,7 +357,8 @@ fn explicit_runtime_launcher_is_preserved_for_high_fd_exec_handoff() {
         .join("asb");
     let launcher = root.join("asb-launcher");
     let marker = root.join("launcher-used");
-    std::fs::write(
+    crate::write_test_file(
+        &root,
         &launcher,
         format!(
             "#!/bin/sh\nprintf '%s|%s\\n' \"$$\" \"$1\" >> '{}'\nexec '{}' \"$@\"\n",

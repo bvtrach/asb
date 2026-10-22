@@ -60,7 +60,7 @@ esac
     fn write_executable(&self, path: &str, bytes: &[u8]) {
         let path = self.0.join(path);
         fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(&path, bytes).unwrap();
+        crate::write_test_file(&self.0, &path, bytes).unwrap();
         fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
     }
 
@@ -96,7 +96,7 @@ esac
 }
 impl Drop for Fixture {
     fn drop(&mut self) {
-        fs::remove_dir_all(&self.0).unwrap();
+        crate::fixture_writer::cleanup(&self.0).unwrap();
     }
 }
 

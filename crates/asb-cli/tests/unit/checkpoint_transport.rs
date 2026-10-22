@@ -76,7 +76,7 @@ fn helper(source: &str) -> (PathBuf, PathBuf) {
         .join(crate::workloads::TaskIdentity::local("focused", None).attempt_id);
     std::fs::create_dir_all(&root).unwrap();
     let python = root.join("fake-python");
-    std::fs::write(&python, format!("#!/usr/bin/python3\n{source}\n")).unwrap();
+    crate::write_test_file(&root, &python, format!("#!/usr/bin/python3\n{source}\n")).unwrap();
     std::fs::set_permissions(&python, std::fs::Permissions::from_mode(0o700)).unwrap();
     (root, python)
 }
@@ -259,7 +259,7 @@ fn bounded_case(case: &str, test: &str) {
         serde_json::to_string(&root).unwrap(),
         serde_json::to_string(case).unwrap()
     );
-    std::fs::write(&helper, script).unwrap();
+    crate::write_test_file(&root, &helper, script).unwrap();
     std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o700)).unwrap();
     let executable = std::env::current_exe().unwrap();
     let binary = executable.parent().unwrap().parent().unwrap().join("asb");

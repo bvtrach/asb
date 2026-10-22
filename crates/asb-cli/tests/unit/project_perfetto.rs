@@ -201,7 +201,8 @@ fn isolated_delegation_consent_logs_scoped_commands_without_host_mutation() {
             let directory = root.join(case);
             fs::create_dir_all(directory.join("commands")).unwrap();
             let sudo = directory.join("commands/sudo");
-            fs::write(
+            crate::write_test_file(
+                &directory,
                 &sudo,
                 r#"#!/bin/sh
 printf 'sudo' >> "$HOME/calls"
