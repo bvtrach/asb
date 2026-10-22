@@ -1,31 +1,22 @@
 //! CLI contract tests using isolated local projects and no provider credentials.
 
+#[path = "support/fixture_namespace.rs"]
+mod fixture_namespace;
 #[cfg(unix)]
 #[path = "support/fixture_writer.rs"]
 mod fixture_writer;
 mod support;
 use std::path::PathBuf;
 use std::process::{Command, Output};
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+#[cfg(unix)]
+use std::sync::atomic::Ordering;
 use support::IsolatedEnvironment;
-
-static NEXT: AtomicUsize = AtomicUsize::new(0);
 
 struct Project(PathBuf);
 
 impl Project {
     fn new() -> Self {
-        let stamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "asb-offline-cli-{}-{stamp}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::create_dir_all(&root).unwrap();
+        let root = fixture_namespace::allocate(&std::env::temp_dir(), "asb-offline-cli-").unwrap();
         Self(root)
     }
 

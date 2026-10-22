@@ -1,4 +1,6 @@
 //! Real CLI rejection before providers, collectors, environments or output moves.
+#[path = "support/fixture_namespace.rs"]
+mod fixture_namespace;
 #[cfg(unix)]
 #[path = "support/fixture_writer.rs"]
 mod fixture_writer;
@@ -9,13 +11,10 @@ use support::IsolatedEnvironment;
 struct Project(PathBuf);
 impl Project {
     fn new() -> Self {
-        let unique = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../target/planning-fixtures")
-            .join(format!("{}-{unique}", std::process::id()));
+        let parent =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/planning-fixtures");
+        std::fs::create_dir_all(&parent).unwrap();
+        let root = fixture_namespace::allocate(&parent, "").unwrap();
         std::fs::create_dir_all(root.join(".asb")).unwrap();
         std::fs::write(
             root.join(".asb/project.toml"),

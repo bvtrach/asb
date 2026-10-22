@@ -1,5 +1,7 @@
 //! Provider-free real CLI qualification of fresh repeated execution.
 #![cfg(unix)]
+#[path = "support/fixture_namespace.rs"]
+mod fixture_namespace;
 #[cfg(unix)]
 #[path = "support/fixture_writer.rs"]
 mod fixture_writer;
@@ -13,15 +15,7 @@ use support::IsolatedEnvironment;
 struct Project(PathBuf);
 impl Project {
     fn new() -> Self {
-        use std::time::{SystemTime, UNIX_EPOCH};
-        let path = std::env::temp_dir().join(format!(
-            "asb-repeated-{}-{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let path = fixture_namespace::allocate(&std::env::temp_dir(), "asb-repeated-").unwrap();
         fs::create_dir_all(path.join(".asb")).unwrap();
         fs::write(
             path.join(".asb/project.toml"),

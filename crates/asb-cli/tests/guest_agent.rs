@@ -1,5 +1,7 @@
 //! Offline guest-driver checks using a registered adapter and fixture executable.
 #![cfg(unix)]
+#[path = "support/fixture_namespace.rs"]
+mod fixture_namespace;
 #[cfg(unix)]
 #[path = "support/fixture_writer.rs"]
 mod fixture_writer;
@@ -8,7 +10,7 @@ use std::io::{BufRead, BufReader, Read};
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 use support::IsolatedEnvironment;
 
 struct Process(Child);
@@ -21,14 +23,7 @@ impl Drop for Process {
 struct Project(PathBuf);
 impl Project {
     fn new() -> Self {
-        let root = std::env::temp_dir().join(format!(
-            "asb-guest-{}-{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let root = fixture_namespace::allocate(&std::env::temp_dir(), "asb-guest-").unwrap();
         for directory in [".asb", ".asb-tools/pi/bin", "workspace"] {
             std::fs::create_dir_all(root.join(directory)).unwrap();
         }

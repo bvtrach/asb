@@ -1,5 +1,7 @@
 //! Offline public CLI coverage for setup matrices and standalone reports.
 use serde_json::{Value, json};
+#[path = "support/fixture_namespace.rs"]
+mod fixture_namespace;
 #[cfg(unix)]
 #[path = "support/fixture_writer.rs"]
 mod fixture_writer;
@@ -11,13 +13,8 @@ use support::IsolatedEnvironment;
 struct Project(PathBuf);
 impl Project {
     fn new() -> Self {
-        let stamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let project = Self(
-            std::env::temp_dir().join(format!("asb compare setup {}-{stamp}", std::process::id())),
-        );
+        let project =
+            Self(fixture_namespace::allocate(&std::env::temp_dir(), "asb compare setup ").unwrap());
         project.write(
             ".asb/project.toml",
             "tools_dir='tools'\nworkloads_dir='catalogs'\nworkspace_dir='workspaces'\n",

@@ -278,3 +278,41 @@ The generated untracked `crates/asb-cli/.asb/install.log` is empty and preserved
 This proof does NOT qualify the shared production reaper's observation-error
 path, which root assigned separately. No full suite, package promotion, hosted
 CI retry, PR update or release is authorized by these focused results.
+
+## Combined-reaper focus and stopped full qualification
+
+Signed normal merge89990014 imports only the reviewed clean reaper prerequisite
+73e2f43b (production process_cleanup.rs plus owning tests; no material50 ancestry).
+Signed29bf5caf replaces the standalone unknown writer test's numeric PID
+disappearance check with a captured OneSlotKeeper completion receipt. Release
+is published only after actual Child.try_wait(Some), or no transferred child;
+the test waits with Acquire under its existing bounded deadline.
+Actual-FIRST combined build13.19s produced frozen
+`target/qualification/fixture-writer-29bf5caf-combined-asb`, SHA256
+`68f6b9a811174f1c00cddbc931d339710e4308b5106b17ec5c6f2e6de8db13b0`.
+All14 requested combined focused summaries passed358/0/5ignored, followed by
+strict workspace/all-target/all-feature Clippy15.49s, fmt and diffcheck EXIT0.
+
+Authorized fresh full29bf then STOPPED EXIT101 at repeated_run: line31
+create_dir(workloads) returned AlreadyExists(errno17) in
+repeated_native_clients_have_fresh_home_xdg_and_temporary_state. Its other31
+cases passed. The outer library passed1209/0/13ignored. Full evidence remains
+`target/fixture-writer-combined-full.log`; actual/frozen68f6 remained equal.
+The failed repeated_run binary is preserved at
+`target/qualification/fixture-writer-29bf5caf-failed-repeated-run`, SHA256
+`c5814115387ac33ab589807b2edae172976ed2b99ab26f9f3ac8da6cfb50f038`.
+No unchanged-head rerun or subsequent gates occurred.
+
+Source confirms the old pid+clock namespace was adopted by create_dir_all(.asb),
+and config could be overwritten BEFORE the EEXIST diagnostic. A same-clock
+collision is plausible, not a proven historical identity: the failed assertion
+did not record the candidate pathname, and no surviving matching root was found.
+The corrective test-only allocator claims the case root itself with create_dir,
+adding an AtomicU64 sequence to PID/timestamp and allowing at most64 EEXIST
+new-name attempts. Other IO errors stop immediately. All six opt-in integration
+constructors share this std-only support file, retaining their original parent
+locations/prefixes and all cases/payloads. The controlled same-clock concurrent
+test compares actual directory dev/inode identities, preserves a preexisting
+candidate sentinel, checks64-collision exhaustion/sentinels and one-attempt
+non-AlreadyExists failure. This source awaits focused execution and review.
+Untracked generated .asb and artifact target evidence remain preserved.

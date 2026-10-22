@@ -1,5 +1,7 @@
 //! Real CLI metadata-publication failures with a local, non-networked client.
 #![cfg(unix)]
+#[path = "support/fixture_namespace.rs"]
+mod fixture_namespace;
 #[cfg(unix)]
 #[path = "support/fixture_writer.rs"]
 mod fixture_writer;
@@ -14,16 +16,10 @@ use support::IsolatedEnvironment;
 struct Project(PathBuf);
 impl Project {
     fn new(grade: bool, process_failure: bool, concurrency: usize, fault: &str) -> Self {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../target/completion-diagnostic-fixtures")
-            .join(format!(
-                "{}-{}",
-                std::process::id(),
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_nanos()
-            ));
+        let parent = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/completion-diagnostic-fixtures");
+        fs::create_dir_all(&parent).unwrap();
+        let root = fixture_namespace::allocate(&parent, "").unwrap();
         for directory in [".asb", "tools", "workloads", "commands"] {
             fs::create_dir_all(root.join(directory)).unwrap();
         }
