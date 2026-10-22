@@ -140,7 +140,7 @@ mod tests {
             requirements: Default::default(),
             dataset: profile.dataset.unwrap(),
             task_ids: ["task-1".into()].into_iter().collect(),
-            evaluation_kind: super::KnownEvaluationKind::UpstreamHarness,
+            evaluation_kind: crate::workloads::KnownEvaluationKind::UpstreamHarness,
         };
         let selection = describe(
             "swe-bench-lite",
@@ -175,7 +175,7 @@ mod tests {
                 split: "test".into(),
             },
             task_ids: ["issue-1".into(), "issue-2".into()].into_iter().collect(),
-            evaluation_kind: super::KnownEvaluationKind::UpstreamHarness,
+            evaluation_kind: crate::workloads::KnownEvaluationKind::UpstreamHarness,
         };
         assert!(describe("suite", None, None, Path::new("."), Some(&catalog)).is_err());
         assert!(
