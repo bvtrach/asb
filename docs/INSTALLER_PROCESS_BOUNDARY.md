@@ -1115,3 +1115,32 @@ as qualification/installer44-primary-error-red-libtests. No production repair
 is included in this observed-red checkpoint. All handles terminal; no full
 qualification claim. Remaining Source/DownloadChild test-shadow migration is
 explicitly unfinished.
+
+Root reviewed and approved5aae0bd4's minimal typed repair: only a later Abort
+can append the preceding Ordinary reason, retaining its existing detail and all
+cause/cleanup/capture/evidence fields. Actual owner unwrap and permission
+acceptance failures use the same composition as scope.finish; neither can
+reclassify uncertainty as a fallback. TEST-only73d7b6e4 covers existing/absent
+Abort detail, present/absent prior error, unchanged typed facts, exactly one
+prior occurrence and unchanged Ordinary behavior. The original actualSource
+RED is unchanged and now passes.
+
+Actual-FIRST primary-error-fix-build.log passed14.40s. Frozen executable
+qualification/installer44-primary-error-fix-asb matches before/after/final SHA
+`a6723742ea9e454cd10de18bab53ace88411c8798ba6736f5901930e4ed839f6`.
+All primary-error-fix logs are preserved under target/:
+
+| Focus | Passing / failed / ignored | Runtime |
+| --- | --- | --- |
+| process | 32 / 0 / 0 | 6.58s |
+| native | 7 / 0 / 0 | 0.02s |
+| original | 4 / 0 / 0 | 1.09s |
+| cli | 2 / 0 / 0 | 2.78s |
+| source (historical shadows, not migrated-wiring proof) | 24 / 0 / 0 | 0.38s |
+
+These are69 disjoint top-level passing executions, not a full suite or blanket
+installer acceptance. Strict workspace/alltargets/allfeatures Clippy -Dwarnings
+passed17.97s; fmt/diffcheck passed. Every handle is terminal; actual binary was
+unchanged during all runtime tests. Source/DownloadChild test-shadow retirement
+remains the next explicit unfinished task; all original failure transcripts
+and frozen binaries remain intact.
