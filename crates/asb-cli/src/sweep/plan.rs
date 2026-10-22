@@ -611,7 +611,7 @@ mod tests {
                 Ok(Some(PlanningCatalog {
                     requirements: Default::default(),
                     dataset:serde_json::from_value(json!({"source":"official-fixture","revision":"a".repeat(40),"split":"test"})).unwrap(),
-                    task_ids:["one".into(), "two".into()].into_iter().collect(), evaluation_kind:"upstream-harness",
+                    task_ids:["one".into(), "two".into()].into_iter().collect(), evaluation_kind:crate::workloads::KnownEvaluationKind::UpstreamHarness,
                 }))
             }).unwrap();
             assert_eq!(

@@ -523,13 +523,18 @@ impl<'a> ReadyAttempt<'a> {
                 emit_warning(warnings, output, "The workload already passes before the agent starts. Files are preserved, but this run cannot earn task-resolution credit. Use a fresh workspace for a new benchmark attempt.".into())?;
             }
             if !json
-                && !workload_baseline.supports(workload_session.evaluation_kind())
+                && !workload_baseline.supports_evaluation(workloads::SavedEvaluationKind::Known(
+                    workload_session.evaluation_kind(),
+                ))
                 && workload_baseline_passed != Some(true)
-                && workloads::resolution_eligible(workload_session.evaluation_kind())
+                && workload_session.evaluation_kind().resolution_eligible()
             {
                 emit_warning(warnings, output, "The initial workload baseline could not be verified. This run cannot earn task-resolution credit. Inspect the workload fixture and use a fresh workspace.".into())?;
             }
-            if !json && workload_session.evaluation_kind() == "adapter-smoke" {
+            if !json
+                && workload_session.evaluation_kind()
+                    == workloads::KnownEvaluationKind::AdapterSmoke
+            {
                 emit_warning(warnings, output, "Selected external workload runs only an adapter smoke exercise, not an upstream benchmark task. Benchmark task success will be unavailable; an official dataset and evaluator are not integrated yet.".into())?;
             }
             let tape_session = instrument_phase(
@@ -953,8 +958,8 @@ impl ResultFacts {
         let run_error = issues.run_error;
         let output_error = issues.output_error;
         let configured_kind = workload_session.evaluation_kind();
-        let evaluation_kind = workloads::scored_kind(configured_kind, &workload_baseline);
-        let resolution_eligible = workloads::resolution_eligible(evaluation_kind);
+        let evaluation_kind = configured_kind.scored(&workload_baseline);
+        let resolution_eligible = evaluation_kind.resolution_eligible();
         let disposition = RunDisposition::from_facts(RunFacts {
             evaluation: &evaluation,
             evaluation_kind,
@@ -1084,7 +1089,7 @@ impl ResultFacts {
             workload_success: resolution_eligible.then_some(workload_success).flatten(),
             workload_resource_disposition,
             workload_artifacts,
-            workload_evaluation: evaluation_kind,
+            workload_evaluation: evaluation_kind.as_str(),
             workload_baseline_passed,
             workload_baseline,
             workload_failure,
@@ -1092,7 +1097,9 @@ impl ResultFacts {
                 .then_some(workload_success)
                 .flatten()
                 .map(|resolved| if resolved { 1.0 } else { 0.0 }),
-            adapter_smoke_success: (evaluation_kind == "adapter-smoke").then_some(success),
+            adapter_smoke_success: (evaluation_kind
+                == workloads::KnownEvaluationKind::AdapterSmoke)
+                .then_some(success),
             elapsed_ms: run_metrics.elapsed_ms,
             exit_code: child.status.code(),
             observation,

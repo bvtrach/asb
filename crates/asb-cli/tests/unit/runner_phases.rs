@@ -37,8 +37,8 @@ impl workloads::WorkloadSession for Workload {
     fn invocation(&self) -> &workloads::session::TaskInvocation {
         &self.invocation
     }
-    fn evaluation_kind(&self) -> &'static str {
-        "upstream-harness"
+    fn evaluation_kind(&self) -> workloads::KnownEvaluationKind {
+        workloads::KnownEvaluationKind::UpstreamHarness
     }
     fn baseline_passed(&self) -> Option<bool> {
         Some(false)
@@ -1635,8 +1635,8 @@ fn runner_phase_completion_preparation_abort_precedes_owned_workload_cleanup() {
         fn invocation(&self) -> &workloads::session::TaskInvocation {
             &self.invocation
         }
-        fn evaluation_kind(&self) -> &'static str {
-            "bundled-fixture"
+        fn evaluation_kind(&self) -> workloads::KnownEvaluationKind {
+            workloads::KnownEvaluationKind::BundledFixture
         }
         fn baseline_passed(&self) -> Option<bool> {
             Some(false)

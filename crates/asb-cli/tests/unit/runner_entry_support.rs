@@ -394,7 +394,7 @@ impl workloads::WorkloadSession for Observed {
     fn effective_budgets(&self) -> crate::planning::EffectiveBudgets {
         self.inner.effective_budgets()
     }
-    fn evaluation_kind(&self) -> &'static str {
+    fn evaluation_kind(&self) -> workloads::KnownEvaluationKind {
         self.inner.evaluation_kind()
     }
     fn baseline_passed(&self) -> Option<bool> {

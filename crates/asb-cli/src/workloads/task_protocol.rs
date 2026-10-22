@@ -118,7 +118,9 @@ impl ReadyTask {
             .to_owned();
         let baseline: BaselineEvidence = serde_json::from_value(invocation["baseline"].clone())
             .map_err(|_| "official baseline evidence is invalid")?;
-        if !baseline.supports("upstream-harness") {
+        if !baseline.supports_evaluation(super::SavedEvaluationKind::Known(
+            super::KnownEvaluationKind::UpstreamHarness,
+        )) {
             return Err("official task definition does not establish baseline identity".into());
         }
         let agent_timeout = invocation

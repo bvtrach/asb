@@ -484,6 +484,15 @@ identities include source, revision and split. Generic contracts live in
 [full benchmark integration](FULL_BENCHMARK_INTEGRATION.md) extends this
 boundary with actual upstream catalogs, submissions, environments and
 evaluators; a session by itself is not proof of full benchmark support.
+Known Rust producer categories use the internal `KnownEvaluationKind` domain
+across adapters, sessions, planning catalogs and runner facts. Its explicit
+`as_str()` projection retains the existing wire spellings; it is not a closed
+serde enum for persisted records. Saved readers classify borrowed strings as
+known or extension without changing unknown bytes. Eligibility and baseline
+downgrade share that contract, while baseline support remains distinct from
+eligibility: measured-false evidence still supports an extension at the low-level
+predicate, but an unknown category cannot earn binary resolution credit. Native
+reward/null-resolution policy and arbitrary recorded protocol IDs are unchanged.
 An adapter can also expose a read-only `PlanningCatalog`: dataset identity,
 available task IDs and evaluator scope, without preparing an environment.
 Verified preparation additionally has an internal opt-in material-ready gate:

@@ -341,7 +341,7 @@ fn launch_validates_preparation_before_exposing_a_session_and_preserves_on_failu
         "Solve the original fixture task."
     );
     assert_eq!(session.invocation().workspace, workspace);
-    assert_eq!(session.evaluation_kind(), "upstream-harness");
+    assert_eq!(session.evaluation_kind().as_str(), "upstream-harness");
     assert_eq!(session.baseline_passed(), None);
     assert!(session.baseline_evidence().supports("upstream-harness"));
     assert_eq!(session.checkpoint_evidence().len(), 1);

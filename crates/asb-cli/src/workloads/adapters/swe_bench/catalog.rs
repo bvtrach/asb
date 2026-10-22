@@ -433,7 +433,7 @@ mod tests {
         assert_eq!(planning.dataset.revision, adapter.revision);
         assert_eq!(planning.task_ids.len(), 2);
         assert!(planning.task_ids.contains("owner__repo-1"));
-        assert_eq!(planning.evaluation_kind, "upstream-harness");
+        assert_eq!(planning.evaluation_kind.as_str(), "upstream-harness");
         let path = root.join("suite/catalog.json");
         let original = fs::read(&path).unwrap();
         let value: serde_json::Value = serde_json::from_slice(&original).unwrap();

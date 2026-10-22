@@ -316,6 +316,13 @@ impl BaselineEvidence {
     }
 
     pub(crate) fn supports(&self, evaluation_kind: &str) -> bool {
+        self.supports_evaluation(super::SavedEvaluationKind::classify(evaluation_kind))
+    }
+
+    pub(crate) fn supports_evaluation(
+        &self,
+        evaluation_kind: super::SavedEvaluationKind<'_>,
+    ) -> bool {
         let hash = |value: &str, length| {
             value.len() == length && value.bytes().all(|byte| byte.is_ascii_hexdigit())
         };
@@ -324,7 +331,10 @@ impl BaselineEvidence {
                 passed: Some(false),
             } => true,
             Self::UpstreamTaskDefinition { base_commit } => {
-                evaluation_kind == "upstream-harness"
+                evaluation_kind
+                    == super::SavedEvaluationKind::Known(
+                        super::KnownEvaluationKind::UpstreamHarness,
+                    )
                     && base_commit.len() == 40
                     && base_commit.bytes().all(|byte| byte.is_ascii_hexdigit())
             }
@@ -332,7 +342,10 @@ impl BaselineEvidence {
                 source_revision,
                 definition_sha256,
             } => {
-                evaluation_kind == "upstream-harness"
+                evaluation_kind
+                    == super::SavedEvaluationKind::Known(
+                        super::KnownEvaluationKind::UpstreamHarness,
+                    )
                     && hash(source_revision, 40)
                     && hash(definition_sha256, 64)
             }
@@ -361,7 +374,7 @@ pub(crate) trait WorkloadSession {
         crate::planning::EffectiveBudgets::default()
     }
     fn invocation(&self) -> &TaskInvocation;
-    fn evaluation_kind(&self) -> &'static str;
+    fn evaluation_kind(&self) -> super::KnownEvaluationKind;
     fn baseline_passed(&self) -> Option<bool>;
     /// Adapter-owned initial material, captured before baseline evaluation.
     /// Unsupported identity must not be replaced with an invented fingerprint.
@@ -427,7 +440,7 @@ pub(super) type Evaluator = fn(&str, &Path, &str) -> Result<Evaluation, String>;
 pub(super) struct FileSession {
     invocation: TaskInvocation,
     evaluator: Evaluator,
-    evaluation_kind: &'static str,
+    evaluation_kind: super::KnownEvaluationKind,
     baseline_passed: Option<bool>,
     initial_material: Result<String, String>,
 }
@@ -437,7 +450,7 @@ impl FileSession {
         context: &PreparationContext<'_>,
         prompt: String,
         evaluator: Evaluator,
-        evaluation_kind: &'static str,
+        evaluation_kind: super::KnownEvaluationKind,
     ) -> Self {
         let initial_material = if context.verify_initial_material {
             super::material::fingerprint(context.workspace)
@@ -475,7 +488,7 @@ impl WorkloadSession for FileSession {
     fn invocation(&self) -> &TaskInvocation {
         &self.invocation
     }
-    fn evaluation_kind(&self) -> &'static str {
+    fn evaluation_kind(&self) -> super::KnownEvaluationKind {
         self.evaluation_kind
     }
     fn baseline_passed(&self) -> Option<bool> {
@@ -587,7 +600,12 @@ mod tests {
             project_root: &root,
             project_config: &project,
         };
-        let session = FileSession::new(&context, "prompt".into(), changes_files, "bundled-fixture");
+        let session = FileSession::new(
+            &context,
+            "prompt".into(),
+            changes_files,
+            super::super::KnownEvaluationKind::BundledFixture,
+        );
         assert_eq!(session.baseline_passed(), Some(false));
         assert_eq!(
             session.initial_material_sha256().unwrap_err(),
@@ -742,7 +760,7 @@ mod tests {
         assert!(!session.invocation().input.instructions.trim().is_empty());
         assert_eq!(session.baseline_passed(), Some(false));
         let initial_material = session.initial_material_sha256().unwrap();
-        assert_eq!(session.evaluation_kind(), "bundled-fixture");
+        assert_eq!(session.evaluation_kind().as_str(), "bundled-fixture");
         assert!(matches!(
             session.evaluate("done"),
             Ok(Evaluation::Failed(_))

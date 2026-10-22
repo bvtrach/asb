@@ -155,7 +155,13 @@ impl Recorded {
                 .unwrap_or("unknown"),
             &crate::workloads::BaselineEvidence::from_record(&self.summary),
         );
-        let grade = if self.summary["workload_evaluation"] == "adapter-smoke" {
+        let grade = if crate::workloads::SavedEvaluationKind::classify(
+            self.summary["workload_evaluation"]
+                .as_str()
+                .unwrap_or("unknown"),
+        ) == crate::workloads::SavedEvaluationKind::Known(
+            crate::workloads::KnownEvaluationKind::AdapterSmoke,
+        ) {
             "adapter smoke only; upstream task resolution not measured"
         } else if !crate::workloads::resolution_eligible(kind) {
             "recorded task unscored; grading scope or baseline is not eligible"

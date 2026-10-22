@@ -108,7 +108,7 @@ impl super::WorkloadAdapter for TerminalBenchAdapter {
             requirements: catalog::requirements(self, directory, &catalog)?,
             dataset: catalog.dataset,
             task_ids: catalog.tasks.into_iter().map(|task| task.id).collect(),
-            evaluation_kind: "upstream-harness",
+            evaluation_kind: crate::workloads::KnownEvaluationKind::UpstreamHarness,
         }))
     }
     fn installed_available(&self, directory: &std::path::Path) -> Option<bool> {
@@ -225,7 +225,7 @@ mod tests {
             assert_eq!(planning.task_ids.len(), adapter.expected_tasks);
             assert_eq!(planning.dataset.source, adapter.source);
             assert_eq!(planning.dataset.revision, adapter.revision);
-            assert_eq!(planning.evaluation_kind, "upstream-harness");
+            assert_eq!(planning.evaluation_kind.as_str(), "upstream-harness");
             let config: crate::benchmark::BenchmarkConfig = toml::from_str(&format!("agent='pi'\nprovider='openrouter'\nmodel='fixture'\nworkload='{}'\ntrial='fixture-0'\n", adapter.id)).unwrap();
             let selected =
                 crate::workloads::describe_selection(&config, &root, Some(&planning)).unwrap();

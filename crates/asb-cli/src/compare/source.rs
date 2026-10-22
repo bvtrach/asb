@@ -497,7 +497,11 @@ fn load_attempt(
         && !grade_only_closed;
     if !measured && outcome.is_none() {
         let workload_evaluation = selection.as_ref().map_or_else(
-            || crate::workloads::evaluation_kind(&workload, Path::new("")).into(),
+            || {
+                crate::workloads::evaluation_kind(&workload, Path::new(""))
+                    .as_str()
+                    .into()
+            },
             |selection| selection.evaluation_kind.clone(),
         );
         return Ok(BenchmarkData {

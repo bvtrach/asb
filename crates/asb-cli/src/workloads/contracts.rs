@@ -68,8 +68,8 @@ pub(crate) struct ModuleDescriptor {
 }
 
 impl ModuleDescriptor {
-    pub(crate) fn local(id: &str, evaluation_kind: &str) -> Self {
-        let smoke = evaluation_kind == "adapter-smoke";
+    pub(crate) fn local(id: &str, evaluation_kind: super::KnownEvaluationKind) -> Self {
+        let smoke = evaluation_kind == super::KnownEvaluationKind::AdapterSmoke;
         Self {
             schema_version: 1,
             id: id.into(),
@@ -83,7 +83,7 @@ impl ModuleDescriptor {
             dataset: None,
             harness: None,
             protocol: Protocol {
-                id: evaluation_kind.into(),
+                id: evaluation_kind.as_str().into(),
                 revision: 1,
                 environment: EnvironmentKind::Native,
                 submission: SubmissionKind::Workspace,
