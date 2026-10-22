@@ -132,6 +132,160 @@ fn successor_metadata_budget_is_cumulative_and_exact_at_the_boundary() {
     }
     assert!(load_with_limit(&guard, &sweep, &results, total).is_ok());
     assert!(load_with_limit(&guard, &sweep, &results, total - 1).is_err());
+    let alias = base.join(".aaaa.pending");
+    fs::hard_link(base.join("admitted.json"), &alias).unwrap();
+    let charged = total + fs::metadata(&alias).unwrap().len() as usize + ".aaaa.pending".len();
+    assert!(load_with_limit(&guard, &sweep, &results, charged).is_ok());
+    assert!(load_with_limit(&guard, &sweep, &results, charged - 1).is_err());
+    assert!(
+        alias.exists(),
+        "passive limit validation must not clean staging"
+    );
+}
+
+#[test]
+fn declared_pending_aliases_remain_passive_until_owned_durability_confirmation() {
+    for leaf in ["admitted.json", "000000.json", "next.json"] {
+        let (_fixture, sweep, results, guard, _workers) = published_mixed();
+        let child = append_metadata_node(&results, 1, &[2]);
+        let base = results.join(".checkpoint").join(ROOT);
+        let target = base.join(leaf);
+        let original = fs::read(&target).unwrap();
+        let alias = base.join(".aaaa.pending");
+        fs::hard_link(&target, &alias).unwrap();
+        let mut catalog = load(&guard, &sweep, &results).unwrap();
+        let reference = catalog.reference(0).unwrap();
+        assert!(alias.exists());
+        catalog.recheck_for_publication(None).unwrap();
+        // File-sync failure retains the duplicate and grants no confirmation.
+        assert!(
+            catalog
+                .confirm_reactivation(|path| if path == alias {
+                    Err(Error::Io("injected alias sync failure".into()))
+                } else {
+                    Ok(())
+                })
+                .is_err()
+        );
+        assert!(alias.exists());
+        assert_eq!(fs::read(&target).unwrap(), original);
+        // Unlink succeeded, then directory sync failed. A fresh reader sees no
+        // alias; it must STILL run the complete retained authority confirmation.
+        assert!(
+            catalog
+                .confirm_reactivation(|path| if path == base {
+                    Err(Error::Io(
+                        "injected post-unlink directory sync failure".into(),
+                    ))
+                } else {
+                    Ok(())
+                })
+                .is_err()
+        );
+        assert!(!alias.exists());
+        let mut recovered = load(&guard, &sweep, &results).unwrap();
+        let mut synced = std::collections::BTreeSet::new();
+        recovered
+            .confirm_reactivation(|path| {
+                synced.insert(path.to_path_buf());
+                Ok(())
+            })
+            .unwrap();
+        for path in [
+            &target,
+            &base,
+            base.parent().unwrap(),
+            &base.join("successors"),
+            &child,
+            &child.join("admitted.json"),
+            &base.join("next.json"),
+        ] {
+            assert!(
+                synced.contains(path),
+                "missing retained authority sync {}",
+                path.display()
+            );
+        }
+        assert_eq!(recovered.reference(0).unwrap(), reference);
+        assert_eq!(fs::read(target).unwrap(), original);
+    }
+}
+
+#[test]
+fn pending_alias_validation_refuses_foreign_copies_links_and_replacements_without_cleanup() {
+    for kind in [
+        "copy",
+        "foreign-link",
+        "duplicate",
+        "malformed",
+        "too-long",
+        "symlink",
+        "target-replaced",
+        "target-missing",
+        "alias-replaced",
+    ] {
+        let (_fixture, sweep, results, guard, _workers) = published_mixed();
+        let base = results.join(".checkpoint").join(ROOT);
+        let target = base.join("admitted.json");
+        let bytes = fs::read(&target).unwrap();
+        let alias = base.join(".aaaa.pending");
+        fs::hard_link(&target, &alias).unwrap();
+        let outside = results.join("retained-foreign-alias");
+        let cached = (kind == "alias-replaced").then(|| load(&guard, &sweep, &results).unwrap());
+        match kind {
+            "copy" | "alias-replaced" => {
+                fs::remove_file(&alias).unwrap();
+                fs::copy(&target, &alias).unwrap();
+            }
+            "foreign-link" => {
+                fs::remove_file(&alias).unwrap();
+                fs::copy(&target, &outside).unwrap();
+                fs::hard_link(&outside, &alias).unwrap();
+            }
+            "duplicate" => fs::hard_link(&target, base.join(".bbbb.pending")).unwrap(),
+            "malformed" => fs::rename(&alias, base.join(".not-an-id.pending")).unwrap(),
+            "too-long" => {
+                fs::rename(&alias, base.join(format!(".{}.pending", "a".repeat(129)))).unwrap()
+            }
+            "symlink" => {
+                fs::remove_file(&alias).unwrap();
+                std::os::unix::fs::symlink(&target, &alias).unwrap();
+            }
+            "target-replaced" => {
+                fs::rename(&target, &outside).unwrap();
+                fs::copy(&outside, &target).unwrap();
+            }
+            "target-missing" => fs::rename(&target, &outside).unwrap(),
+            _ => unreachable!(),
+        }
+        let before: Vec<_> = fs::read_dir(&base)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        if let Some(mut catalog) = cached {
+            assert!(catalog.recheck_for_publication(None).is_err());
+            assert!(catalog.confirm_reactivation(|_| Ok(())).is_err());
+        } else {
+            assert!(load(&guard, &sweep, &results).is_err(), "{kind}");
+        }
+        let after: Vec<_> = fs::read_dir(&base)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(
+            std::collections::BTreeSet::from_iter(before),
+            std::collections::BTreeSet::from_iter(after)
+        );
+        assert_eq!(
+            fs::read(if kind == "target-missing" {
+                outside
+            } else {
+                target
+            })
+            .unwrap(),
+            bytes
+        );
+    }
 }
 
 #[cfg(unix)]
@@ -155,6 +309,56 @@ fn successor_metadata_never_follows_child_or_link_aliases() {
             (identity.dev(), identity.ino(), identity.len()),
             (after.dev(), after.ino(), after.len())
         );
+    }
+}
+
+#[test]
+fn pending_cleanup_preserves_evidence_if_target_changes_during_sync() {
+    for mutation in ["replace", "remove", "mutate", "replace-alias"] {
+        let (_fixture, sweep, results, guard, _workers) = published_mixed();
+        let base = results.join(".checkpoint").join(ROOT);
+        let target = base.join("admitted.json");
+        let original = fs::read(&target).unwrap();
+        let alias = base.join(".aaaa.pending");
+        fs::hard_link(&target, &alias).unwrap();
+        let mut catalog = load(&guard, &sweep, &results).unwrap();
+        let outside = results.join("retained-before-sync");
+        let mut injected = false;
+        let result = catalog.confirm_reactivation(|path| {
+            if path == alias && !injected {
+                injected = true;
+                match mutation {
+                    "replace" => {
+                        fs::rename(&target, &outside).unwrap();
+                        fs::copy(&outside, &target).unwrap();
+                    }
+                    "remove" => fs::rename(&target, &outside).unwrap(),
+                    "mutate" => fs::write(&target, b"changed during owned sync").unwrap(),
+                    _ => {
+                        fs::remove_file(&alias).unwrap();
+                        fs::copy(&target, &alias).unwrap();
+                    }
+                }
+            }
+            Ok(())
+        });
+        assert!(injected);
+        assert!(result.is_err(), "{mutation}");
+        assert!(
+            alias.exists(),
+            "never unlink last retained original or replacement ({mutation})"
+        );
+        assert_eq!(
+            fs::read(&alias).unwrap(),
+            if mutation == "mutate" {
+                b"changed during owned sync".to_vec()
+            } else {
+                original.clone()
+            }
+        );
+        if outside.exists() {
+            assert_eq!(fs::read(outside).unwrap(), original);
+        }
     }
 }
 

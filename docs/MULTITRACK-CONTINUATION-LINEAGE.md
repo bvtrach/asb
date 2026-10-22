@@ -1,8 +1,9 @@
 # Successive continuation generations
 
-Status: independently reviewed design for the remaining feature-5 work, not an
-implemented or qualified capability. The current single-generation path must
-remain safe until this entire change and its public fault matrix are complete.
+Status: independently reviewed implementation checkpoints for feature 5, not a
+completed release qualification. Normal successive continuations and unused-head
+recovery exist; the remaining crash paths and broader fault matrix below still
+need completion before delivery.
 
 Implementation checkpoint: the passive catalog validates an explicit bounded
 chain and preserves original-node start/recording resolution. Consuming successor
@@ -21,8 +22,26 @@ and default latest-union selection. Missing ancestor metadata/receipts/ledgers a
 orphan stages launch no new client and do not replace reports. The repeated CLI
 suite currently has 56 passing cases; this is not full release qualification.
 
-Still unfinished: exact same-head activation after owner death before any worker,
-explicit recovery of an unlinked fully staged child, postlink durability fault
+Unused-head recovery now reuses the exact admission, manifests and frozen cohorts
+after the full owning classifier proves every pending slot untouched. It refuses
+retained prepared/finished/runtime artifacts and unknown original slot activity.
+Recording recovery requires precisely the durable imported-only start/commit/file
+population, matching origin/compatibility and payload hashes, never local producer
+intents or a frozen writer. Publication-only tests recover the same unused head
+twice in record/replay modes without minting a generation or execution.
+
+A failed metadata link/sync may leave one `.ID.pending` duplicate. Passive loading
+recognizes it only by bounded exact name, same pinned inode and declared target
+blob, charging its bytes/name against the cumulative budget; inspection never
+cleans it. Owning confirmation rechecks both target and alias before and after
+file syncing, removes only that verified duplicate and syncs node/parent
+directories before returning any worker capability. Even an alias-free retry
+must resync after prior unlink-before-directory-sync failure. Tests cover these
+boundaries, replacement during sync and foreign/symlink/copy/duplicate refusal.
+The declared admission/manifest/link bytes are not rewritten.
+
+Still unfinished: actual process-death qualification of unused-head recovery,
+explicit recovery of an unlinked fully staged child, successor-link fault
 qualification, larger multi-configuration inheritance/fault tests, original-SDK
 qualification and full current-main packaging/CI. Do not mark feature 5 delivered
 until these remaining paths and release gates are complete.

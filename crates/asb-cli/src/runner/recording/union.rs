@@ -20,7 +20,48 @@ pub(crate) struct Binding {
     pub origins_sha256: String,
 }
 
+pub(crate) enum Staging {
+    Fresh,
+    RecoverUnused,
+}
+
 impl Descriptor {
+    pub(super) fn recover_unused(
+        &self,
+        compatibility: Option<&Compatibility>,
+        concurrency: usize,
+    ) -> Result<Option<RecordingJournal>, Error> {
+        let Some(compatibility) = compatibility else {
+            if !self.origins.imports.is_empty() {
+                return Err(Error::Input(
+                    "unused recording imports have no verified material identity".into(),
+                ));
+            }
+            // No baseline meant the original admission staged no writer. Do
+            // not adopt a foreign partial directory on this uninitialized path.
+            if inspect_destination(&self.destination)? != self.destination {
+                return Err(Error::Input("unused recording destination changed".into()));
+            }
+            return Ok(None);
+        };
+        let journal = RecordingJournal::recover(&self.destination, Limits::default())
+            .map_err(recording_error)?;
+        let snapshot = journal.imported_only_snapshot().map_err(recording_error)?;
+        if snapshot.recording_id != self.physical_id
+            || snapshot.provenance.as_ref() != Some(&self.origins)
+            || snapshot.concurrency != concurrency as u64
+        {
+            return Err(Error::Input(
+                "unused recording writer differs from its admitted union".into(),
+            ));
+        }
+        snapshot
+            .compatibility
+            .require_match(compatibility)
+            .map_err(recording_error)?;
+        Ok(Some(journal))
+    }
+
     pub(crate) fn plan(
         plan: &super::super::campaign::Plan,
         generation: &str,
@@ -456,7 +497,17 @@ pub(crate) fn current(
         }
         return Ok(None);
     };
-    let current_relative = catalog.recording_current_path(&reference)?;
+    confirmed(root, catalog, &reference).map(Some)
+}
+
+pub(crate) fn confirmed(
+    root: &Path,
+    catalog: &crate::runner::campaign::generation::Catalog,
+    reference: &crate::runner::campaign::generation::StartReference,
+) -> Result<PathBuf, Error> {
+    use crate::runner::campaign::reading;
+    let configuration = reference.configuration;
+    let current_relative = catalog.recording_current_path(reference)?;
     if !reading::present_relative(root, &current_relative)? {
         return Err(Error::Input("admitted recording union has no confirmed current reference; use sweep --resume --record --recover-recording before default replay".into()));
     }
@@ -494,7 +545,7 @@ pub(crate) fn current(
     )
     .map_err(recording_error)?;
     if receipt.schema_version != 1
-        || receipt.binding.reference != reference
+        || receipt.binding.reference != *reference
         || receipt.scope != "confirmed-recording-union-publication"
         || receipt.physical_id != descriptor.physical_id
         || receipt.destination != descriptor.destination
@@ -511,7 +562,7 @@ pub(crate) fn current(
             "current union differs from its confirmed publication".into(),
         ));
     }
-    Ok(Some(descriptor.destination.clone()))
+    Ok(descriptor.destination.clone())
 }
 
 #[cfg(test)]

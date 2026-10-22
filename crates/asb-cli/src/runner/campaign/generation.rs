@@ -34,14 +34,14 @@ impl Blob {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Completed {
     pub slot: u64,
     pub receipt: Blob,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Batch {
     pub batch: u64,
@@ -56,7 +56,7 @@ impl Batch {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Manifest {
     pub schema_version: u32,
@@ -73,14 +73,14 @@ pub(crate) struct Manifest {
     pub recording: Option<crate::runner::recording::union::Descriptor>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ManifestReference {
     pub configuration: usize,
     pub content: Blob,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Admission {
     pub schema_version: u32,
@@ -156,11 +156,59 @@ struct Node {
     origin_commitments: Vec<Option<String>>,
     metadata_bytes: usize,
     next_blob: Option<Blob>,
+    pending: Option<PendingAlias>,
+}
+
+struct PendingAlias {
+    name: PathBuf,
+    target: PathBuf,
+    content: Blob,
+    identity: FileIdentity,
+    charge: usize,
+}
+
+#[derive(Eq, PartialEq)]
+struct FileIdentity {
+    device: u64,
+    inode: u64,
+}
+
+fn file_identity(file: &std::fs::File) -> Result<FileIdentity, Error> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let metadata = file.metadata().map_err(crate::io_error)?;
+        Ok(FileIdentity {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+        })
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = file;
+        Err(invalid(
+            "metadata alias recovery requires stable file identity",
+        ))
+    }
+}
+
+fn pending_name(path: &Path) -> bool {
+    path.to_str()
+        .and_then(|name| name.strip_prefix('.'))
+        .and_then(|name| name.strip_suffix(".pending"))
+        .is_some_and(valid_id)
 }
 
 pub(crate) struct Resolved {
     pub prepared: PathBuf,
     pub evidence: Vec<PathBuf>,
+}
+
+/// Passive exact wire snapshots, never a worker capability.
+pub(crate) struct HeadSnapshot {
+    pub admission: Admission,
+    pub bytes: Vec<u8>,
+    pub manifests: Vec<(Manifest, Vec<u8>)>,
 }
 
 fn invalid(reason: &str) -> Error {
@@ -298,7 +346,7 @@ impl Node {
         context: &Context<'_>,
         expected: &[Expected<'_>],
         remaining: usize,
-    ) -> Result<Self, Error> {
+    ) -> Result<(Self, Option<PathBuf>), Error> {
         if expected.is_empty()
             || expected.len() > 65_533
             || !valid_digest(context.input_digest)
@@ -347,11 +395,15 @@ impl Node {
             }
         }
         let actual_names: BTreeSet<_> =
-            reading::list_relative(checkpoint, relative, expected.len() + 3)?
+            reading::list_relative(checkpoint, relative, expected.len() + 4)?
                 .into_iter()
                 .map(PathBuf::from)
                 .collect();
-        if actual_names != declared_names {
+        let extras: Vec<_> = actual_names.difference(&declared_names).cloned().collect();
+        if !declared_names.is_subset(&actual_names)
+            || extras.len() > 1
+            || extras.first().is_some_and(|path| !pending_name(path))
+        {
             return Err(invalid("partial or foreign generation metadata remains"));
         }
         let mut population = 0usize;
@@ -388,15 +440,89 @@ impl Node {
             );
             manifests.push(manifest);
         }
-        Ok(Self {
-            root,
-            admission,
-            admission_blob: Blob::of(&bytes),
-            manifests,
-            origin_commitments,
-            metadata_bytes: budget,
-            next_blob: None,
-        })
+        Ok((
+            Self {
+                root,
+                admission,
+                admission_blob: Blob::of(&bytes),
+                manifests,
+                origin_commitments,
+                metadata_bytes: budget,
+                next_blob: None,
+                pending: None,
+            },
+            extras.into_iter().next(),
+        ))
+    }
+
+    fn metadata_files(&self) -> Vec<(PathBuf, &Blob)> {
+        let mut files = vec![(PathBuf::from("admitted.json"), &self.admission_blob)];
+        files.extend(
+            self.admission
+                .manifests
+                .iter()
+                .map(|reference| (manifest_path(reference.configuration), &reference.content)),
+        );
+        if let Some(blob) = &self.next_blob {
+            files.push((PathBuf::from("next.json"), blob));
+        }
+        files
+    }
+
+    fn resolve_pending(&mut self, name: Option<PathBuf>, remaining: usize) -> Result<usize, Error> {
+        let Some(name) = name else {
+            return Ok(0);
+        };
+        let alias = reading::pinned_regular(&self.root, &name, MAX_MANIFEST as u64)?;
+        let identity = file_identity(&alias)?;
+        let mut found = None;
+        for (target, content) in self.metadata_files() {
+            let file = reading::pinned_regular(&self.root, &target, content.bytes)?;
+            if file_identity(&file)? != identity {
+                continue;
+            }
+            let name_bytes = name.as_os_str().len();
+            let charge = usize::try_from(content.bytes)
+                .ok()
+                .and_then(|bytes| bytes.checked_add(name_bytes))
+                .filter(|bytes| *bytes <= remaining)
+                .ok_or_else(|| {
+                    invalid("pending metadata alias exceeds cumulative 64 MiB budget")
+                })?;
+            let (observed, bytes) = reading::pinned_bytes(&self.root, &name, content.bytes)?;
+            if file_identity(&observed)? != identity || !content.matches(&bytes) {
+                return Err(invalid(
+                    "pending alias differs from its declared metadata target",
+                ));
+            }
+            found = Some(PendingAlias {
+                name,
+                target,
+                content: content.clone(),
+                identity,
+                charge,
+            });
+            break;
+        }
+        let pending = found.ok_or_else(|| {
+            invalid("pending file is not an exact hard-link alias of declared metadata")
+        })?;
+        let charge = pending.charge;
+        self.pending = Some(pending);
+        Ok(charge)
+    }
+
+    fn verify_pending(&self, pending: &PendingAlias) -> Result<std::fs::File, Error> {
+        let target = reading::pinned_regular(&self.root, &pending.target, pending.content.bytes)?;
+        let (alias, bytes) =
+            reading::pinned_bytes(&self.root, &pending.name, pending.content.bytes)?;
+        if file_identity(&target)? != pending.identity
+            || file_identity(&alias)? != pending.identity
+            || !pending.content.matches(&bytes)
+        {
+            return Err(invalid("owned pending alias or declared target changed"));
+        }
+        Ok(alias)
     }
 
     fn reference(&self, configuration: usize) -> Result<StartReference, Error> {
@@ -542,6 +668,77 @@ impl Node {
 }
 
 impl Catalog {
+    pub(crate) fn new_completion_count(
+        &self,
+        receipts: &std::collections::BTreeMap<(usize, u64), (u64, String)>,
+    ) -> Result<usize, Error> {
+        let mut inherited = 0;
+        for (configuration, manifest) in self.head().manifests.iter().enumerate() {
+            for entry in &manifest.completed {
+                if receipts
+                    .get(&(configuration, entry.slot))
+                    .is_none_or(|(bytes, sha256)| {
+                        *bytes != entry.receipt.bytes || *sha256 != entry.receipt.sha256
+                    })
+                {
+                    return Err(invalid(
+                        "classification lost or changed an inherited completion",
+                    ));
+                }
+                inherited += 1;
+            }
+        }
+        receipts
+            .len()
+            .checked_sub(inherited)
+            .ok_or_else(|| invalid("classified completed population shrank"))
+    }
+
+    pub(crate) fn head_snapshot(&self) -> Result<HeadSnapshot, Error> {
+        let node = self.head();
+        let bytes = reading::bounded_relative(
+            &node.root,
+            Path::new("admitted.json"),
+            node.admission_blob.bytes,
+        )?;
+        if !node.admission_blob.matches(&bytes) {
+            return Err(invalid("head admission changed before reactivation"));
+        }
+        let mut manifests = Vec::with_capacity(node.manifests.len());
+        for (manifest, reference) in node.manifests.iter().zip(&node.admission.manifests) {
+            let bytes = reading::bounded_relative(
+                &node.root,
+                &manifest_path(reference.configuration),
+                reference.content.bytes,
+            )?;
+            if !reference.content.matches(&bytes) {
+                return Err(invalid("head manifest changed before reactivation"));
+            }
+            manifests.push((manifest.clone(), bytes));
+        }
+        Ok(HeadSnapshot {
+            admission: node.admission.clone(),
+            bytes,
+            manifests,
+        })
+    }
+
+    pub(crate) fn recording_before_head(
+        &self,
+        configuration: usize,
+    ) -> Result<Option<StartReference>, Error> {
+        self.head()
+            .manifests
+            .get(configuration)
+            .ok_or_else(|| invalid("configuration outside manifest"))?;
+        self.nodes[..self.nodes.len() - 1]
+            .iter()
+            .rev()
+            .find(|node| node.manifests[configuration].recording.is_some())
+            .map(|node| node.reference(configuration))
+            .transpose()
+    }
+
     fn head(&self) -> &Node {
         self.nodes
             .last()
@@ -590,7 +787,8 @@ impl Catalog {
         let mut next: Option<NextReference> = None;
         let mut relative = PathBuf::from(ROOT);
         loop {
-            let mut node = Node::read(checkpoint, &relative, &context, expected, remaining)?;
+            let (mut node, pending) =
+                Node::read(checkpoint, &relative, &context, expected, remaining)?;
             remaining = remaining
                 .checked_sub(node.metadata_bytes)
                 .ok_or_else(|| invalid("cumulative generation metadata exceeds 64 MiB"))?;
@@ -644,6 +842,9 @@ impl Catalog {
             } else {
                 None
             };
+            let alias_bytes = node.resolve_pending(pending, remaining)?;
+            remaining -= alias_bytes;
+            node.metadata_bytes += alias_bytes;
             nodes.push(node);
             if let Some(link) = &next {
                 relative = Path::new(ROOT)
@@ -690,6 +891,48 @@ impl Catalog {
             previous_generation: self.head().admission.generation.clone(),
             previous_admission: self.head().admission_blob.clone(),
         }
+    }
+
+    /// Owned recovery confirms durability as well as readability. Never called
+    /// by passive inspection: an earlier hard link may have succeeded while its
+    /// containing-directory sync failed, so matching bytes alone grant no cap.
+    pub(crate) fn confirm_reactivation(
+        &mut self,
+        mut before_sync: impl FnMut(&Path) -> Result<(), Error>,
+    ) -> Result<(), Error> {
+        self.recheck_for_publication(None)?;
+        for node in self.nodes.iter_mut().rev() {
+            for (relative, blob) in node.metadata_files() {
+                let (file, bytes) = reading::pinned_bytes(&node.root, &relative, blob.bytes)?;
+                if !blob.matches(&bytes) {
+                    return Err(invalid(
+                        "retained authority changed before durability confirmation",
+                    ));
+                }
+                before_sync(&node.root.join(&relative))?;
+                file.sync_all().map_err(crate::io_error)?;
+            }
+            if let Some(pending) = &node.pending {
+                let alias = node.verify_pending(pending)?;
+                before_sync(&node.root.join(&pending.name))?;
+                alias.sync_all().map_err(crate::io_error)?;
+                // Sync can block: verify BOTH named objects and exact bytes
+                // again afterward. If the target disappeared, this duplicate
+                // may be the last recoverable link and must not be removed.
+                let _verified = node.verify_pending(pending)?;
+                std::fs::remove_file(node.root.join(&pending.name)).map_err(crate::io_error)?;
+                self.metadata_bytes -= pending.charge;
+                node.metadata_bytes -= pending.charge;
+                node.pending = None;
+            }
+            for directory in [&node.root, node.root.parent().expect("derived node parent")] {
+                before_sync(directory)?;
+                std::fs::File::open(directory)
+                    .and_then(|file| file.sync_all())
+                    .map_err(crate::io_error)?;
+            }
+        }
+        self.recheck_for_publication(None)
     }
 
     pub(crate) fn head_root(&self) -> &Path {
@@ -739,6 +982,10 @@ impl Catalog {
                     ));
                 }
                 None => (),
+            }
+            if let Some(pending) = &node.pending {
+                node.verify_pending(pending)?;
+                names.insert(pending.name.clone().into_os_string());
             }
             if node.root == self.nodes[0].root
                 && reading::present_relative(&node.root, Path::new("successors"))?

@@ -42,6 +42,7 @@ pub(in crate::sweep) struct Prepared {
     relative: PathBuf,
     link_bytes: Option<Vec<u8>>,
     stage_created: bool,
+    reactivating: bool,
 }
 
 /// Only a fully published generation can produce worker capabilities. This is
@@ -152,6 +153,11 @@ impl Prepared {
             return Err(recovery(
                 "completed-only reuse needs no continuation generation",
             ));
+        }
+        if let Some(catalog) = &classified.catalog
+            && catalog.new_completion_count(&classified.receipt_bindings)? == 0
+        {
+            return Self::reactivate(inputs, classified, sweep);
         }
         let Classified {
             catalog,
@@ -366,7 +372,78 @@ impl Prepared {
             relative,
             link_bytes,
             stage_created: false,
+            reactivating: false,
         })
+    }
+
+    fn reactivate(
+        inputs: Inputs,
+        classified: Classified,
+        sweep: &SweepPlan,
+    ) -> Result<Self, Error> {
+        let Classified {
+            catalog,
+            mut identities,
+            origin,
+            layouts,
+            mut completed,
+            pending: _,
+            receipt_bindings: _,
+            _owners,
+        } = classified;
+        let catalog = catalog.expect("reactivation requires an admitted head");
+        catalog.recheck_for_publication(None)?;
+        let snapshot = catalog.head_snapshot()?;
+        let relative = catalog
+            .head_root()
+            .strip_prefix(std::path::absolute(&inputs.directory).map_err(io_error)?)
+            .map_err(|_| recovery("admitted head is outside its checkpoint"))?
+            .to_path_buf();
+        let mut campaigns = Vec::with_capacity(layouts.len());
+        for (configuration, (layout, (manifest, bytes))) in
+            layouts.into_iter().zip(snapshot.manifests).enumerate()
+        {
+            Self::unused_runtime(&layout.root, &snapshot.admission.generation)?;
+            if let Some(reference) = catalog.recording_before_head(configuration)? {
+                crate::runner::recording::union::confirmed(&layout.root, &catalog, &reference)?;
+            }
+            campaigns.push(Campaign {
+                recorder: None,
+                compatibility: identities.remove(&configuration),
+                invocation: origin
+                    .invocation_parent
+                    .join(&sweep.entries[configuration].reference),
+                root: layout.root,
+                plan: layout.plan,
+                completed: completed.remove(&configuration).unwrap_or_default(),
+                manifest,
+                bytes,
+            });
+        }
+        Ok(Self {
+            guard: Guard {
+                inputs,
+                owners: _owners,
+            },
+            parent: origin.invocation_parent.clone(),
+            origin,
+            campaigns,
+            admission: snapshot.admission,
+            admission_bytes: snapshot.bytes,
+            predecessor: Some(catalog),
+            relative,
+            link_bytes: None,
+            stage_created: false,
+            reactivating: true,
+        })
+    }
+
+    fn unused_runtime(root: &Path, generation: &str) -> Result<(), Error> {
+        let relative = PathBuf::from(".asb-generations").join(generation);
+        // A published-but-unused head has no runtime leaves. Never overwrite a
+        // retained prepared/finished record, alias or partially entered batch.
+        reading::list_relative(root, &relative, 0)?;
+        Ok(())
     }
 
     fn recheck(&mut self, results: &Path, sweep: &SweepPlan) -> Result<(), Error> {
@@ -406,6 +483,9 @@ impl Prepared {
             ));
         }
         for campaign in &self.campaigns {
+            if self.reactivating {
+                Self::unused_runtime(&campaign.root, &self.admission.generation)?;
+            }
             let index = campaign.manifest.configuration;
             for batch in &campaign.manifest.pending {
                 for replica in &batch.cohort.admitted_slots {
@@ -490,71 +570,90 @@ impl Prepared {
     }
 
     fn publish_with(
+        self,
+        results: &Path,
+        sweep: &SweepPlan,
+        after_file: impl FnMut(usize) -> Result<(), Error>,
+    ) -> Result<(Guard, Vec<AdmittedCampaign>), Error> {
+        self.publish_with_confirmation(results, sweep, after_file, |_| Ok(()))
+    }
+
+    fn publish_with_confirmation(
         mut self,
         results: &Path,
         sweep: &SweepPlan,
         mut after_file: impl FnMut(usize) -> Result<(), Error>,
+        mut before_sync: impl FnMut(&Path) -> Result<(), Error>,
     ) -> Result<(Guard, Vec<AdmittedCampaign>), Error> {
         self.recheck(results, sweep)?;
+        if !self.reactivating
+            && let Some(catalog) = self.predecessor.as_mut()
+        {
+            catalog.confirm_reactivation(&mut before_sync)?;
+        }
         let directory = self.guard.inputs.directory.join(&self.relative);
-        // No recursive mkdir/adoption: existing partial state is recovery-only.
-        let mut builder = fs::DirBuilder::new();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::DirBuilderExt;
-            builder.mode(0o700);
-        }
-        let parent = directory.parent().expect("fixed generation parent");
-        if self.predecessor.is_some()
-            && !reading::present_relative(
-                &self.guard.inputs.directory,
-                &Path::new(ROOT).join("successors"),
-            )?
-        {
-            builder.create(parent).map_err(io_error)?;
-            sync_directory(&root(&self.guard.inputs))?;
-        }
-        builder.create(&directory).map_err(io_error)?;
-        self.stage_created = true;
-        sync_directory(parent)?;
-        for (index, campaign) in self.campaigns.iter().enumerate() {
-            publish_bytes(&directory.join(manifest_path(index)), &campaign.bytes)?;
-            after_file(index)?;
-        }
-        // Read back the exact bounded snapshots, not merely their names/count.
-        for (reference, campaign) in self.admission.manifests.iter().zip(&self.campaigns) {
-            let bytes = reading::bounded_relative(
-                &directory,
-                &manifest_path(reference.configuration),
-                MAX_MANIFEST as u64,
-            )?;
-            if !reference.content.matches(&bytes) || bytes != campaign.bytes {
-                return Err(recovery(
-                    "published generation manifest changed before final admission",
-                ));
+        if !self.reactivating {
+            // No recursive mkdir/adoption: existing partial state is recovery-only.
+            let mut builder = fs::DirBuilder::new();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::DirBuilderExt;
+                builder.mode(0o700);
             }
+            let parent = directory.parent().expect("fixed generation parent");
+            if self.predecessor.is_some()
+                && !reading::present_relative(
+                    &self.guard.inputs.directory,
+                    &Path::new(ROOT).join("successors"),
+                )?
+            {
+                builder.create(parent).map_err(io_error)?;
+                sync_directory(&root(&self.guard.inputs))?;
+            }
+            builder.create(&directory).map_err(io_error)?;
+            self.stage_created = true;
+            sync_directory(parent)?;
+            for (index, campaign) in self.campaigns.iter().enumerate() {
+                publish_bytes(&directory.join(manifest_path(index)), &campaign.bytes)?;
+                after_file(index)?;
+            }
+            // Read back the exact bounded snapshots, not merely their names/count.
+            for (reference, campaign) in self.admission.manifests.iter().zip(&self.campaigns) {
+                let bytes = reading::bounded_relative(
+                    &directory,
+                    &manifest_path(reference.configuration),
+                    MAX_MANIFEST as u64,
+                )?;
+                if !reference.content.matches(&bytes) || bytes != campaign.bytes {
+                    return Err(recovery(
+                        "published generation manifest changed before final admission",
+                    ));
+                }
+            }
+            self.recheck(results, sweep)?;
         }
-        self.recheck(results, sweep)?;
         // The fixed checkpoint root above is already durable: any staging
         // failure is visible recovery state, never permission to mint another
         // generation. Import EVERY configuration before admitting ANY worker.
         for campaign in &mut self.campaigns {
             if let Some(descriptor) = &campaign.manifest.recording {
-                let generations = campaign.root.join(".asb-generations");
-                let mut builder = fs::DirBuilder::new();
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::DirBuilderExt;
-                    builder.mode(0o700);
+                if !self.reactivating {
+                    let generations = campaign.root.join(".asb-generations");
+                    let mut builder = fs::DirBuilder::new();
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::DirBuilderExt;
+                        builder.mode(0o700);
+                    }
+                    builder
+                        .recursive(true)
+                        .create(&generations)
+                        .map_err(io_error)?;
+                    sync_directory(&campaign.root)?;
+                    let stage = generations.join(&campaign.manifest.generation);
+                    builder.recursive(false).create(&stage).map_err(io_error)?;
+                    sync_directory(&generations)?;
                 }
-                builder
-                    .recursive(true)
-                    .create(&generations)
-                    .map_err(io_error)?;
-                sync_directory(&campaign.root)?;
-                let stage = generations.join(&campaign.manifest.generation);
-                builder.recursive(false).create(&stage).map_err(io_error)?;
-                sync_directory(&generations)?;
                 let reference = crate::runner::campaign::generation::StartReference {
                     generation: campaign.manifest.generation.clone(),
                     configuration: campaign.manifest.configuration,
@@ -569,24 +668,48 @@ impl Prepared {
                         reference,
                         campaign.compatibility.clone(),
                         self.admission.recording_current_path(),
+                        if self.reactivating {
+                            crate::runner::recording::union::Staging::RecoverUnused
+                        } else {
+                            crate::runner::recording::union::Staging::Fresh
+                        },
                     )?,
                 ));
             }
         }
         self.recheck(results, sweep)?;
-        self.verify_stage(&directory, false)?;
-        publish_bytes(&directory.join("admitted.json"), &self.admission_bytes)?;
-        self.verify_stage(&directory, true)?;
-        if let Some(bytes) = &self.link_bytes {
-            publish_bytes(
-                &self
-                    .predecessor
-                    .as_ref()
-                    .expect("link has predecessor")
-                    .head_root()
-                    .join("next.json"),
-                bytes,
+        if !self.reactivating {
+            self.verify_stage(&directory, false)?;
+            crate::runner::repeated::publish_bytes_after_link(
+                &directory.join("admitted.json"),
+                &self.admission_bytes,
+                || before_sync(&directory),
             )?;
+            self.verify_stage(&directory, true)?;
+            if let Some(bytes) = &self.link_bytes {
+                crate::runner::repeated::publish_bytes_after_link(
+                    &self
+                        .predecessor
+                        .as_ref()
+                        .expect("link has predecessor")
+                        .head_root()
+                        .join("next.json"),
+                    bytes,
+                    || {
+                        before_sync(
+                            self.predecessor
+                                .as_ref()
+                                .expect("linked predecessor")
+                                .head_root(),
+                        )
+                    },
+                )?;
+            }
+        } else {
+            self.predecessor
+                .as_mut()
+                .expect("reactivation requires catalog")
+                .confirm_reactivation(&mut before_sync)?;
         }
         // Validate the entire public chain before returning any executable cap.
         // A postlink validation/sync error retains metadata, never launches.

@@ -479,6 +479,65 @@ impl RecordingJournal {
         Ok(())
     }
 
+    /// Verify an unused continuation writer before reactivation. A synthesized
+    /// incomplete snapshot is not proof of a durable import commit: require the
+    /// exact import start/commit population before checking payload bytes.
+    pub(crate) fn imported_only_snapshot(&self) -> Result<Manifest, Error> {
+        self.check_root()?;
+        self.ensure_recording()?;
+        let origins = self
+            .intent
+            .manifest
+            .provenance
+            .as_ref()
+            .ok_or_else(|| Error("recording has no frozen import plan".into()))?;
+        if self.starts.len() != origins.imports.len() || self.commits.len() != origins.imports.len()
+        {
+            return Err(Error(
+                "unused recording contains missing imports or locally started tracks".into(),
+            ));
+        }
+        for imported in &origins.imports {
+            let started = self
+                .starts
+                .get(&imported.slot)
+                .ok_or_else(|| Error("unused recording lost an import start".into()))?;
+            let track = self
+                .commits
+                .get(&imported.slot)
+                .ok_or_else(|| Error("unused recording lost a durable import commit".into()))?;
+            if started.import_source != Some(imported.source) {
+                return Err(Error(
+                    "unused recording contains a local producer intent".into(),
+                ));
+            }
+            origins.require_track(track, imported.source)?;
+        }
+        // No orphan payload/temp/association for a pending local producer may
+        // hide outside the reconstructed start map and then fail after payment.
+        let mut names = std::collections::BTreeSet::from([std::ffi::OsString::from("intent.json")]);
+        for imported in &origins.imports {
+            for name in [
+                format!("started-{}.json", imported.slot),
+                format!("committed-{}.json", imported.slot),
+                format!("track-{}.jsonl", imported.slot),
+            ] {
+                names.insert(name.into());
+            }
+        }
+        for entry in fs::read_dir(&self.root).map_err(io_error)? {
+            if !names.remove(&entry.map_err(io_error)?.file_name()) {
+                return Err(Error(
+                    "unused recording contains orphan or foreign staging files".into(),
+                ));
+            }
+        }
+        if !names.is_empty() {
+            return Err(Error("unused recording lost a required import file".into()));
+        }
+        self.snapshot()
+    }
+
     /// Reconstruct metadata in stable slot order. Never-started slots are absent;
     /// started but uncommitted slots are incomplete with unknown outcomes.
     pub fn snapshot(&self) -> Result<Manifest, Error> {

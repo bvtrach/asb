@@ -274,8 +274,16 @@ impl Recorder {
         reference: super::campaign::generation::StartReference,
         compatibility: Option<Compatibility>,
         current_relative: PathBuf,
+        staging: union::Staging,
     ) -> Result<Self, Error> {
-        let journal = descriptor.stage(compatibility.as_ref(), plan.concurrency, plan.repeat)?;
+        let journal = match staging {
+            union::Staging::Fresh => {
+                descriptor.stage(compatibility.as_ref(), plan.concurrency, plan.repeat)?
+            }
+            union::Staging::RecoverUnused => {
+                descriptor.recover_unused(compatibility.as_ref(), plan.concurrency)?
+            }
+        };
         let binding = union::Binding {
             reference,
             origins_sha256: descriptor.origins.commitment().map_err(recording_error)?,

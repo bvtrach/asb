@@ -70,10 +70,21 @@ pub(crate) fn pinned_bytes(
     relative: &Path,
     limit: u64,
 ) -> Result<(File, Vec<u8>), Error> {
-    let file =
-        open_relative(root, relative)?.ok_or_else(|| invalid("relative input is missing"))?;
+    let file = pinned_regular(root, relative, limit)?;
     let bytes = bounded_file(file.try_clone().map_err(io_error)?, limit)?;
     Ok((file, bytes))
+}
+
+/// Open a confined regular descriptor without reading its contents. Metadata
+/// alias recovery compares file identities before hashing the one matched leaf.
+pub(crate) fn pinned_regular(root: &Path, relative: &Path, limit: u64) -> Result<File, Error> {
+    let file =
+        open_relative(root, relative)?.ok_or_else(|| invalid("relative input is missing"))?;
+    let metadata = file.metadata().map_err(io_error)?;
+    if !metadata.is_file() || metadata.len() > limit {
+        return Err(invalid("input must be a bounded regular file"));
+    }
+    Ok(file)
 }
 
 /// Any existing slot-owned object prevents untouched admission. Directories
@@ -88,9 +99,10 @@ pub(crate) fn list_relative(
     maximum: usize,
 ) -> Result<Vec<OsString>, Error> {
     // Generation metadata has a final admission, optional successor link and
-    // fixed successors directory besides configuration manifests. Slot callers
-    // still pass their independent 65,533-record maximum.
-    if maximum > 65_536 {
+    // fixed successors directory besides configuration manifests, plus at most
+    // one recoverable pending hard-link alias. Slot callers still pass their
+    // independent 65,533-record maximum.
+    if maximum > 65_537 {
         return Err(invalid("directory inventory exceeds its bound"));
     }
     #[cfg(unix)]

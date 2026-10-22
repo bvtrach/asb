@@ -42,6 +42,72 @@ impl Read for NoRead {
 }
 
 #[test]
+fn unused_import_writer_requires_durable_commits_and_no_local_producer_intents() {
+    for fault in [
+        "none",
+        "missing-commit",
+        "local-start",
+        "payload",
+        "frozen",
+        "orphan-payload",
+    ] {
+        let fixture = Fixture::new();
+        let mut old = manifest(1).tracks.remove(0);
+        old.complete = false;
+        old.process_success = None;
+        old.workload_success = None;
+        old.statistics = Statistics::default();
+        let mut union = journal(&fixture, std::slice::from_ref(&old), 2);
+        union
+            .import_track(old.clone(), 0, &mut &b"{}\n"[..])
+            .unwrap();
+        let expected = union.imported_only_snapshot().unwrap();
+        assert_eq!(expected.tracks, vec![old.clone()]);
+        if fault == "local-start" {
+            union.begin(2, 1).unwrap();
+        }
+        if fault == "frozen" {
+            union.finalize().unwrap();
+        }
+        let destination = union.destination().to_path_buf();
+        let partial = union.partial_directory().to_path_buf();
+        drop(union);
+        if fault == "missing-commit" {
+            fs::remove_file(partial.join("committed-1.json")).unwrap();
+        }
+        if fault == "payload" {
+            fs::write(partial.join("track-1.jsonl"), b"[]\n").unwrap();
+        }
+        if fault == "orphan-payload" {
+            fs::write(partial.join("track-2.jsonl"), b"{}\n").unwrap();
+        }
+        let recovered = match RecordingJournal::recover(&destination, Limits::default()) {
+            Ok(recovered) => recovered,
+            Err(error) if fault == "payload" => {
+                assert!(
+                    error
+                        .to_string()
+                        .contains("payload differs from its commit")
+                );
+                continue;
+            }
+            Err(error) => panic!("unexpected {fault} recovery failure: {error}"),
+        };
+        if fault == "missing-commit" {
+            // An unknown incomplete snapshot can equal the imported metadata
+            // even though its commit is missing. Snapshot equality is not enough.
+            assert_eq!(recovered.snapshot().unwrap(), expected);
+        }
+        let result = recovered.imported_only_snapshot();
+        if fault == "none" {
+            assert_eq!(result.unwrap(), expected);
+        } else {
+            assert!(result.is_err(), "{fault}");
+        }
+    }
+}
+
+#[test]
 fn journal_caches_validated_origin_once_but_readonly_proofs_recheck_disk_intent() {
     let fixture = Fixture::new();
     let tracks = manifest(6).tracks;

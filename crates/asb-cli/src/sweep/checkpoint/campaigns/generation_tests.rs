@@ -18,7 +18,11 @@ fn inputs(results: &Path, sweep: &SweepPlan) -> Inputs {
 }
 
 fn prepared() -> (Fixture, SweepPlan, PathBuf, Prepared) {
-    let (fixture, sweep, results) = published(crate::tape::Mode::Replay);
+    prepared_mode(crate::tape::Mode::Replay)
+}
+
+fn prepared_mode(mode: crate::tape::Mode) -> (Fixture, SweepPlan, PathBuf, Prepared) {
+    let (fixture, sweep, results) = published(mode);
     let state = inputs(&results, &sweep);
     state.publish("pending", None).unwrap();
     state.reserve_campaigns(&results, &sweep).unwrap();
@@ -27,6 +31,169 @@ fn prepared() -> (Fixture, SweepPlan, PathBuf, Prepared) {
         .unwrap();
     let prepared = Prepared::plan(state, classification, &fixture.0, &results, &sweep).unwrap();
     (fixture, sweep, results, prepared)
+}
+
+#[test]
+fn unused_admitted_head_reactivation_preserves_exact_authority_and_mints_no_generation() {
+    for mode in [crate::tape::Mode::Replay, crate::tape::Mode::Record] {
+        let (fixture, sweep, results, prepared) = prepared_mode(mode);
+        let directory = root(&prepared.guard.inputs);
+        let mut frozen = vec![(
+            directory.join("admitted.json"),
+            prepared.admission_bytes.clone(),
+        )];
+        frozen.extend(prepared.campaigns.iter().map(|campaign| {
+            (
+                directory.join(manifest_path(campaign.manifest.configuration)),
+                campaign.bytes.clone(),
+            )
+        }));
+        let (mut guard, mut workers) = prepared.publish(&results, &sweep).unwrap();
+        let references: Vec<_> = workers
+            .iter()
+            .map(|worker| {
+                (
+                    worker.manifest.generation.clone(),
+                    worker.manifest_reference.clone(),
+                    worker.admission_reference.clone(),
+                )
+            })
+            .collect();
+        // Discard capabilities without executing them, like owner death after
+        // final admission but before worker admission. This is publication-only
+        // qualification, not a claim that an actual client ran.
+        for _ in 0..2 {
+            drop(workers);
+            let Guard {
+                inputs: state,
+                owners,
+            } = guard;
+            drop(owners);
+            let classified = state
+                .classify_campaigns(&fixture.0, &results, &sweep)
+                .unwrap();
+            let prepared = Prepared::plan(state, classified, &fixture.0, &results, &sweep).unwrap();
+            assert!(prepared.reactivating);
+            (guard, workers) = prepared.publish(&results, &sweep).unwrap();
+            for (worker, reference) in workers.iter().zip(&references) {
+                assert_eq!(
+                    (
+                        &worker.manifest.generation,
+                        &worker.manifest_reference,
+                        &worker.admission_reference
+                    ),
+                    (&reference.0, &reference.1, &reference.2)
+                );
+                assert!(!worker.root.join("batch-1").exists());
+                assert!(!worker.root.join("batch-2").exists());
+            }
+            for (path, bytes) in &frozen {
+                assert_eq!(&fs::read(path).unwrap(), bytes);
+            }
+            assert!(!directory.join("next.json").exists());
+            assert!(!directory.join("successors").exists());
+        }
+    }
+}
+
+#[test]
+fn unused_head_reactivation_never_adopts_prior_runtime_or_unknown_slot_evidence() {
+    for kind in ["finished", "prepared", "original-start", "workspace"] {
+        let (fixture, sweep, results, prepared) = prepared();
+        let (guard, workers) = prepared.publish(&results, &sweep).unwrap();
+        let worker = &workers[1];
+        let path = match kind {
+            "finished" => worker.settlement_root().join("finished.json"),
+            "prepared" => worker.settlement_root().join("batch-1/prepared.json"),
+            "original-start" => worker.root.join("batch-1/starts/1.json"),
+            _ => worker
+                .root
+                .join(&worker.plan.slots[0].workspace)
+                .join("observed"),
+        };
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, b"retained owned fault evidence").unwrap();
+        drop(workers);
+        let Guard {
+            inputs: state,
+            owners,
+        } = guard;
+        drop(owners);
+        if let Ok(classified) = state.classify_campaigns(&fixture.0, &results, &sweep) {
+            assert!(
+                Prepared::plan(state, classified, &fixture.0, &results, &sweep).is_err(),
+                "{kind}"
+            );
+        }
+        assert_eq!(fs::read(path).unwrap(), b"retained owned fault evidence");
+        assert!(
+            !results
+                .join(".checkpoint")
+                .join(ROOT)
+                .join("next.json")
+                .exists()
+        );
+    }
+}
+
+#[test]
+fn unused_head_reactivation_requires_retained_authority_directory_resync() {
+    let (fixture, sweep, results, prepared) = prepared();
+    let directory = root(&prepared.guard.inputs);
+    let frozen = prepared.admission_bytes.clone();
+    // The final admission link exists, but no executable capability may escape
+    // its failed containing-directory durability boundary.
+    let failed = prepared.publish_with_confirmation(
+        &results,
+        &sweep,
+        |_| Ok(()),
+        |path| {
+            assert_eq!(path, directory);
+            Err(Error::Io(
+                "injected original admission directory sync failure".into(),
+            ))
+        },
+    );
+    assert!(failed.is_err());
+    assert_eq!(fs::read(directory.join("admitted.json")).unwrap(), frozen);
+    no_starts(&sweep, &results);
+    for fail_confirmation in [true, false] {
+        let state = inputs(&results, &sweep);
+        let classified = state
+            .classify_campaigns(&fixture.0, &results, &sweep)
+            .unwrap();
+        let prepared = Prepared::plan(state, classified, &fixture.0, &results, &sweep).unwrap();
+        assert!(prepared.reactivating);
+        let mut observed = Vec::new();
+        let confirmed = prepared.publish_with_confirmation(
+            &results,
+            &sweep,
+            |_| Ok(()),
+            |path| {
+                observed.push(path.to_path_buf());
+                if fail_confirmation && path == directory {
+                    Err(Error::Io(
+                        "injected retained admission directory sync failure".into(),
+                    ))
+                } else {
+                    Ok(())
+                }
+            },
+        );
+        assert!(observed.contains(&directory.join("admitted.json")));
+        assert!(observed.contains(&directory));
+        if fail_confirmation {
+            assert!(confirmed.is_err());
+        } else {
+            assert!(observed.contains(&directory.parent().unwrap().to_path_buf()));
+            let (guard, workers) = confirmed.unwrap();
+            assert_eq!(workers.len(), sweep.entries.len());
+            drop(workers);
+            drop(guard);
+        }
+        assert_eq!(fs::read(directory.join("admitted.json")).unwrap(), frozen);
+        no_starts(&sweep, &results);
+    }
 }
 
 fn no_starts(sweep: &SweepPlan, results: &Path) {
