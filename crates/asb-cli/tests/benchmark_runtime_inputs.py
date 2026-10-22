@@ -228,7 +228,7 @@ assert children[0].poll() is not None
             self.assertEqual(subject.asb_runtime.library_paths("\tstatically linked\n"),{})
             with self.assertRaises(subject.asb_runtime.ExecutionError):
                 subject.asb_runtime.library_paths("statically linked\nunexpected text")
-            with patch.object(subject.asb_runtime,"elf",return_value=(b"",62,None)), \
+            with patch.object(subject.asb_runtime,"elf_identity",return_value=(62,None)), \
                  patch.object(subject.asb_runtime,"resolve_dependencies",return_value={"dependent":str(library)}) as resolve:
                 discovery = subject.Discovery()
                 discovery.python_extensions(root,"/fixture-loader")

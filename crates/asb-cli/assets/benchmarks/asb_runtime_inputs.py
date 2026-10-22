@@ -80,9 +80,9 @@ class Discovery:
                 raise InputError("runtime entry changed to a non-regular file")
             header = source.read(4096)
         if header.startswith(b"\x7fELF"):
-            _, machine, interpreter = asb_runtime.elf(path)
+            machine, interpreter = asb_runtime.elf_identity(path)
             if interpreter:
-                if asb_runtime.elf(interpreter)[1]!=machine:
+                if asb_runtime.elf_identity(interpreter)[0]!=machine:
                     raise InputError("runtime loader has a different architecture")
                 self.file(interpreter)
                 environment = {"PATH":os.defpath,"LC_ALL":"C"}
@@ -121,7 +121,7 @@ class Discovery:
         if len(paths)>512:
             raise InputError("Python runtime path population exceeded")
         self.program(info["executable"])
-        _,_,loader = asb_runtime.elf(info["executable"])
+        _,loader = asb_runtime.elf_identity(info["executable"])
         for item in paths:
             if not isinstance(item,str) or not item or not Path(item).is_absolute():
                 raise InputError("Python runtime path is not absolute")
@@ -167,7 +167,7 @@ class Discovery:
             # and must not be inspected as standalone loader roots.
             if not python_extension(path):
                 continue
-            asb_runtime.elf(path)
+            asb_runtime.elf_identity(path)
             for dependency in asb_runtime.resolve_dependencies(loader,path,environment,deadline=self.deadline).values():
                 self.file(dependency)
 
@@ -175,7 +175,7 @@ class Discovery:
         if type(pid) is not int or pid<=0 or sys.platform!="linux":
             raise InputError("unsupported process runtime identity")
         executable = Path(f"/proc/{pid}/exe")
-        _,_,interpreter = asb_runtime.elf(executable)
+        _,interpreter = asb_runtime.elf_identity(executable)
         if interpreter:
             self.file(interpreter)
             for library in asb_runtime.resolve_dependencies(interpreter,executable,deadline=self.deadline).values():

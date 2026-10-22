@@ -2,15 +2,18 @@
 import os
 import json
 import hashlib
+import io
 from pathlib import Path
 import subprocess
 import select
 import signal
 import shutil
+import struct
 import sys
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 from test_environment import coverage_env
 
 sys.dont_write_bytecode = True
@@ -19,7 +22,136 @@ import asb_runtime as subject
 from asb_execution import ExecutionError
 
 
+def elf_fixture(interpreter=None):
+    """Small structural ELF fixture, never a runnable benchmark submission."""
+    data = bytearray(256)
+    data[:7] = b"\x7fELF\x02\x01\x01"
+    struct.pack_into("<HHI", data, 16, 3, 62, 1)
+    struct.pack_into("<Q", data, 32, 64)
+    struct.pack_into("<HHH", data, 52, 64, 56, 2)
+    if interpreter is not None:
+        raw = interpreter + b"\0"
+        struct.pack_into("<I", data, 64, 3)
+        struct.pack_into("<Q", data, 72, 192)
+        struct.pack_into("<Q", data, 96, len(raw))
+        data[192:192 + len(raw)] = raw
+    return data
+
+
 class RuntimeTests(unittest.TestCase):
+    def test_large_elf_metadata_does_not_admit_or_allocate_a_guest_payload(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "metadata-only"
+            original = elf_fixture()
+            path.write_bytes(original)
+            self.assertEqual(subject.elf_identity(path), subject.elf(path)[1:])
+            self.assertEqual(subject.elf(path)[0], original)
+            with path.open("r+b") as output:
+                output.truncate(subject.MAX_FILE + 1)
+            # Demand-sized header reads, not a full-file read or a higher cap.
+            real_open = subject.os.fdopen
+            reads = []
+            class Observed:
+                def __init__(self, source): self.source = source
+                def __enter__(self): return self
+                def __exit__(self, *args): self.source.close()
+                def fileno(self): return self.source.fileno()
+                def seek(self, offset): return self.source.seek(offset)
+                def read(self, size):
+                    reads.append(size)
+                    self.assert_bounded(size)
+                    return self.source.read(size)
+                @staticmethod
+                def assert_bounded(size):
+                    if not 0 <= size <= 4096: raise AssertionError("unbounded metadata read")
+            with patch.object(subject.os, "fdopen", side_effect=lambda *args, **kwargs: Observed(real_open(*args, **kwargs))):
+                self.assertEqual(subject.elf_identity(path), (62, None))
+            self.assertEqual(reads, [64, 56, 56])
+            for operation in [subject.elf, subject.bundle]:
+                with self.assertRaisesRegex(ExecutionError, "exceeds 256 MiB"):
+                    operation(path)
+
+    def test_elf_metadata_wide_sparse_headers_have_a_fixed_read_budget(self):
+        header = elf_fixture()[:64]
+        struct.pack_into("<HH", header, 54, 65535, 2048)
+        interpreter = b"/fixture-loader\0"
+        end = 64 + 65535 * 2048
+        first = bytearray(56)
+        struct.pack_into("<I", first, 0, 3)
+        struct.pack_into("<Q", first, 8, end)
+        struct.pack_into("<Q", first, 32, len(interpreter))
+        class Sparse:
+            def __init__(self): self.position, self.reads = 0, []
+            def seek(self, position): self.position = position
+            def read(self, size):
+                self.reads.append(size)
+                if size > 4096: raise AssertionError("stride became an allocation")
+                data = {0: header, 64: first, end: interpreter}.get(self.position, bytes(size))
+                self.position += size
+                return data
+        source = Sparse()
+        self.assertEqual(subject._elf_metadata(source, end + len(interpreter)), (62, "/fixture-loader"))
+        self.assertEqual(len(source.reads), 2050)
+        self.assertEqual(sum(source.reads), 64 + 2048 * 56 + len(interpreter))
+
+    def test_elf_metadata_rejects_malformed_ranges_headers_and_interpreters(self):
+        cases = []
+        def changed(offset, format_, value):
+            data = elf_fixture(b"/fixture-loader")
+            struct.pack_into(format_, data, offset, value)
+            cases.append(data)
+        for offset, format_, value in [
+            (4, "<B", 1), (5, "<B", 2), (6, "<B", 0),
+            (16, "<H", 1), (18, "<H", 0), (20, "<I", 0),
+            (32, "<Q", 2**64 - 1), (52, "<H", 63),
+            (54, "<H", 55), (56, "<H", 0), (56, "<H", 2049),
+            (56, "<H", 4), (72, "<Q", 2**64 - 1),
+            (96, "<Q", 1), (96, "<Q", 4097),
+        ]:
+            changed(offset, format_, value)
+        for raw in [b"relative\0", b"/embedded\0nul\0", b"/nonascii-\xff\0", b"/unterminated"]:
+            data = elf_fixture()
+            struct.pack_into("<I", data, 64, 3)
+            struct.pack_into("<Q", data, 72, 192)
+            struct.pack_into("<Q", data, 96, len(raw))
+            data[192:192 + len(raw)] = raw
+            cases.append(data)
+        duplicate = elf_fixture(b"/fixture-loader")
+        duplicate[120:176] = duplicate[64:120]
+        cases.extend([duplicate, bytearray(b"not an ELF")])
+        for index, data in enumerate(cases):
+            with self.subTest(index=index), self.assertRaises(ExecutionError):
+                subject._elf_metadata(io.BytesIO(data), len(data))
+        class Short(io.BytesIO):
+            def read(self, count): return super().read(count)[:-1]
+        with self.assertRaisesRegex(ExecutionError, "changed during"):
+            subject._elf_metadata(Short(elf_fixture()), 256)
+
+    def test_elf_metadata_pins_the_open_file_and_rejects_changes_during_inspection(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "entry"
+            original = elf_fixture()
+            path.write_bytes(original)
+            parse = subject._elf_metadata
+            def replaced(source, length):
+                path.rename(Path(directory) / "retained")
+                path.write_bytes(b"foreign non-ELF replacement")
+                return parse(source, length)
+            with patch.object(subject, "_elf_metadata", side_effect=replaced):
+                # Renaming the pinned inode changes its ctime. Reject that
+                # observation; never reopen/parse the foreign replacement.
+                with self.assertRaisesRegex(ExecutionError, "changed during"):
+                    subject.elf_identity(path)
+            self.assertEqual(path.read_bytes(), b"foreign non-ELF replacement")
+            path.write_bytes(original)
+            def changed(source, length):
+                result = parse(source, length)
+                with path.open("ab") as output: output.write(b"changed")
+                return result
+            with patch.object(subject, "_elf_metadata", side_effect=changed):
+                with self.assertRaisesRegex(ExecutionError, "changed during"):
+                    subject.elf_identity(path)
+
     @unittest.skipUnless(sys.platform == "linux" and os.environ.get("ASB_TEST_HOST_ASB"),
                          "needs the just-built Linux ASB executable")
     def test_kernel_reference_bundles_the_running_binary_after_path_replacement(self):
