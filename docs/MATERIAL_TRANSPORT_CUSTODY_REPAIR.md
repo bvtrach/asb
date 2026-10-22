@@ -544,3 +544,36 @@ No class50 runtime has been rerun since the documented development failure.
 Root source review is required before any revised whole-path runtime, build or
 qualification claim. No version, public protocol, grade or authorization policy
 is changed by these fixture ownership revisions.
+
+## Revised focused qualification at source 3edcd8ca
+
+After independent source review of 2b702edc, a narrow library-boundary correction
+3edcd8ca places the guardian only in cfg(test, Linux) lib.rs. Shared support/mod
+is also used by integration crates and must not import private library owners.
+No private guardian module is compiled into those independent harness roots.
+
+Actual ASB was built FIRST, frozen read-only at
+`target/qualification/material50-revised-3edcd8ca-asb`, and selected explicitly
+for every guardian/controller admission. Before/after actual and frozen SHA256:
+`838bea92eea9a199fae32fa258e70c323e98e18b1574b773383ab4248db3b3ea`.
+No source edit or actual-binary relink occurred during runtime.
+
+Fresh focused results are **117 passed / 0 failed / 0 skipped**, without counting
+reexecuted child rows twice: controller34, gate30, Python material8, Docker9,
+task-server13 and resources23. The five whole-path controller cases include
+normal preserving cancellation, first transport signal denial, original short
+caller deadline, missing proof and real owner exit. The owner-exit fixture's
+actual gate2007717 was pinned, adopted and reaped by the outer guardian; every
+guardian reports zero adopted gate KILLs and sentinel survival. The independent
+short/missing-proof cases retain their existing wait-only keeper observations.
+The controlled first EPERM remains the returned error at5009ms while the later
+sibling has actual pinned exit and ECHILD proving Scope reap. No actual Docker,
+sudo, elevated-child, external SDK or provider qualification is implied.
+
+All handles are terminal. Strict offline/locked workspace/all-target/all-feature
+Clippy -Dwarnings, fmt-check and diff-check passed. Evidence remains under
+`target/material50-revised-{build,controller,gate,material,docker,task,resources,clippy,fmt}.log`
+and `target/material50-revised-{before,after}.sha256`; raw fixture JSON and all
+historical failing development/RED logs remain intact. This is a focused source
+checkpoint, NOT a full-suite, current-stack integration, release or delivery
+claim. No version bump, push or PR; independent final review remains required.
