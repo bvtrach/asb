@@ -20,6 +20,20 @@ class DockerAccessError(RuntimeError):
     pass
 
 
+_CLOSE_SECONDS = 3.0
+_TERM_GRACE = 2.0
+
+
+class _CloseRecord:
+    """One cleanup claim retains its owners even without a final state lock."""
+    def __init__(self, started):
+        self.started = started
+        self.deadline = started + _CLOSE_SECONDS
+        self.remaining = []
+        self.error = None
+        self.done = threading.Event()
+
+
 def docker_command():
     executable = shutil.which("docker")
     if not executable:
@@ -65,16 +79,18 @@ class StdioConnections:
         self.children = []
         self.lock = threading.Lock()
         self.closed = False
-        self._closing = False
-        self._close_done = False
-        self._close_error = None
+        self._close_requested = threading.Event()
+        self._close_claim = threading.Lock()
+        self._close_record = None
 
     def connect(self, timeout):
+        if self._close_requested.is_set():
+            raise DockerAccessError("Docker transport has already been closed")
         local, remote = socket.socketpair()
         local.settimeout(timeout)
         try:
             with self.lock:
-                if self.closed:
+                if self.closed or self._close_requested.is_set():
                     raise DockerAccessError("Docker transport has already been closed")
                 # Reap completed reconnects eagerly instead of retaining an
                 # unbounded history of Popen owners until session exit.
@@ -84,6 +100,11 @@ class StdioConnections:
                     start_new_session=True,
                 )
                 self.children.append(process)
+                if self._close_requested.is_set():
+                    # An in-flight spawn remains owned, but its connection is
+                    # never admitted after close was requested while Popen held
+                    # the lock. The caller closes local/remote endpoints below.
+                    raise DockerAccessError("Docker transport closed during connection startup; exit is unconfirmed")
             return local
         except BaseException:
             local.close()
@@ -92,25 +113,41 @@ class StdioConnections:
             remote.close()
 
     def close(self):
-        with self.lock:
-            if self._closing:
-                raise DockerAccessError("Docker transport cleanup is already in progress; settlement is unconfirmed")
-            if self._close_done:
-                if self._close_error is not None:
-                    raise DockerAccessError(self._close_error)
+        # The allowance starts BEFORE either ownership claim or the lock held
+        # across Popen. A blocked concurrent spawn cannot extend this deadline.
+        started = time.monotonic()
+        self._close_requested.set()
+        if not self._close_claim.acquire(blocking=False):
+            record = self._close_record
+            if record is not None and record.done.is_set():
+                if record.error is not None:
+                    raise DockerAccessError(record.error)
                 return
+            raise DockerAccessError("Docker transport cleanup is already in progress; settlement is unconfirmed")
+        # This one-shot claim is intentionally never reacquired/retried. Later
+        # closers may only observe its completed record, never poll/reap/signal.
+        record = self._close_record = _CloseRecord(started)
+        if not self.lock.acquire(timeout=max(0, record.deadline-time.monotonic())):
+            # The in-flight connect still owns this list under the lock and
+            # appends its eventual Child before observing close-request. Both
+            # the session and this record retain the actual owner population.
+            record.remaining = self.children
+            record.error = "Docker transport startup lock did not settle before cleanup deadline; exit is unconfirmed"
+            record.done.set()
+            raise DockerAccessError(record.error)
+        try:
             self.closed = True
-            self._closing = True
             # Exactly one closer owns poll/reap/signal rights. Other callers
             # must not observe the detached empty list as settled, nor race a
             # cached PGID signal against this owner's actual child reap.
-            children, self.children = self.children, []
+            record.remaining, self.children = self.children, []
+        finally:
+            self.lock.release()
         # One allowance for the entire population, not two seconds per child.
         # Python owns direct CLI children; the outer ManagedGate remains actual
         # descendant owner if signaling/observation is uncertain at this bound.
-        started = time.monotonic()
-        deadline = started + 3
-        remaining = children
+        deadline = record.deadline
+        remaining = record.remaining
         term, force = set(), set()
         failed, interruption = False, None
         try:
@@ -133,7 +170,7 @@ class StdioConnections:
                         if interruption is None:
                             interruption = caught
                         continue
-                    pending = force if time.monotonic()-started >= 2 else term
+                    pending = force if time.monotonic()-started >= _TERM_GRACE else term
                     if process in pending:
                         continue
                     pending.add(process)
@@ -155,15 +192,17 @@ class StdioConnections:
         finally:
             # Retain exact pending owners; no Drop retry, unconditional wait,
             # per-child worker or new admission after unknown cleanup.
-            with self.lock:
-                self.children = remaining
-                self._closing = False
-                self._close_done = True
-                self._close_error = (
-                    "Docker transport exit is unconfirmed; owned controller supervision retains custody"
-                    if remaining else
-                    "Docker transport cleanup encountered an error; all owned transport children were reaped"
-                    if failed or interruption is not None else None)
+            # No second lock acquisition can bypass the deadline. Once the
+            # initial claim detaches children, close-request excludes all new
+            # writers; the exclusive record retains remaining owners even if
+            # another observer holds the ordinary session lock indefinitely.
+            self.children = remaining
+            record.error = (
+                "Docker transport exit is unconfirmed; owned controller supervision retains custody"
+                if remaining else
+                "Docker transport cleanup encountered an error; all owned transport children were reaped"
+                if failed or interruption is not None else None)
+            record.done.set()
         if interruption is not None:
             raise interruption
         if remaining:

@@ -450,7 +450,10 @@ impl Controller {
     }
     #[cfg(all(test, target_os = "linux"))]
     pub(super) fn lose_receipt_for_test(&self) {
-        self.child.as_ref().expect("owned controller").lose_receipt();
+        self.child
+            .as_ref()
+            .expect("owned controller")
+            .lose_receipt();
     }
 }
 

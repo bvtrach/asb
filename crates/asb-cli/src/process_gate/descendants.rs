@@ -325,16 +325,8 @@ mod tests {
             .join("../../target/material50-fixtures")
             .join(crate::workloads::TaskIdentity::local("sibling-denial", None).attempt_id);
         std::fs::create_dir_all(&root).unwrap();
-        let status = Command::new("python3")
-            .args(["-I", "-S", "-B"])
-            .arg(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/material-transport-custody.py"))
-            .arg("guardian")
-            .arg(&root)
-            .arg(std::env::current_exe().unwrap())
-            .arg("process_gate::descendants::tests::one_owned_signal_denial_does_not_starve_later_owned_siblings")
-            .arg("sibling")
-            .status()
-            .unwrap();
+        let status = crate::test_support::material_guardian::run(&root,
+            "process_gate::descendants::tests::one_owned_signal_denial_does_not_starve_later_owned_siblings","sibling").unwrap();
         let read = |name| -> serde_json::Value {
             serde_json::from_slice(&std::fs::read(root.join(name)).unwrap()).unwrap()
         };
@@ -422,16 +414,8 @@ mod tests {
             .join("../../target/material50-fixtures")
             .join(crate::workloads::TaskIdentity::local("fair-reap", None).attempt_id);
         std::fs::create_dir_all(&root).unwrap();
-        let status = Command::new("python3")
-            .args(["-I", "-S", "-B"])
-            .arg(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/material-transport-custody.py"))
-            .arg("guardian")
-            .arg(&root)
-            .arg(std::env::current_exe().unwrap())
-            .arg("process_gate::descendants::tests::reap_exited_continues_after_first_error_without_signalling_live_siblings")
-            .arg("reap")
-            .status()
-            .unwrap();
+        let status = crate::test_support::material_guardian::run(&root,
+            "process_gate::descendants::tests::reap_exited_continues_after_first_error_without_signalling_live_siblings","reap").unwrap();
         let read = |name| -> serde_json::Value {
             serde_json::from_slice(&std::fs::read(root.join(name)).unwrap()).unwrap()
         };

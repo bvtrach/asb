@@ -32,12 +32,7 @@ impl ControllerCommand {
             #[cfg(not(test))]
             let gate = crate::process_gate::executable().map_err(|error| error.to_string())?;
             #[cfg(test)]
-            let gate = std::env::current_exe()
-                .map_err(|error| error.to_string())?
-                .parent()
-                .and_then(|parent| parent.parent())
-                .ok_or("cannot locate actual ASB for controller custody tests")?
-                .join("asb");
+            let gate = crate::test_support::material_guardian::actual_asb()?;
             let (command, route) = launch.native(Some(&gate));
             Ok(Self {
                 command,

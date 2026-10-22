@@ -141,61 +141,105 @@ def container_task(root, scenario):
             connection.close()
 
 
-def guardian(root, binary, test, scenario):
+def guardian(root, binary, test, scenario, actual_asb):
     # Only this exclusive fixture subprocess adopts children, never shared ASB.
     if ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0):
         raise OSError(ctypes.get_errno(), "fixture subreaper")
+    actual_asb = Path(actual_asb)
+    image = actual_asb.stat()
+    output = (root / "child.stdout").open("wb")
+    errors = (root / "child.stderr").open("wb")
     sentinel = subprocess.Popen(["/bin/sleep", "90"])
     env = {**os.environ, "ASB_MATERIAL_CUSTODY_CHILD": scenario,
            "ASB_MATERIAL_CUSTODY_ROOT": str(root)}
-    with (root / "child.stdout").open("wb") as output, (root / "child.stderr").open("wb") as errors:
+    spawn_error = None
+    try:
         child = subprocess.Popen([binary, "--exact", test, "--nocapture"],
                                  env=env, stdout=output, stderr=errors)
-        deadline = time.monotonic() + 15
-        while child.poll() is None and time.monotonic() < deadline:
-            if (root / "request-release").exists() and not (root / "release-ack.json").exists():
-                (root / "release-fixtures").touch()
-                save(root, "release-ack.json", True)
-            time.sleep(.005)
-        if child.poll() is None:
-            # This is the test owner, NOT an admitted gate. Owner death must
-            # leave its real independent gate supervising the exact children.
-            child.kill()
-            child.wait(timeout=3)
-            status = -999
-        else:
-            status = child.returncode
+    except BaseException as caught:
+        child, spawn_error = None, type(caught).__name__
     adopted_alive = []
     cleanup = []
-    identities, gates, cleanup_error = {}, [], None
-    gate_record = json.loads((root / "gate.json").read_text()) if (root / "gate.json").exists() else None
-    expected_gate = gate_record["pid"] if gate_record else None
-    actual_asb = Path(binary).parent.parent / "asb"
-    # Release every known actor/fault before waiting for actual supervisor
-    # completion. Unlike the baseline RED guardian there is NO KILL of adopted
-    # children. Repeated snapshots handle late reparenting after owner loss.
-    (root / "release-fixtures").touch()
-    end = time.monotonic() + 35
-    try:
-        while True:
+    identities, gates = {}, []
+    cleanup_error, gate_record, gate_identity = None, None, None
+    status = -999 if child is None else None
+    cleanup_deadline = time.monotonic()+35 if child is None else None
+    owner_deadline, owner_kill_requested = time.monotonic()+15, False
+
+    def report(category):
+        nonlocal cleanup_error
+        if cleanup_error is None:
+            cleanup_error = category
+            try:
+                save(root,"guardian-error.json",{"error":category,
+                    "custody":"retained-not-settled","namespace":str(root)})
+            except OSError:
+                # Rust's independent caller deadline still transfers this exact
+                # guardian wait-only if even finite diagnostic publication fails.
+                pass
+
+    def read_record(name):
+        try:return json.loads((root/name).read_text())
+        except (FileNotFoundError,ValueError):return None
+
+    def gate_exited():
+        if gate_identity is None:
+            # A failed pre-ack fixture cannot claim an admitted gate receipt.
+            # After actual inner-owner reap and an empty kernel child namespace
+            # it may exit FAILED, never success, without retaining a dead PID.
+            return gate_record is None or (cleanup_error is not None and status not in [None,0])
+        import select
+        return bool(select.select([gate_identity],[],[],0)[0])
+
+    # A finite error report is NOT an ownership deadline. On uncertainty retain
+    # every exact pidfd/Popen and keep polling/reaping released children. Only
+    # actual namespace settlement permits closing those owners and exiting.
+    if spawn_error is not None:report(spawn_error)
+    while True:
+        try:
+            if gate_identity is None and (record:=read_record("gate.json")) is not None:
+                try:
+                    gate_record = record
+                    if record["image"] != [image.st_dev,image.st_ino]:
+                        raise RuntimeError("admission image differs from explicit actual ASB")
+                    descriptor = os.pidfd_open(record["pid"])
+                    # Inner Rust waits for this ack before progressing. Its
+                    # unreaped live gate cannot be recycled underneath the pin.
+                    try:
+                        if not os.path.samefile(f"/proc/{record['pid']}/exe",actual_asb):
+                            raise RuntimeError("known gate has a different executable")
+                    except BaseException:
+                        os.close(descriptor)
+                        raise
+                    gate_identity = descriptor
+                    save(root,"gate-identity-ack.json",True)
+                except BaseException as caught:
+                    report(type(caught).__name__)
+            if status is None:
+                status = child.poll()
+                if status is None:
+                    if (root/"request-release").exists():
+                        (root/"release-fixtures").touch()
+                        save(root,"release-ack.json",True)
+                    if time.monotonic() >= owner_deadline and not owner_kill_requested:
+                        report("InnerFixtureDeadline")
+                        # Only the direct inert TEST OWNER, never the admitted
+                        # ASB gate. Keep its Popen until actual nonblocking reap.
+                        child.kill()
+                        owner_kill_requested = True
+                    time.sleep(.005)
+                    continue
+                if status != 0:report("InnerFixtureFailed")
+                cleanup_deadline = time.monotonic()+35
+                (root/"release-fixtures").touch()
+                output.close()
+                errors.close()
             pids = [int(value) for value in Path(f"/proc/{os.getpid()}/task/{os.getpid()}/children").read_text().split()]
             pids = [pid for pid in pids if pid != sentinel.pid]
             if not pids:
-                settled = (json.loads((root / "gate-settled.json").read_text())
-                           if (root / "gate-settled.json").exists() else {})
-                reported = (json.loads((root / "controller.json").read_text())
-                            if (root / "controller.json").exists() else {})
-                if (expected_gate is not None and expected_gate not in cleanup
-                        and not settled.get("actual_exit_and_reap")
-                        and not reported.get("cancel_confirmed")):
-                    # An empty first snapshot is not a receipt for a known
-                    # admitted gate. Require actual owner/keeper reap evidence
-                    # or our own later adoption+pidfd reap, never KILL it.
-                    if time.monotonic() >= end:
-                        raise RuntimeError("known gate has no actual settlement observation")
-                    time.sleep(.005)
-                    continue
-                break
+                if gate_exited():break
+                # A single empty adoption snapshot is never a receipt for a
+                # still-live pinned actual guardian. Keep owning/polling.
             for pid in pids:
                 if pid not in identities:
                     descriptor = os.pidfd_open(pid)
@@ -205,21 +249,7 @@ def guardian(root, binary, test, scenario):
                     identities[pid] = descriptor
                     if event is None:
                         adopted_alive.append(pid)
-                    if pid == expected_gate:
-                        image = actual_asb.stat()
-                        if [image.st_dev, image.st_ino] != gate_record["image"]:
-                            raise RuntimeError("actual ASB changed during fixture")
-                        if event is None:
-                            try:
-                                matches = os.path.samefile(f"/proc/{pid}/exe", actual_asb)
-                            except FileNotFoundError:
-                                # A zombie may lose /proc/exe after the pinned
-                                # ownership observation; known admission image
-                                # plus actual exit is not a different live PID.
-                                matches = os.waitid(os.P_PIDFD, descriptor,
-                                    os.WEXITED | os.WNOHANG | os.WNOWAIT) is not None
-                            if not matches:
-                                raise RuntimeError("adopted fixture guardian is not the exact actual ASB")
+                    if gate_record is not None and pid == gate_record["pid"]:
                         gates.append(pid)
                 descriptor = identities[pid]
                 event = os.waitid(os.P_PIDFD, descriptor, os.WEXITED | os.WNOHANG)
@@ -232,17 +262,32 @@ def guardian(root, binary, test, scenario):
                         os.close(identities.pop(pid))
                     else:
                         raise RuntimeError("fixture guardian child was not reaped")
-            if time.monotonic() >= end:
-                raise RuntimeError("fixture release did not produce actual descendant/gate settlement")
+            if time.monotonic() >= cleanup_deadline:
+                report("CleanupDeadlineUnknown")
+                # No new deadline, KILL, handle closure or exit on uncertainty.
             time.sleep(.005)
-    except BaseException as caught:
-        cleanup_error = type(caught).__name__
-    finally:
-        for descriptor in identities.values():
-            os.close(descriptor)
+        except BaseException as caught:
+            report(type(caught).__name__)
+            try:(root/"release-fixtures").touch()
+            except OSError:pass
+            time.sleep(.01)
+    # The loop exits ONLY after actual inner-owner reap, an empty repeatedly
+    # observed child population, and pinned known-gate exit (if any).
+    for descriptor in identities.values():os.close(descriptor)
+    if gate_identity is not None:os.close(gate_identity)
     sentinel_alive = sentinel.poll() is None
-    sentinel.kill()
-    sentinel.wait(timeout=3)
+    if sentinel_alive:
+        try:sentinel.kill()  # Exact direct sentinel only, never an ASB guardian.
+        except OSError as caught:report(type(caught).__name__)
+    sentinel_deadline = time.monotonic()+3
+    while True:
+        try:
+            if sentinel.poll() is not None:break
+        except OSError as caught:report(type(caught).__name__)
+        if time.monotonic() >= sentinel_deadline:report("SentinelSettlementUnknown")
+        time.sleep(.01)  # Retain direct ownership rather than exiting on error.
+    output.close()
+    errors.close()
     save(root, "guardian.json", {"child_status": status,
         "adopted_alive_after_controller_exit": adopted_alive,
         "actually_reaped": cleanup, "sentinel_survived": sentinel_alive,

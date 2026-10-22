@@ -498,3 +498,49 @@ proven absent. General installer-helper subprocess custody remains class44's
 separate dependency/scope; do not infer universal cross-process custody merely
 because these helpers share a publication directory. No blanket command_output,
 Python subprocess.run, SDK, non-Linux or elevated-runtime qualification.
+
+## Revised guardian and close-lock source checkpoint (not runtime-qualified)
+
+The 35s fixture cleanup allowance is now only a finite uncertainty-reporting
+boundary. On timeout or observation error the Python guardian retains its exact
+Popen/pidfds and namespace and continues nonblocking adoption/reaping until actual
+settlement. It never kills an admitted ASB guardian, exits on a still-live known
+gate, or closes all ownership handles merely because a diagnostic was published.
+The direct inert test owner alone may be terminated after its separate 15s
+watchdog. Actor release remains real; no fixture fabricates gate quiescence.
+
+The Rust outer caller pre-establishes a wait-only keeper before spawning that
+guardian and installs an immediate Child guard. It polls with a finite caller
+deadline rather than using unconditional status/wait; error, unwind and timeout
+handoff the exact guardian wait-only and disclose the retained namespace. The
+explicit actual ASB path, admission device/inode and pinned live executable are
+used for identity, not a guessed parent.parent layout of a frozen libtest image.
+Both the generic sibling fixtures and controller whole-path fixtures use this
+same owned caller. These changes are source-only pending independent review.
+
+StdioConnections now starts its absolute 3s close allowance before acquiring any
+lock. A close-request Event excludes new admission even while an in-flight Popen
+holds the ordinary lock. One nonblocking one-shot cleanup claim owns all
+poll/reap/signal rights; competing close calls cannot report success while that
+claim is pending or restart an unknown cleanup budget. Initial state-lock
+acquisition is bounded. If it times out, the owner record retains the shared
+actual Child list, including a subsequently returned in-flight spawn. Once
+detached, the exclusive close record needs no fallible final lock acquisition to
+retain pending owners. Controlled blocked-spawn and concurrent-close source tests
+require bounded caller return, eventual actual child reap and sentinel survival;
+they have not yet been run on this revision.
+
+The shared OwnedReaper prerequisite is isolated independently from this dirty
+integration ancestry: clean branch codex/reaper-observation-custody at signed
+73e2f43b (d475a58d, 2fbee55d, 73e2f43b), based on actual main66fb. Its five
+standalone tests, strict workspace/all-target/all-feature Clippy and fmt passed;
+actual/frozen hash is
+8ad11f9d46b91758bf55d0c5111b702be8d862d23c404c061e606619cf848f34.
+Observation errors retain the actual Child on the pre-established worker;
+WaitOnly never kills, and worker completion requires actual exit/reap. This is
+not whole-path controller qualification or crash-persistent custody.
+
+No class50 runtime has been rerun since the documented development failure.
+Root source review is required before any revised whole-path runtime, build or
+qualification claim. No version, public protocol, grade or authorization policy
+is changed by these fixture ownership revisions.
