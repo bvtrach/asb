@@ -60,7 +60,9 @@ impl OwnedReaper {
                         if matches!(policy, ReapPolicy::Terminate) {
                             match poll_owned(&mut child) {
                                 Ok(Some(_)) => break, // Actual exit/reap confirmed.
-                                Ok(None) => { let _ = child.kill(); }
+                                Ok(None) => {
+                                    let _ = child.kill();
+                                }
                                 Err(_) => {
                                     // Observation uncertainty is not permission
                                     // to signal a cached identity or drop Child.
@@ -69,7 +71,9 @@ impl OwnedReaper {
                                 }
                             }
                         }
-                        if wait_owned(&mut child).is_ok() { break; }
+                        if wait_owned(&mut child).is_ok() {
+                            break;
+                        }
                         // The same pre-established worker retains this exact
                         // Child through errors. WaitOnly is NEVER killed.
                         std::thread::sleep(std::time::Duration::from_millis(10));
@@ -141,16 +145,23 @@ pub(crate) mod test_support {
     impl ObservationFault {
         pub(crate) fn arm() -> Self {
             let state = Arc::new(ObservationState {
-                enabled: AtomicBool::new(true), observed: AtomicBool::new(false),
+                enabled: AtomicBool::new(true),
+                observed: AtomicBool::new(false),
             });
             OBSERVATION_FAULT.with_borrow_mut(|fault| *fault = Some(Arc::clone(&state)));
             Self(state)
         }
-        pub(crate) fn observed(&self) -> bool { self.0.observed.load(Ordering::Acquire) }
-        pub(crate) fn release(&self) { self.0.enabled.store(false,Ordering::Release); }
+        pub(crate) fn observed(&self) -> bool {
+            self.0.observed.load(Ordering::Acquire)
+        }
+        pub(crate) fn release(&self) {
+            self.0.enabled.store(false, Ordering::Release);
+        }
     }
     impl Drop for ObservationFault {
-        fn drop(&mut self) { self.release(); }
+        fn drop(&mut self) {
+            self.release();
+        }
     }
     pub(super) fn worker_fault() -> Option<Arc<ObservationState>> {
         OBSERVATION_FAULT.with_borrow(Clone::clone)
@@ -160,9 +171,13 @@ pub(crate) mod test_support {
     }
     pub(super) fn observation_fault() -> std::io::Result<()> {
         OBSERVATION_FAULT.with_borrow(|fault| {
-            if let Some(fault) = fault && fault.enabled.load(Ordering::Acquire) {
-                fault.observed.store(true,Ordering::Release);
-                return Err(std::io::Error::other("controlled fixture observation error, not a kernel failure"));
+            if let Some(fault) = fault
+                && fault.enabled.load(Ordering::Acquire)
+            {
+                fault.observed.store(true, Ordering::Release);
+                return Err(std::io::Error::other(
+                    "controlled fixture observation error, not a kernel failure",
+                ));
             }
             Ok(())
         })
@@ -223,7 +238,13 @@ pub(crate) mod test_support {
             WORKERS.with_borrow(|workers| workers.as_ref().unwrap().len())
         }
         pub(crate) fn finished(&self) -> bool {
-            WORKERS.with_borrow(|workers| workers.as_ref().unwrap().iter().all(|receipt| receipt.load(Ordering::Acquire)))
+            WORKERS.with_borrow(|workers| {
+                workers
+                    .as_ref()
+                    .unwrap()
+                    .iter()
+                    .all(|receipt| receipt.load(Ordering::Acquire))
+            })
         }
     }
     impl Drop for Scope {
