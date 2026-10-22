@@ -7,6 +7,7 @@
 mod archive;
 mod journal;
 mod metadata;
+mod provenance;
 mod selection;
 mod serialization;
 mod source;
@@ -15,6 +16,7 @@ pub use archive::{Archive, Limits};
 pub use journal::{
     ProofLimits, Publication, RecordingJournal, RecordingReservation, TrackEvidence,
 };
+pub use provenance::{ImportedTrack, OriginPlan, RecordingSource, track_metadata_digest};
 pub use selection::{Metric, SelectionPlan, Selector};
 use serde::{Deserialize, Serialize};
 pub use serialization::CompatibilityShape;
@@ -173,6 +175,9 @@ pub struct Manifest {
     pub concurrency: u64,
     /// Tracks in strictly increasing ID order; interrupted attempts may leave gaps.
     pub tracks: Vec<Track>,
+    /// Optional immutable origin plan. Absence preserves exact legacy encoding.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<OriginPlan>,
 }
 
 impl Manifest {
@@ -186,6 +191,18 @@ impl Manifest {
             )));
         }
         self.compatibility.validate()?;
+        if let Some(plan) = &self.provenance {
+            plan.validate(self.concurrency, limits)?;
+            if plan
+                .sources
+                .iter()
+                .any(|source| source.recording_id == self.recording_id)
+            {
+                return Err(Error(
+                    "union physical identity reuses a source recording".into(),
+                ));
+            }
+        }
         if !valid_recording_id(&self.recording_id)
             || !(1..=64).contains(&self.concurrency)
             || self.tracks.len() > limits.max_tracks
@@ -222,6 +239,13 @@ impl Manifest {
                 ));
             }
             prior = track.id;
+            if self
+                .provenance
+                .as_ref()
+                .is_some_and(|plan| track.id > plan.population)
+            {
+                return Err(Error("track exceeds original provenance population".into()));
+            }
         }
         Ok(())
     }

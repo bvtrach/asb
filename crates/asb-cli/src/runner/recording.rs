@@ -308,6 +308,7 @@ impl Recorder {
                             compatibility: compatibility.clone(),
                             concurrency: self.concurrency as u64,
                             tracks: Vec::new(),
+                            provenance: None,
                         },
                         self.repeat,
                         Limits::default(),

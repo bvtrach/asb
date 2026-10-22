@@ -3,6 +3,13 @@ use super::*;
 use crate::cassette::serialization::{ManifestWire, TrackEvidenceWire, encoded_size};
 use crate::cassette::{CompatibilityShape, ProofLimits};
 
+struct Layout<'a> {
+    recording_id: &'a str,
+    destination: &'a Path,
+    repeat: u64,
+    concurrency: u64,
+}
+
 /// Conservative capacity for metadata whose size is known before execution.
 /// This is requested capacity, never task, material, grading or cleanup evidence.
 /// Payload/compressed lengths depend on responses and are not guessed here.
@@ -51,6 +58,64 @@ impl RecordingReservation {
         concurrency: u64,
         limits: Limits,
     ) -> Result<Self, Error> {
+        Self::reserve(
+            shape,
+            Layout {
+                recording_id,
+                destination,
+                repeat,
+                concurrency,
+            },
+            limits,
+            None,
+        )
+    }
+
+    /// Reserve a full union before importing or admitting any new execution.
+    /// Uses the same serialization projection as actual intent and manifests.
+    pub fn for_origin_plan(
+        shape: CompatibilityShape<'_>,
+        recording_id: &str,
+        destination: &Path,
+        concurrency: u64,
+        provenance: &crate::cassette::OriginPlan,
+        limits: Limits,
+    ) -> Result<Self, Error> {
+        provenance.validate(concurrency, limits)?;
+        if provenance
+            .sources
+            .iter()
+            .any(|source| source.recording_id == recording_id)
+        {
+            return Err(Error(
+                "union physical identity reuses a source recording".into(),
+            ));
+        }
+        Self::reserve(
+            shape,
+            Layout {
+                recording_id,
+                destination,
+                repeat: provenance.population / concurrency,
+                concurrency,
+            },
+            limits,
+            Some(provenance),
+        )
+    }
+
+    fn reserve(
+        shape: CompatibilityShape<'_>,
+        layout: Layout<'_>,
+        limits: Limits,
+        provenance: Option<&crate::cassette::OriginPlan>,
+    ) -> Result<Self, Error> {
+        let Layout {
+            recording_id,
+            destination,
+            repeat,
+            concurrency,
+        } = layout;
         limits.validate()?;
         let count = validate_count(repeat, concurrency, limits)?;
         if !crate::cassette::valid_recording_id(recording_id) || !destination.is_absolute() {
@@ -68,13 +133,21 @@ impl RecordingReservation {
             compatibility: shape.wire()?,
             concurrency,
             tracks: &[],
+            provenance,
         };
         let intent = Intent {
             manifest,
             repeat,
             destination_name: name.to_owned(),
         };
-        let capacity = metadata_budget(&intent, recording_id, concurrency, count, limits)?;
+        let capacity = metadata_budget(
+            &intent,
+            recording_id,
+            concurrency,
+            count,
+            limits,
+            provenance.and_then(|plan| plan.sources.len().checked_sub(1)),
+        )?;
         let track = maximum_track(count, repeat, concurrency, limits);
         let reference = TrackEvidenceWire {
             schema_version: 1,
@@ -156,6 +229,7 @@ pub(super) fn metadata_budget<M: Serialize>(
     concurrency: u64,
     count: u64,
     limits: Limits,
+    import_source: Option<usize>,
 ) -> Result<MetadataCapacity, Error> {
     let track = maximum_track(count, intent.repeat, concurrency, limits);
     let start = Started {
@@ -163,6 +237,7 @@ pub(super) fn metadata_budget<M: Serialize>(
         id: count,
         batch: intent.repeat,
         replica: concurrency,
+        import_source,
     };
     let track_bytes = encoded_size(&track, limits.max_manifest_bytes)?;
     let start_bytes = encoded_size(&start, MAX_RECORD_BYTES)?;

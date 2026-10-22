@@ -63,6 +63,7 @@ impl RecordingJournal {
                 ));
             }
             let manifest = self.snapshot()?;
+            manifest.validate_imports()?;
             self.recovery_required = true;
             self.publication_fault.check("before-freeze")?;
             self.publish_phase("finalizing.json", &manifest, self.limits.max_manifest_bytes)?;
@@ -363,10 +364,12 @@ impl RecordingJournal {
 
     fn validate_frozen(&self, manifest: &Manifest) -> Result<(), Error> {
         manifest.validate(self.limits)?;
+        manifest.validate_imports()?;
         let intent = &self.intent.manifest;
         if manifest.recording_id != intent.recording_id
             || manifest.compatibility != intent.compatibility
             || manifest.concurrency != intent.concurrency
+            || manifest.provenance != intent.provenance
             || manifest.tracks.len() != self.starts.len()
         {
             return Err(Error(

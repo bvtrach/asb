@@ -7,6 +7,8 @@ use zip::{CompressionMethod, ZipWriter, write::SimpleFileOptions};
 
 #[path = "proof_tests.rs"]
 mod proof;
+#[path = "provenance_tests.rs"]
+mod provenance_tests;
 #[path = "publication_tests.rs"]
 mod publication;
 #[path = "reservation_tests.rs"]
@@ -357,6 +359,7 @@ impl Drop for Fixture {
 
 fn manifest(count: u64) -> Manifest {
     Manifest {
+        provenance: None,
         schema_version: SCHEMA_VERSION,
         recording_id: "fixture-recording-1".into(),
         compatibility: Compatibility {

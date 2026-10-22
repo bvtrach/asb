@@ -96,3 +96,50 @@ key-management installation is required.
 Complete these gates before declaring sweep/report/resume delivery complete or
 publishing its feature release. The offline track viewer remains a separate
 feature and patch-release boundary.
+
+## Backend checkpoint: immutable origin plans and artifact imports
+
+The cassette backend now carries an optional version-one `OriginPlan` in the
+manifest. The outer ZIP schema stays at version one; manifests without origins
+retain their previous serialized field order and omit the new field entirely.
+This is backward reading support, not a claim that older readers accept new
+origin-bearing manifests. A plan freezes the original population, canonical
+physical source commitments and exact imported full-track metadata/byte lengths.
+The complement is planned local work, not evidence that any client launched.
+Standalone archive replay needs only the union's own payload entries.
+
+`RecordingJournal::import_track` records typed artifact-copy intent and uses the
+same bounded staging, checksum and immutable commit publisher as ordinary local
+captures. It does not run an agent, emit a capture receipt or change old grades.
+Ordinary begin/commit cannot consume imported slots. Explicit `resume_import`
+can finish an intent-only copy or publish a missing commit for an already exact
+payload. The latter hashes and syncs the same descriptor before commit
+publication. Partial, different or duplicate committed payloads are never
+overwritten. Finalization requires every reserved import, and recovery/read-only
+proofs check typed intent and the population before selected payload reads.
+
+Qualification so far: the initial existing cassette suite passed 69 tests; the
+expanded suite passed 80 tests in `target/recording-origin-cassette-final.log`.
+Eleven new origin tests cover self-contained imports from a real backend source
+archive, failed/unknown observations, no-read metadata rejection, intent and
+commit-publication faults, explicit copy recovery, retained partial bytes,
+recovery-sync failure, provenance drift, capacity/identity failures, custom-limit
+hashing above 16 MiB, and omitted legacy wire fields. Independent review found
+and verified repairs for read-only population validation, default-limit hashing
+and the recovered-payload sync ordering. These are provider-free backend tests,
+not public recording-continuation qualification. Runtime logical/physical
+binding, all-configuration union coordination, publication ledger and explicit
+public recovery remain required; no feature merge/release is claimed here.
+
+The subsequent `recording-origin-full.log` run passed all source tests: 1,328
+library tests with 13 explicit opt-ins ignored, all integration suites including
+50 repeated-run/sweep tests, and doc tests. Strict all-target/all-feature Clippy,
+build, formatting, diff checks, Rust documentation, UML, flow and interactive
+diagram generation also passed. Qualification used nonincremental compilation
+with local development/test debuginfo disabled to conserve disk; no tracked
+profiles or CI gates were relaxed. The tested ASB binary SHA-256 was
+`4354d7cef819be5524a0c78722275315342f6a8c6bed976acb9b0974187a7d1c`.
+The older frozen qualification executable remained unchanged. Diagram generation
+retained all 5,090 functions and 12,970 edges, with Graphviz's nonfatal straight-
+edge fallback. Packaging/extracted-install and exact-head hosted CI are still
+feature-delivery gates, not established by this backend checkpoint.

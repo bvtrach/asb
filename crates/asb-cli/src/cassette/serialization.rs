@@ -97,6 +97,8 @@ pub(super) struct ManifestWire<'a, C> {
     pub compatibility: C,
     pub concurrency: u64,
     pub tracks: &'a [Track],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<&'a super::OriginPlan>,
 }
 
 impl Serialize for Manifest {
@@ -107,6 +109,7 @@ impl Serialize for Manifest {
             compatibility: &self.compatibility,
             concurrency: self.concurrency,
             tracks: &self.tracks,
+            provenance: self.provenance.as_ref(),
         }
         .serialize(serializer)
     }

@@ -88,6 +88,7 @@ impl TrackEvidence {
             compatibility: self.compatibility.clone(),
             concurrency: self.concurrency,
             tracks: vec![self.track.clone()],
+            provenance: None,
         }
         .validate(limits)
     }
@@ -219,6 +220,7 @@ struct Budget {
 }
 
 struct Prepared<'a> {
+    origin_plan: Option<String>,
     group: Group<'a>,
     root: PathBuf,
     original: fs::Metadata,
@@ -251,6 +253,11 @@ impl<'a> Prepared<'a> {
         intent.manifest.validate(limits)?;
         let count = validate_count(intent.repeat, intent.manifest.concurrency, limits)?;
         if !intent.manifest.tracks.is_empty()
+            || intent
+                .manifest
+                .provenance
+                .as_ref()
+                .is_some_and(|plan| plan.population != count)
             || intent.destination_name != name
             || intent.manifest.recording_id != expected.recording_id
             || intent.manifest.compatibility != expected.compatibility
@@ -260,6 +267,11 @@ impl<'a> Prepared<'a> {
             return Err(Error("track evidence differs from recording intent".into()));
         }
         for track in group.tracks.values() {
+            if let Some(plan) = &intent.manifest.provenance
+                && let Some(imported) = plan.imported(track.id)
+            {
+                plan.require_track(track, imported.source)?;
+            }
             let started: Started = read_json(
                 &root.join(format!("started-{}.json", track.id)),
                 MAX_RECORD_BYTES,
@@ -274,6 +286,13 @@ impl<'a> Prepared<'a> {
                 || started.id != track.id
                 || started.batch != track.batch
                 || started.replica != track.replica
+                || started.import_source
+                    != intent
+                        .manifest
+                        .provenance
+                        .as_ref()
+                        .and_then(|plan| plan.imported(track.id))
+                        .map(|imported| imported.source)
                 || committed.recording_id != expected.recording_id
                 || committed.track != **track
             {
@@ -284,6 +303,12 @@ impl<'a> Prepared<'a> {
         }
         budget.metadata -= journal_allowance - journal_remaining;
         let mut prepared = Self {
+            origin_plan: intent
+                .manifest
+                .provenance
+                .as_ref()
+                .map(crate::cassette::OriginPlan::commitment)
+                .transpose()?,
             group,
             root,
             original,
@@ -322,6 +347,18 @@ impl<'a> Prepared<'a> {
             },
             &mut budget.metadata,
         )?;
+        if archive
+            .manifest()
+            .provenance
+            .as_ref()
+            .map(crate::cassette::OriginPlan::commitment)
+            .transpose()?
+            != self.origin_plan
+        {
+            return Err(Error(
+                "published origin plan differs from immutable recording intent".into(),
+            ));
+        }
         charge(
             &mut budget.archives,
             receipt.archive_bytes,

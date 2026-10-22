@@ -35,6 +35,9 @@ struct Started {
     id: u64,
     batch: u64,
     replica: u64,
+    /// Artifact-copy intent, not a new execution start. Historical starts omit it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    import_source: Option<usize>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -82,6 +85,15 @@ impl RecordingJournal {
             ));
         }
         let count = validate_count(repeat, manifest.concurrency, limits)?;
+        if manifest
+            .provenance
+            .as_ref()
+            .is_some_and(|plan| plan.population != count)
+        {
+            return Err(Error(
+                "origin population differs from recording repeat/concurrency".into(),
+            ));
+        }
         let (_, _, name) = recording_paths(destination)?;
         let intent = Intent {
             manifest,
@@ -143,6 +155,16 @@ impl RecordingJournal {
         )?;
         intent.manifest.validate(limits)?;
         let count = validate_count(intent.repeat, intent.manifest.concurrency, limits)?;
+        if intent
+            .manifest
+            .provenance
+            .as_ref()
+            .is_some_and(|plan| plan.population != count)
+        {
+            return Err(Error(
+                "origin population differs from recording intent".into(),
+            ));
+        }
         if intent.destination_name != name || !intent.manifest.tracks.is_empty() {
             return Err(Error(
                 "recording intent does not match this destination".into(),
@@ -182,6 +204,14 @@ impl RecordingJournal {
             if expected != id
                 || started.id != id
                 || started.recording_id != journal.intent.manifest.recording_id
+                || started.import_source
+                    != journal
+                        .intent
+                        .manifest
+                        .provenance
+                        .as_ref()
+                        .and_then(|plan| plan.imported(id))
+                        .map(|imported| imported.source)
             {
                 return Err(Error(
                     "recording start identity differs from planned slot".into(),
@@ -213,12 +243,24 @@ impl RecordingJournal {
         Ok(journal)
     }
 
-    /// Record an actual execution start before launching its processes.
+    /// Record a local slot intent before launching processes, not launch evidence.
     /// A duplicate start is never interpreted as permission to retry.
     pub fn begin(&mut self, batch: u64, replica: u64) -> Result<u64, Error> {
         self.check_root()?;
         self.ensure_recording()?;
         let id = self.slot(batch, replica)?;
+        if self
+            .intent
+            .manifest
+            .provenance
+            .as_ref()
+            .and_then(|plan| plan.imported(id))
+            .is_some()
+        {
+            return Err(Error(
+                "imported slots cannot begin another local execution".into(),
+            ));
+        }
         if self.starts.contains_key(&id) {
             return Err(Error(format!(
                 "recording track {id} has already started; refusing implicit retry"
@@ -229,6 +271,7 @@ impl RecordingJournal {
             id,
             batch,
             replica,
+            import_source: None,
         };
         self.publish_record(
             &format!("started-{id}.json"),
@@ -244,6 +287,117 @@ impl RecordingJournal {
     /// never process exit alone. Failed staging retains its uncommitted payload
     /// for inspection; another commit cannot overwrite it.
     pub fn commit(&mut self, track: Track, source: &mut dyn Read) -> Result<(), Error> {
+        if self
+            .intent
+            .manifest
+            .provenance
+            .as_ref()
+            .and_then(|plan| plan.imported(track.id))
+            .is_some()
+        {
+            return Err(Error("imported slots require the artifact-copy API".into()));
+        }
+        self.commit_payload(track, source)
+    }
+
+    /// Import a reserved original track without manufacturing an execution,
+    /// capture receipt or grade. The owner verifies its source archive/receipt;
+    /// this writer independently checks complete metadata and exact bytes.
+    pub fn import_track(
+        &mut self,
+        track: Track,
+        source_index: usize,
+        source: &mut dyn Read,
+    ) -> Result<(), Error> {
+        self.check_root()?;
+        self.ensure_recording()?;
+        self.intent
+            .manifest
+            .provenance
+            .as_ref()
+            .ok_or_else(|| Error("recording has no frozen import plan".into()))?
+            .require_track(&track, source_index)?;
+        if self.slot(track.batch, track.replica)? != track.id || self.starts.contains_key(&track.id)
+        {
+            return Err(Error(
+                "imported slot is foreign or already has an intent".into(),
+            ));
+        }
+        let started = Started {
+            recording_id: self.intent.manifest.recording_id.clone(),
+            id: track.id,
+            batch: track.batch,
+            replica: track.replica,
+            import_source: Some(source_index),
+        };
+        self.publish_record(
+            &format!("started-{}.json", track.id),
+            &serde_json::to_vec(&started).map_err(json_error)?,
+        )?;
+        self.starts.insert(track.id, started);
+        self.commit_payload(track, source)
+    }
+
+    /// Explicitly finish an artifact import after interruption. This never
+    /// retries an execution or overwrites retained payloads. An existing exact
+    /// payload can receive its missing immutable commit; partial bytes remain
+    /// diagnostic evidence and cannot be replaced through this operation.
+    pub fn resume_import(
+        &mut self,
+        track: Track,
+        source_index: usize,
+        source: &mut dyn Read,
+    ) -> Result<(), Error> {
+        self.check_root()?;
+        self.ensure_recording()?;
+        self.intent
+            .manifest
+            .provenance
+            .as_ref()
+            .ok_or_else(|| Error("recording has no frozen import plan".into()))?
+            .require_track(&track, source_index)?;
+        let started = self
+            .starts
+            .get(&track.id)
+            .ok_or_else(|| Error("import has no durable artifact-copy intent".into()))?;
+        if started.recording_id != self.intent.manifest.recording_id
+            || started.id != track.id
+            || started.batch != track.batch
+            || started.replica != track.replica
+            || started.import_source != Some(source_index)
+        {
+            return Err(Error(
+                "recovered import intent differs from its frozen origin".into(),
+            ));
+        }
+        self.validate_track(&track)?;
+        if self.commits.contains_key(&track.id) {
+            return Err(Error(
+                "import is already committed; refusing duplicate recovery".into(),
+            ));
+        }
+        // commit_payload's create-new open is authoritative even if a foreign
+        // pathname appears after this check. No retained bytes are truncated.
+        if exists(&self.payload_path(track.id))? {
+            let mut file = open_regular(&self.payload_path(track.id), track.bytes)?;
+            let (bytes, sha256) = hash_open_file(&mut file, track.bytes)?;
+            if bytes != track.bytes || sha256 != track.sha256 {
+                return Err(Error(
+                    "partial import payload retained without overwrite".into(),
+                ));
+            }
+            // Readable cached bytes are not durable bytes: the interrupted
+            // copier may never have reached its sync. Hash and sync the same
+            // descriptor before publishing the immutable completion metadata.
+            self.publication_fault
+                .check("before-import-recovery-sync")?;
+            file.sync_all().map_err(io_error)?;
+            return self.publish_commit(track);
+        }
+        self.commit_payload(track, source)
+    }
+
+    fn commit_payload(&mut self, track: Track, source: &mut dyn Read) -> Result<(), Error> {
         self.check_root()?;
         self.ensure_recording()?;
         self.validate_track(&track)?;
@@ -291,6 +445,10 @@ impl RecordingJournal {
                 "recording payload length/checksum mismatch; incomplete payload retained".into(),
             ));
         }
+        self.publish_commit(track)
+    }
+
+    fn publish_commit(&mut self, track: Track) -> Result<(), Error> {
         let committed = Committed {
             recording_id: self.intent.manifest.recording_id.clone(),
             track: track.clone(),
@@ -421,6 +579,20 @@ impl RecordingJournal {
                 "recording track has no matching durable start".into(),
             ));
         }
+        if let Some(imported) = self
+            .intent
+            .manifest
+            .provenance
+            .as_ref()
+            .and_then(|plan| plan.imported(track.id))
+        {
+            self.intent
+                .manifest
+                .provenance
+                .as_ref()
+                .expect("import plan")
+                .require_track(track, imported.source)?;
+        }
         let mut manifest = self.intent.manifest.clone();
         manifest.tracks.push(track.clone());
         manifest.validate(self.limits)
@@ -515,6 +687,11 @@ fn reserve_metadata(intent: &Intent, count: u64, limits: Limits) -> Result<(), E
         intent.manifest.concurrency,
         count,
         limits,
+        intent
+            .manifest
+            .provenance
+            .as_ref()
+            .and_then(|plan| plan.sources.len().checked_sub(1)),
     )
     .map(|_| ())
 }
@@ -608,7 +785,11 @@ fn read_json<T: DeserializeOwned>(
 }
 
 fn hash_file(path: &Path, limit: u64) -> Result<(u64, String), Error> {
-    let mut source = open_regular(path, limit)?.take(limit.saturating_add(1));
+    hash_open_file(&mut open_regular(path, limit)?, limit)
+}
+
+fn hash_open_file(file: &mut File, limit: u64) -> Result<(u64, String), Error> {
+    let mut source = file.take(limit.saturating_add(1));
     let mut hash = Sha256::new();
     let mut bytes = 0u64;
     let mut buffer = [0; 16 * 1024];

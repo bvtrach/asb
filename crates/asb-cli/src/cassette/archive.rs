@@ -162,6 +162,7 @@ impl Archive {
         let manifest: Manifest = serde_json::from_slice(&bytes)
             .map_err(|error| Error(format!("invalid cassette manifest: {error}")))?;
         manifest.validate(limits)?;
+        manifest.validate_imports()?;
         if names.len() != manifest.tracks.len() + 1 {
             return Err(Error(
                 "cassette manifest and ZIP track catalogue differ".into(),
