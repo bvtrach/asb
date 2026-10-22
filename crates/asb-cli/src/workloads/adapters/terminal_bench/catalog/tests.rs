@@ -225,8 +225,25 @@ fn local_install_verifies_runtime_and_catalog_without_fetching_or_replacing_subs
     assert!(runtime_available(&ADAPTER, &tool).unwrap());
     fs::write(tool.join("venv/bin/python"), "#!/bin/sh\nexit 7\n").unwrap();
     assert!(!runtime_available(&ADAPTER, &tool).unwrap());
+    fs::write(
+        tool.join("venv/bin/python"),
+        "#!/bin/sh\nprintf started > \"$0.started\"\nexit 127\n",
+    )
+    .unwrap();
+    assert!(!runtime_available(&ADAPTER, &tool).unwrap());
+    assert_eq!(
+        fs::read(tool.join("venv/bin/python.started")).unwrap(),
+        b"started"
+    );
     fs::remove_file(tool.join("venv/bin/python")).unwrap();
-    assert!(runtime_available(&ADAPTER, &tool).is_err());
+    let missing = runtime_available(&ADAPTER, &tool).unwrap_err().to_string();
+    #[cfg(target_os = "linux")]
+    {
+        assert!(missing.contains("cannot inspect installed evaluator runtime"));
+        assert!(missing.contains(&tool.join("venv/bin/python").display().to_string()));
+    }
+    #[cfg(not(target_os = "linux"))]
+    assert!(!missing.is_empty()); // Keep native direct-exec error semantics.
 }
 
 #[cfg(unix)]

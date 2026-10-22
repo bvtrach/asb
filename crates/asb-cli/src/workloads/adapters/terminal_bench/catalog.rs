@@ -210,7 +210,7 @@ pub(super) fn runtime_available(
     let owner =
         install::ProducerDirectory::open(root).map_err(install::InstallFailure::into_public)?;
     let mut scope = owner.scope(&context);
-    let available = runtime_available_in(&mut scope, adapter, root);
+    let available = runtime_available_in(&mut scope, &context, adapter, root);
     owner
         .consume(
             scope
@@ -222,12 +222,29 @@ pub(super) fn runtime_available(
 }
 fn runtime_available_in(
     scope: &mut install::ProcessScope,
+    context: &install::OperationContext,
     adapter: &TerminalBenchAdapter,
     root: &Path,
 ) -> install::InstallResult<bool> {
+    let python = root.join("venv/bin/python");
+    #[cfg(target_os = "linux")]
+    let python = {
+        let python = std::path::absolute(python).map_err(crate::io_error)?;
+        context.check_before_admission("Terminal-Bench evaluator runtime", &python)?;
+        let selected = crate::tools::host_executable(&python);
+        context.check_before_admission("Terminal-Bench evaluator runtime", &python)?;
+        selected.ok_or_else(|| {
+            Error::Io(format!(
+                "cannot inspect installed evaluator runtime {}: it is not currently executable; run `asb tool install {}`",
+                python.display(), adapter.engine.tool()
+            ))
+        })?
+    };
+    #[cfg(not(target_os = "linux"))]
+    let _ = context; // Preserve native direct/PATHEXT execution on other hosts.
     Ok(scope
         .status(
-            root.join("venv/bin/python"),
+            python,
             install::Purpose::Probe,
             "Terminal-Bench evaluator runtime",
             |command| {
@@ -265,7 +282,7 @@ pub(super) fn install(
     ensure_helpers(&tool)?;
     let owner = install::ProducerDirectory::open(context.workloads_root)?;
     let mut scope = owner.scope(context.process);
-    if !runtime_available_in(&mut scope, adapter, &tool)? {
+    if !runtime_available_in(&mut scope, context.process, adapter, &tool)? {
         progress(10, crate::install::ProgressStage::Dependencies);
         install::tool_in(
             context.process,
@@ -278,7 +295,7 @@ pub(super) fn install(
             output,
             progress,
         )?;
-        if !runtime_available_in(&mut scope, adapter, &tool)? {
+        if !runtime_available_in(&mut scope, context.process, adapter, &tool)? {
             return Err(Error::Input(format!(
                 "installed evaluator runtime is unusable; run `asb tool install {}` and inspect .asb/install.log",
                 adapter.engine.tool()

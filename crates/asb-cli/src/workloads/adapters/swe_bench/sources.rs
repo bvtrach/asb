@@ -22,23 +22,41 @@ pub(super) fn install(
     let catalog = context.workloads_root.join(adapter.id).join("catalog.json");
     let owner = ProducerDirectory::open(&tool)?;
     let mut scope = owner.scope(context.process);
-    let verify =
-        |scope: &mut ProcessScope, archive: &Path, catalog: Option<&Path>| -> InstallResult<bool> {
-            let mut step = scope.prepare(
-                tool.join("venv/bin/python"),
-                Purpose::Probe,
-                "original SWE-bench source validation",
-            )?;
-            step.command_mut()
-                .arg(tool.join("asb_swebench_sources.py"))
-                .arg("--archive")
-                .arg(archive)
-                .env("PYTHONDONTWRITEBYTECODE", "1");
-            if let Some(catalog) = catalog {
-                step.command_mut().arg("--catalog").arg(catalog);
-            }
-            Ok(scope.run(step)?.status.success())
+    let verify = |scope: &mut ProcessScope,
+                  archive: &Path,
+                  catalog: Option<&Path>|
+     -> InstallResult<bool> {
+        let python = tool.join("venv/bin/python");
+        #[cfg(target_os = "linux")]
+        let python = {
+            let python = std::path::absolute(python).map_err(crate::io_error)?;
+            context
+                .process
+                .check_before_admission("original SWE-bench source validation", &python)?;
+            let selected = crate::tools::host_executable(&python);
+            context
+                .process
+                .check_before_admission("original SWE-bench source validation", &python)?;
+            selected.ok_or_else(|| Error::Io(format!(
+                    "cannot validate original SWE-bench source: installed evaluator runtime {} is not currently executable; run `asb tool install swebench`",
+                    python.display()
+                )))?
         };
+        let mut step = scope.prepare(
+            python,
+            Purpose::Probe,
+            "original SWE-bench source validation",
+        )?;
+        step.command_mut()
+            .arg(tool.join("asb_swebench_sources.py"))
+            .arg("--archive")
+            .arg(archive)
+            .env("PYTHONDONTWRITEBYTECODE", "1");
+        if let Some(catalog) = catalog {
+            step.command_mut().arg("--catalog").arg(catalog);
+        }
+        Ok(scope.run(step)?.status.success())
+    };
     let destination = tool.join(ARCHIVE);
     if destination.is_file() && verify(&mut scope, &destination, Some(&catalog))? {
         owner.consume(scope.finish()?)?;
