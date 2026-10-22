@@ -67,3 +67,31 @@ synchronous/unbounded on exceptional fixture loss, not a newly repaired harness.
 Only formatting/diff checks have run. Independent source review must precede
 actual-FIRST/frozen owning focus/strict and any normal merge into49/50; no old
 parent qualification substitutes for this source's execution.
+
+## Owning49 focused qualification
+
+Reviewed84e0cb80 actual-FIRST passed14.75s and libtest compilation27.14s in its
+new exclusive HOME cache, seeded only from verified-idle own50 debug artifacts.
+The exact executable was selected from Cargo compiler-artifact JSON and frozen.
+Before/after actual/frozen ASB SHA256 is
+`849b744aa6031f14529509defbdf62f5efad94cee7247732a3f09593129fcaa9`;
+libtest/frozen SHA256 is
+`c571237e5e0ddde164966624779594ce2391dcbf8a3bdf71bf4c620a0cc795b8`.
+
+All four affected owning filters passed first (2 SWE source,2 Terminal adapter,
+1 Terminal download,5 Terminal catalog outer tests). Complete workloads then
+passed192/0/0(35.99s), tools15/0/2existing live opt-ins ignored(1.55s), and
+installer104/0/0(63.20s). The10 repeated owning tests are included in workloads:
+the deduplicated count is311 passed,0failed,2ignored, not321. All new marker127,
+absent-tool, exact-path and no-later-phase assertions executed. Source/process
+deadline and native/public-CLI ownership controls are included in installer104.
+Strict workspace/all-target/all-feature Clippy passed17.86s; formatting/diff
+checks passed. Complete logs and hash manifests are target/workload49-84e-*.
+
+All handles are terminal and source stayed unchanged during execution. Fourteen
+untracked .asb-install-step evidence directories created by the runtime failure
+controls remain intact; they are not silently deleted or claimed clean. This is
+focused owning49 proof only. The separately reviewed material fixture correction
+was not imported during these runs. Current-stack50 integration and fresh full
+qualification remain pending independent review/coordination, not covered by
+these focused results.
