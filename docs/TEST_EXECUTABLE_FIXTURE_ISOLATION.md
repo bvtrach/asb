@@ -244,3 +244,37 @@ and nested-marker corrections at d35e7eee. Their latest tests, all migrated
 owning families and strict lint still require fresh actual-first qualification.
 The earlier core Clippy failure from wiring the module into unrelated harnesses
 is preserved; opt-in wiring replaces that accidental blanket inclusion.
+
+## Observed migration focus before the shared-reaper prerequisite
+
+Signed source d6e77ff5 built actual ASB FIRST (13.57s). Its frozen copy
+`target/qualification/fixture-writer-d6e77ff5-asb` and the later
+`fixture-writer-1892fbf4-asb` both match actual SHA256
+`fed4a298914596699b2a1f46d5ee44f96ccd181aa8e15ba93fc0303b50463dc2`.
+The actual-first followup build, before/after-runtime and final hash logs are
+`target/fixture-writer-{followup-build.log,followup-before.sha256,followup-after.sha256,migration-final.sha256}`.
+
+The first integration compile failed on the shared test-only UnknownCleanup
+variant being unconstructed in that harness. The exact log is preserved as
+`target/fixture-writer-integration-offline_cli-compile-failed-d6e.log`.
+Signed 1892fbf4 extends the existing local fault-scope restoration test to all
+six fault values: no lint suppression or product change. The mistaken
+proxy::adapters::cli2key filter selected zero tests; its log is retained and is
+NOT qualification. The corrected providers::adapters::cli2key filter passed22.
+
+The 24 nonzero selected family summaries total677PASS/0FAIL/15ignored (family
+executions, not a claim of full-suite coverage). They are the18 library family
+logs `target/fixture-writer-focus-*.log` excluding that zero filter, and six
+`fixture-writer-integration-{offline_cli,guest_agent,completion_diagnostics,repeated_run,compare_setup,planning_admission}.log`
+summaries: respectively97/0/5ignored,17/0,8/0,32/0,19/0,9/0. The initial seven
+core cases and repeated nine-case core run are not added again to that total.
+The latest core run, including cross-process marker/no-follow/depth cases,
+is `target/fixture-writer-followup-core.log`:9PASS/0FAIL/0ignored.
+Strict workspace/all-target/all-feature Clippy (`-D warnings`), fmt and
+diffcheck each finished EXIT0; logs use `fixture-writer-migration-*` names.
+`fixture-writer-gate-parity.log` confirms exact98b three-path parity and100755.
+The generated untracked `crates/asb-cli/.asb/install.log` is empty and preserved.
+
+This proof does NOT qualify the shared production reaper's observation-error
+path, which root assigned separately. No full suite, package promotion, hosted
+CI retry, PR update or release is authorized by these focused results.
