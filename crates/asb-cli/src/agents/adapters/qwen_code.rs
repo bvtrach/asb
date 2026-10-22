@@ -120,13 +120,7 @@ mod tests {
             {"type":"message","usage":{"input_tokens":17785,"output_tokens":73}},
             {"type":"result","usage":{"input_tokens":108750,"output_tokens":1037,"cache_read_input_tokens":11520,"total_tokens":109787},"stats":{"models":{"m":{"tokens":{"prompt":108750,"candidates":1037,"total":109787}}}}}
         ]"#;
-        let usage = crate::measurements::token_usage_from_sources(
-            "openrouter",
-            "qwen-code",
-            output,
-            "",
-            None,
-        );
+        let usage = crate::usage::from_sources("openrouter", "qwen-code", output, "", None);
         assert_eq!(
             (
                 usage.input_tokens,
@@ -137,7 +131,7 @@ mod tests {
             (Some(108750), Some(1037), Some(11520), Some(109787))
         );
         assert_eq!(usage.source.as_deref(), Some("agent-output"));
-        let unknown = crate::measurements::token_usage_from_sources(
+        let unknown = crate::usage::from_sources(
             "openrouter",
             "qwen-code",
             r#"[{"type":"message","usage":{"input_tokens":0,"output_tokens":0}},{"type":"result","usage":{"input_tokens":0,"output_tokens":0}}]"#,

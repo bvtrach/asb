@@ -1,4 +1,5 @@
 use super::*;
+use crate::workloads::summary::update_summary as update_summary_value;
 use serde::ser::{Error as _, SerializeMap};
 
 #[cfg(target_os = "linux")]

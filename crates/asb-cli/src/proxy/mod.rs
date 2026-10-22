@@ -2,6 +2,7 @@
 
 pub(crate) mod adapters;
 pub(crate) mod capture;
+pub(crate) mod usage;
 
 use crate::Error;
 use std::any::Any;

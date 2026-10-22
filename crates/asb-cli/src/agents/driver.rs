@@ -479,14 +479,14 @@ fn run(request: GuestRequest) -> Result<u8, Error> {
             &request.config.provider,
         ),
     });
-    let usage = crate::measurements::token_usage_from_sources(
+    let usage = crate::usage::from_sources(
         &request.config.provider,
         &request.config.agent,
         &stdout,
         &stderr,
         None,
     );
-    let usage = crate::measurements::with_artifact_usage(usage, artifacts.token_usage);
+    let usage = crate::usage::with_artifact_usage(usage, artifacts.token_usage);
     // Until the first durable publication transfers the frozen evidence, Drop
     // retains raw artifacts. This interim record never asserts settlement.
     let mut result = GuestResult {

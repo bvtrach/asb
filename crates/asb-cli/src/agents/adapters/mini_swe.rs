@@ -95,7 +95,7 @@ fn trajectory_steps(value: &serde_json::Value) -> Option<u64> {
 }
 
 fn trajectory_usage(value: &serde_json::Value) -> crate::measurements::TokenUsage {
-    let fallback = || crate::measurements::token_usage_from_document(value);
+    let fallback = || crate::usage::from_document(value);
     let Some(messages) = value.get("messages").and_then(|v| v.as_array()) else {
         return fallback();
     };
@@ -109,7 +109,7 @@ fn trajectory_usage(value: &serde_json::Value) -> crate::measurements::TokenUsag
         let Some(value) = response.get("usage") else {
             return Default::default();
         };
-        let usage = crate::collectors::adapters::token_usage::usage_from_json(value);
+        let usage = crate::usage::usage_from_json(value);
         if usage.input_tokens.is_none() || usage.output_tokens.is_none() {
             return Default::default();
         }

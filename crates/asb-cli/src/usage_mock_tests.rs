@@ -1,6 +1,6 @@
 //! Token accounting contracts using synthetic output and cassette data only.
 //! No test starts an agent, proxy, provider, or network connection.
-use super::{TokenUsage, token_usage_from_sources};
+use super::{TokenUsage, from_sources as token_usage_from_sources};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 

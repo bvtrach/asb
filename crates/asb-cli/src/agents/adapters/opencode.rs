@@ -76,7 +76,7 @@ fn output_usage(stdout: &str, stderr: &str, _: bool) -> crate::measurements::Tok
         }
         sum.with_derived_total()
     } else {
-        crate::collectors::adapters::token_usage::usage_from_text(&format!("{stdout}\n{stderr}"))
+        crate::usage::usage_from_text(&format!("{stdout}\n{stderr}"))
     }
 }
 fn command(context: &CommandContext<'_>) -> CommandSpec {

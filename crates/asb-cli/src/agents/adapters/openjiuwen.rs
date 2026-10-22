@@ -269,13 +269,7 @@ mod tests {
             "{\"type\":\"llm_usage\",\"payload\":{\"usage_metadata\":{\"input_tokens\":9401,\"output_tokens\":66,\"cache_read_tokens\":34}}}\n",
             "{\"type\":\"answer\",\"payload\":{\"content\":\"duplicate answer\"}}\n",
         );
-        let usage = crate::measurements::token_usage_from_sources(
-            "anthropic",
-            "openjiuwen",
-            output,
-            "",
-            None,
-        );
+        let usage = crate::usage::from_sources("anthropic", "openjiuwen", output, "", None);
         assert_eq!(
             (
                 usage.input_tokens,
@@ -289,7 +283,7 @@ mod tests {
             super::final_response(output, std::path::Path::new(".")),
             Some("src/cli.py src/registry.py lookup".into())
         );
-        let unknown = crate::measurements::token_usage_from_sources(
+        let unknown = crate::usage::from_sources(
             "cli2key",
             "openjiuwen",
             "{\"type\":\"llm_usage\",\"payload\":{\"usage_metadata\":{\"input_tokens\":0,\"output_tokens\":0}}}\n",

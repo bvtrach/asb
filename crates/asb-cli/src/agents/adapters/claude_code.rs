@@ -45,7 +45,7 @@ fn output_usage(
         }
         return usage.with_derived_total();
     }
-    crate::collectors::adapters::token_usage::usage_from_text(&format!("{stdout}\n{stderr}"))
+    crate::usage::usage_from_text(&format!("{stdout}\n{stderr}"))
 }
 fn command(context: &CommandContext<'_>) -> CommandSpec {
     CommandSpec {

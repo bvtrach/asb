@@ -43,7 +43,8 @@ impl CollectorAdapter for MpstatCollector {
         process(session, context)
     }
     fn attach_pid(&self, session: &mut measurements::Session, pid: u32) -> Result<(), String> {
-        session.start_cpu_snapshot(pid)
+        let enabled = session.state::<CpuState>().borrow().enabled;
+        super::pidstat::start_snapshot(session, "mpstat", enabled, pid, "-u")
     }
 }
 
@@ -90,38 +91,6 @@ fn samples(output: &str) -> super::pidstat::Samples {
             )
         },
     )
-}
-
-impl measurements::Session {
-    pub(crate) fn start_cpu_snapshot(&mut self, pid: u32) -> Result<(), String> {
-        let interval = measurements::pidstat_interval_seconds();
-        let runtime = std::time::Duration::from_secs(
-            measurements::measurement_interval_ms().div_ceil(1000) + 5,
-        );
-        let enabled = self.state::<CpuState>().borrow().enabled;
-        self.start_tree_snapshot(
-            "mpstat",
-            enabled,
-            &super::pidstat::executable(self.tool_dir.as_deref()),
-            pid,
-            Box::new(move |pids| measurements::SnapshotCommand {
-                runtime,
-                stream_bytes: 16 * 1024 * 1024,
-                arguments: vec![
-                    "-u".into(),
-                    "-T".into(),
-                    "ALL".into(),
-                    "-p".into(),
-                    pids.iter()
-                        .map(u32::to_string)
-                        .collect::<Vec<_>>()
-                        .join(","),
-                    interval.clone(),
-                    "1".into(),
-                ],
-            }),
-        )
-    }
 }
 
 #[derive(Default)]

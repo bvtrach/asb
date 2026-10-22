@@ -1021,7 +1021,7 @@ impl ResultFacts {
                     kind: failure.kind.as_str(),
                     reason: failure.reason.clone(),
                 });
-        let token_usage = measurements::token_usage_from_sources(
+        let token_usage = crate::usage::from_sources(
             &config.provider,
             &config.agent,
             &if capture_complete {
@@ -1040,8 +1040,8 @@ impl ResultFacts {
                 .map(|(_, cassette)| cassette.as_path()),
         );
         let token_usage =
-            measurements::with_artifact_usage(token_usage, adapter_artifacts.token_usage);
-        let token_usage = measurements::with_artifact_usage(
+            crate::usage::with_artifact_usage(token_usage, adapter_artifacts.token_usage);
+        let token_usage = crate::usage::with_artifact_usage(
             token_usage,
             guest.as_ref().map(|metadata| metadata.token_usage.clone()),
         );
@@ -1051,7 +1051,7 @@ impl ResultFacts {
             adapter_artifacts.steps.or_else(|| {
                 capture_complete
                     .then(|| {
-                        measurements::steps_from_sources(
+                        crate::usage::steps_from_agent(
                             &config.agent,
                             &bounded(&child.stdout),
                             &bounded(&child.stderr),
@@ -1088,10 +1088,6 @@ impl ResultFacts {
             stderr.push_str(&failure.reason);
             stderr.push('\n');
         }
-        let run_metrics = crate::collectors::run_metrics(&crate::collectors::RunObservation {
-            elapsed_ms,
-            success,
-        });
         let result = RunResult {
             recording: None,
             execution: options.batch.map(|batch| batch.execution(options.replica)),
@@ -1141,7 +1137,7 @@ impl ResultFacts {
             adapter_smoke_success: (evaluation_kind
                 == workloads::KnownEvaluationKind::AdapterSmoke)
                 .then_some(success),
-            elapsed_ms: run_metrics.elapsed_ms,
+            elapsed_ms,
             exit_code: child.status.code(),
             observation,
             token_usage,
