@@ -40,9 +40,33 @@ must resync after prior unlink-before-directory-sync failure. Tests cover these
 boundaries, replacement during sync and foreign/symlink/copy/duplicate refusal.
 The declared admission/manifest/link bytes are not rewritten.
 
-Still unfinished: actual process-death qualification of unused-head recovery,
-explicit recovery of an unlinked fully staged child, successor-link fault
-qualification, larger multi-configuration inheritance/fault tests, original-SDK
+Unlinked fully staged successors have a separate metadata-only operation:
+
+```sh
+asb sweep sweep.toml --resume --recover-continuation
+```
+
+It accepts no execution/selection options and requires no current provider
+credentials or executable discovery. The passive recovery inspection contains an
+authoritative catalog and a separate candidate; the candidate never resolves
+historical starts or recording evidence. Only the fixed next ordinal can qualify,
+with complete exact admission/manifests, lineage, progress and bounded envelope.
+Missing/partial manifests, foreign stages and unknown runtime activity remain
+retained/refused, never reconstructed. Aggregate recording reservation/import
+budgets are admitted from metadata before opening any archive or journal.
+
+The consuming repair holds all campaign owners, classifies original receipts and
+untouched slots against the predecessor, reconstructs recording descriptors from
+actual completion evidence and retains imported-only journal owners. It confirms
+candidate/predecessor durability and rechecks the whole population before linking
+`next.json` last. It returns a report with zero agent executions/evaluations, not
+worker capabilities. Subsequent normal resume activates the exact frozen head.
+Repeated repair confirms only an unused head; it refuses a subsequently started
+head. Fault tests preserve original bytes and cover failed link-directory sync,
+late-configuration conflicts, forged partitions and aggregate payload limits.
+
+Still unfinished: actual process-death qualification of unused-head/unlinked-child
+recovery, larger multi-configuration recording inheritance/fault tests, original-SDK
 qualification and full current-main packaging/CI. Do not mark feature 5 delivered
 until these remaining paths and release gates are complete.
 

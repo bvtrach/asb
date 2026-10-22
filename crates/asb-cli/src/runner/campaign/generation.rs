@@ -144,6 +144,102 @@ pub(crate) struct Catalog {
     recording_nodes: Vec<Option<usize>>,
 }
 
+/// Recovery-only inspection. An unlinked child is never catalog membership:
+/// historical starts and recordings resolve exclusively through `authoritative`.
+pub(crate) struct RecoveryInspection {
+    pub authoritative: Catalog,
+    pub candidate: Option<UnlinkedChild>,
+}
+
+/// Fully staged metadata, not a worker capability or a source of execution facts.
+pub(crate) struct UnlinkedChild {
+    node: Node,
+}
+
+impl UnlinkedChild {
+    pub(crate) fn root(&self) -> &Path {
+        &self.node.root
+    }
+
+    pub(crate) fn snapshot(&self) -> Result<HeadSnapshot, Error> {
+        self.recheck()?;
+        self.node.snapshot()
+    }
+
+    pub(crate) fn link_bytes(&self, catalog: &Catalog) -> Result<Vec<u8>, Error> {
+        if self.node.admission.lineage != Some(catalog.next_lineage()) {
+            return Err(invalid(
+                "unlinked child no longer follows its authoritative parent",
+            ));
+        }
+        serde_json::to_vec_pretty(&NextReference {
+            schema_version: 1,
+            ordinal: catalog.nodes.len(),
+            generation: self.node.admission.generation.clone(),
+            admission: self.node.admission_blob.clone(),
+            previous_admission: catalog.head().admission_blob.clone(),
+        })
+        .map_err(|_| invalid("cannot encode recovered successor link"))
+    }
+
+    pub(crate) fn recheck(&self) -> Result<(), Error> {
+        self.node.snapshot()?;
+        let mut names = BTreeSet::from([std::ffi::OsString::from("admitted.json")]);
+        for reference in &self.node.admission.manifests {
+            names.insert(manifest_path(reference.configuration).into_os_string());
+        }
+        if let Some(pending) = &self.node.pending {
+            self.node.verify_pending(pending)?;
+            names.insert(pending.name.clone().into_os_string());
+        }
+        let actual: BTreeSet<_> = reading::list_relative(
+            self.root().parent().expect("fixed successor parent"),
+            Path::new(self.root().file_name().expect("fixed successor ordinal")),
+            names.len(),
+        )?
+        .into_iter()
+        .collect();
+        if actual != names {
+            return Err(invalid("unlinked child metadata envelope changed"));
+        }
+        Ok(())
+    }
+
+    /// Confirm retained bytes without cleaning staging or granting membership.
+    /// Exact pending aliases remain for normal owned head confirmation after link.
+    pub(crate) fn confirm(
+        &self,
+        mut before_sync: impl FnMut(&Path) -> Result<(), Error>,
+    ) -> Result<(), Error> {
+        self.recheck()?;
+        for (relative, blob) in self.node.metadata_files() {
+            let (file, bytes) = reading::pinned_bytes(self.root(), &relative, blob.bytes)?;
+            if !blob.matches(&bytes) {
+                return Err(invalid(
+                    "unlinked child changed before durability confirmation",
+                ));
+            }
+            before_sync(&self.root().join(relative))?;
+            file.sync_all().map_err(crate::io_error)?;
+        }
+        if let Some(pending) = &self.node.pending {
+            let file = self.node.verify_pending(pending)?;
+            before_sync(&self.root().join(&pending.name))?;
+            file.sync_all().map_err(crate::io_error)?;
+        }
+        for directory in [
+            self.root(),
+            self.root().parent().expect("fixed successor parent"),
+        ] {
+            before_sync(directory)?;
+            std::fs::File::open(directory)
+                .and_then(|file| file.sync_all())
+                .map_err(crate::io_error)?;
+        }
+        self.recheck()
+    }
+}
+
 /// One immutable admission and its private validated derivatives. Keeping node
 /// lookup separate prevents later continuation from rebinding historical starts
 /// or recording identities against the newest generation.
@@ -440,6 +536,11 @@ impl Node {
             );
             manifests.push(manifest);
         }
+        crate::runner::recording::union::admit_population(
+            manifests
+                .iter()
+                .filter_map(|manifest| manifest.recording.as_ref()),
+        )?;
         Ok((
             Self {
                 root,
@@ -695,7 +796,29 @@ impl Catalog {
     }
 
     pub(crate) fn head_snapshot(&self) -> Result<HeadSnapshot, Error> {
-        let node = self.head();
+        self.head().snapshot()
+    }
+
+    pub(crate) fn recording_before_head(
+        &self,
+        configuration: usize,
+    ) -> Result<Option<StartReference>, Error> {
+        self.head()
+            .manifests
+            .get(configuration)
+            .ok_or_else(|| invalid("configuration outside manifest"))?;
+        self.nodes[..self.nodes.len() - 1]
+            .iter()
+            .rev()
+            .find(|node| node.manifests[configuration].recording.is_some())
+            .map(|node| node.reference(configuration))
+            .transpose()
+    }
+}
+
+impl Node {
+    fn snapshot(&self) -> Result<HeadSnapshot, Error> {
+        let node = self;
         let bytes = reading::bounded_relative(
             &node.root,
             Path::new("admitted.json"),
@@ -722,23 +845,9 @@ impl Catalog {
             manifests,
         })
     }
+}
 
-    pub(crate) fn recording_before_head(
-        &self,
-        configuration: usize,
-    ) -> Result<Option<StartReference>, Error> {
-        self.head()
-            .manifests
-            .get(configuration)
-            .ok_or_else(|| invalid("configuration outside manifest"))?;
-        self.nodes[..self.nodes.len() - 1]
-            .iter()
-            .rev()
-            .find(|node| node.manifests[configuration].recording.is_some())
-            .map(|node| node.reference(configuration))
-            .transpose()
-    }
-
+impl Catalog {
     fn head(&self) -> &Node {
         self.nodes
             .last()
@@ -781,6 +890,69 @@ impl Catalog {
         expected: &[Expected<'_>],
         limit: usize,
     ) -> Result<Self, Error> {
+        let catalog = Self::read_chain(checkpoint, &context, expected, limit)?;
+        catalog.recheck_for_publication(None)?;
+        Ok(catalog)
+    }
+
+    pub(crate) fn read_for_recovery(
+        checkpoint: &Path,
+        context: Context<'_>,
+        expected: &[Expected<'_>],
+    ) -> Result<RecoveryInspection, Error> {
+        let catalog = Self::read_chain(checkpoint, &context, expected, MAX_GENERATION)?;
+        let relative = Path::new(ROOT)
+            .join("successors")
+            .join(format!("{:06}", catalog.nodes.len()));
+        let candidate = if reading::present_relative(checkpoint, &relative)? {
+            if catalog.nodes.len() >= 65_533 {
+                return Err(invalid("successor generation count exceeds its bound"));
+            }
+            let remaining = MAX_GENERATION - catalog.metadata_bytes;
+            let (mut node, pending) =
+                Node::read(checkpoint, &relative, &context, expected, remaining)?;
+            if reading::present_relative(&node.root, Path::new("next.json"))?
+                || node.admission.lineage != Some(catalog.next_lineage())
+                || catalog.indices.contains_key(&node.admission.generation)
+            {
+                return Err(invalid("unlinked child has invalid lineage or a successor"));
+            }
+            validate_transition(catalog.head(), &node)?;
+            let alias_bytes = node.resolve_pending(pending, remaining - node.metadata_bytes)?;
+            node.metadata_bytes += alias_bytes;
+            // Reserve the exact future link as well as all retained metadata.
+            let link = NextReference {
+                schema_version: 1,
+                ordinal: catalog.nodes.len(),
+                generation: node.admission.generation.clone(),
+                admission: node.admission_blob.clone(),
+                previous_admission: catalog.head().admission_blob.clone(),
+            };
+            let link_bytes = serde_json::to_vec_pretty(&link)
+                .map_err(|_| invalid("cannot encode recovered successor link"))?;
+            if node.metadata_bytes + link_bytes.len() > remaining {
+                return Err(invalid(
+                    "recovered generation exceeds cumulative 64 MiB budget",
+                ));
+            }
+            catalog.recheck_for_publication(Some(&node.root))?;
+            Some(UnlinkedChild { node })
+        } else {
+            catalog.recheck_for_publication(None)?;
+            None
+        };
+        Ok(RecoveryInspection {
+            authoritative: catalog,
+            candidate,
+        })
+    }
+
+    fn read_chain(
+        checkpoint: &Path,
+        context: &Context<'_>,
+        expected: &[Expected<'_>],
+        limit: usize,
+    ) -> Result<Self, Error> {
         let mut nodes: Vec<Node> = Vec::new();
         let mut indices = std::collections::BTreeMap::new();
         let mut remaining = limit;
@@ -788,7 +960,7 @@ impl Catalog {
         let mut relative = PathBuf::from(ROOT);
         loop {
             let (mut node, pending) =
-                Node::read(checkpoint, &relative, &context, expected, remaining)?;
+                Node::read(checkpoint, &relative, context, expected, remaining)?;
             remaining = remaining
                 .checked_sub(node.metadata_bytes)
                 .ok_or_else(|| invalid("cumulative generation metadata exceeds 64 MiB"))?;
@@ -854,20 +1026,6 @@ impl Catalog {
                 break;
             }
         }
-        // Enumerate only the fixed topology, never select a generation by name,
-        // recency or directory order. An unlinked child is recovery-only state.
-        let actual: BTreeSet<_> =
-            reading::list_relative(checkpoint, &Path::new(ROOT).join("successors"), nodes.len())?
-                .into_iter()
-                .collect();
-        let declared: BTreeSet<_> = (1..nodes.len())
-            .map(|ordinal| std::ffi::OsString::from(format!("{ordinal:06}")))
-            .collect();
-        if actual != declared {
-            return Err(invalid(
-                "orphan or foreign successor requires metadata recovery",
-            ));
-        }
         let mut recording_nodes = vec![None; expected.len()];
         for (ordinal, node) in nodes.iter().enumerate() {
             for (configuration, manifest) in node.manifests.iter().enumerate() {
@@ -898,9 +1056,25 @@ impl Catalog {
     /// containing-directory sync failed, so matching bytes alone grant no cap.
     pub(crate) fn confirm_reactivation(
         &mut self,
+        before_sync: impl FnMut(&Path) -> Result<(), Error>,
+    ) -> Result<(), Error> {
+        self.confirm_with_stage(None, before_sync)
+    }
+
+    pub(crate) fn confirm_before_successor(
+        &mut self,
+        child: &UnlinkedChild,
+        before_sync: impl FnMut(&Path) -> Result<(), Error>,
+    ) -> Result<(), Error> {
+        self.confirm_with_stage(Some(child.root()), before_sync)
+    }
+
+    fn confirm_with_stage(
+        &mut self,
+        stage: Option<&Path>,
         mut before_sync: impl FnMut(&Path) -> Result<(), Error>,
     ) -> Result<(), Error> {
-        self.recheck_for_publication(None)?;
+        self.recheck_for_publication(stage)?;
         for node in self.nodes.iter_mut().rev() {
             for (relative, blob) in node.metadata_files() {
                 let (file, bytes) = reading::pinned_bytes(&node.root, &relative, blob.bytes)?;
@@ -932,7 +1106,7 @@ impl Catalog {
                     .map_err(crate::io_error)?;
             }
         }
-        self.recheck_for_publication(None)
+        self.recheck_for_publication(stage)
     }
 
     pub(crate) fn head_root(&self) -> &Path {

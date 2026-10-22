@@ -208,6 +208,31 @@ fn registered_project(concurrency: usize) -> Project {
 }
 
 #[test]
+fn continuation_metadata_recovery_cli_rejects_execution_options_without_provider_setup() {
+    let project = registered_project(1);
+    for arguments in [
+        vec!["--recover-continuation"],
+        vec!["--resume", "--recover-continuation", "--record"],
+        vec!["--resume", "--recover-continuation", "--replay"],
+        vec!["--resume", "--recover-continuation", "--repeat", "2"],
+        vec!["--resume", "--recover-continuation", "--jobs", "2"],
+    ] {
+        let rejected = sweep(&project, None, &arguments);
+        assert!(!rejected.status.success(), "{arguments:?}");
+        assert!(String::from_utf8_lossy(&rejected.stderr).contains("--recover-continuation"));
+        assert!(!project.0.join("sweep-results").exists());
+    }
+    let missing = sweep(&project, None, &["--resume", "--recover-continuation"]);
+    assert!(!missing.status.success());
+    assert!(
+        String::from_utf8_lossy(&missing.stderr).contains("no retained sweep to recover"),
+        "{}",
+        String::from_utf8_lossy(&missing.stderr)
+    );
+    assert!(!project.0.join("attempts.jsonl").exists());
+}
+
+#[test]
 fn campaign_input_seals_stay_stable_after_record_publication_and_offline_replay() {
     let project = registered_project(2);
     let provider = RecordingProvider::new();

@@ -185,8 +185,6 @@ impl Prepared {
         let mut references = Vec::with_capacity(layouts.len());
         let mut total_bytes = 0usize;
         let mut total_slots = 0usize;
-        let mut recording_capacity = crate::cassette::RecordingReservation::default();
-        let mut import_bytes = 0u64;
         for (configuration, layout) in layouts.into_iter().enumerate() {
             let retained = completed.remove(&configuration).unwrap_or_default();
             let untouched = pending.get(&configuration).cloned().unwrap_or_default();
@@ -251,19 +249,6 @@ impl Prepared {
                     configuration,
                     &retained,
                 )?;
-                recording_capacity = recording_capacity
-                    .checked_add(&descriptor.reservation)
-                    .map_err(|error| recovery(&error.to_string()))?;
-                import_bytes = descriptor
-                    .origins
-                    .imports
-                    .iter()
-                    .try_fold(import_bytes, |total, imported| {
-                        total.checked_add(imported.bytes).filter(|total| {
-                            *total <= crate::cassette::Limits::default().max_total_bytes
-                        })
-                    })
-                    .ok_or_else(|| recovery("union imports exceed global payload budget"))?;
                 Some(descriptor)
             } else {
                 None
@@ -308,9 +293,11 @@ impl Prepared {
                 bytes,
             });
         }
-        recording_capacity
-            .validate(crate::cassette::ProofLimits::default())
-            .map_err(|error| recovery(&error.to_string()))?;
+        crate::runner::recording::union::admit_population(
+            campaigns
+                .iter()
+                .filter_map(|campaign| campaign.manifest.recording.as_ref()),
+        )?;
         let admission = Admission {
             schema_version: 1,
             scope: SCOPE.into(),

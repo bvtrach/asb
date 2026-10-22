@@ -142,6 +142,7 @@ pub(crate) fn run(args: &[OsString], stdout: &mut dyn Write, stderr: &mut dyn Wr
                     reconcile_completed: options.reconcile_completed,
                     import_grades: options.import_grades,
                     recover_recording: options.recover_recording,
+                    recover_continuation: options.recover_continuation,
                 },
                 stdout,
             )
@@ -373,6 +374,9 @@ struct SweepArgs {
     /// Finish an already frozen union publication/ledger; never execute agents or evaluators.
     #[arg(long, requires_all = ["resume", "record"], conflicts_with_all = ["import_grades", "reconcile_completed", "repeat", "track", "seed", "show_output", "cassette_root", "respect_record_timings", "max_active_attempts"])]
     recover_recording: bool,
+    /// Link a fully staged continuation; metadata only, never run agents or evaluators.
+    #[arg(long, requires = "resume", conflicts_with_all = ["record", "replay", "recover_recording", "import_grades", "reconcile_completed", "repeat", "track", "seed", "show_output", "cassette_root", "respect_record_timings", "max_active_attempts", "jobs"])]
+    recover_continuation: bool,
     #[arg(
         long,
         requires = "resume",

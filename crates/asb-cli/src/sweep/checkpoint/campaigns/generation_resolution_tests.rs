@@ -874,11 +874,16 @@ fn resolved_generation_prepared_records_are_bounded_before_receipt_publication()
     assert!(!guard.inputs.campaign_completion_path(0, 2).exists());
 }
 
-#[test]
-fn generation_slots_seal_beside_historical_peers_without_replacing_their_evidence() {
-    let (fixture, sweep, results, guard, workers) = published_mixed();
-    let catalog = load(&guard, &sweep, &results).unwrap();
-    let layouts = sweep.read_campaigns(&results).unwrap();
+fn settle_generation_replicas(
+    fixture: &Fixture,
+    sweep: &SweepPlan,
+    results: &Path,
+    guard: &Guard,
+    workers: &[AdmittedCampaign],
+    replicas: &[usize],
+) {
+    let catalog = load(guard, sweep, results).unwrap();
+    let layouts = sweep.read_campaigns(results).unwrap();
     let layout = &layouts[0];
     let reference = catalog.reference(0).unwrap();
     let cohort = &workers[0].manifest.pending[0].cohort;
@@ -898,7 +903,7 @@ fn generation_slots_seal_beside_historical_peers_without_replacing_their_evidenc
         &fs::read(layout.root.join("batch-1/.asb-completions/fixture-1.json")).unwrap(),
     )
     .unwrap();
-    for replica in [2, 4] {
+    for &replica in replicas {
         let slot = &layout.plan.slots[replica - 1];
         let task = crate::workloads::TaskIdentity::local("bug-fix", None);
         let workspace = layout.root.join(&slot.workspace);
@@ -986,11 +991,17 @@ fn generation_slots_seal_beside_historical_peers_without_replacing_their_evidenc
     }
     guard
         .inputs
-        .seal_campaigns(&fixture.0, &results, &sweep)
+        .seal_campaigns(&fixture.0, results, sweep)
         .unwrap();
     for (path, bytes) in old {
         assert_eq!(fs::read(path).unwrap(), bytes);
     }
+}
+
+#[test]
+fn generation_slots_seal_beside_historical_peers_without_replacing_their_evidence() {
+    let (fixture, sweep, results, guard, workers) = published_mixed();
+    settle_generation_replicas(&fixture, &sweep, &results, &guard, &workers, &[2, 4]);
     for id in [2, 4] {
         let value: Value = serde_json::from_slice(
             &fs::read(guard.inputs.campaign_completion_path(0, id)).unwrap(),
@@ -1009,4 +1020,451 @@ fn generation_slots_seal_beside_historical_peers_without_replacing_their_evidenc
         .unwrap();
     assert_eq!(reused.groups.len(), 2);
     assert!(reused.groups.values().all(|rows| rows.len() == 8));
+}
+
+fn staged_unlinked_child() -> (Fixture, SweepPlan, PathBuf, Inputs, PathBuf, Vec<u8>) {
+    let (fixture, sweep, results, guard, workers) = published_mixed();
+    settle_generation_replicas(&fixture, &sweep, &results, &guard, &workers, &[2]);
+    drop(workers);
+    let Guard { inputs, owners } = guard;
+    drop(owners);
+    // Preserve the fixture's EXACT execution closure across the injected failed
+    // publisher. Metadata repair itself uses the real separate recovery inlet.
+    let retained = Inputs {
+        directory: inputs.directory.clone(),
+        snapshotter: crate::sweep::checkpoint::Snapshotter::open(
+            &inputs.directory,
+            "python3".into(),
+        )
+        .unwrap(),
+        roots: inputs.roots.clone(),
+        context: inputs.context.clone(),
+        initial: inputs.initial.clone(),
+        runtime: None,
+    };
+    let classified = inputs
+        .classify_campaigns(&fixture.0, &results, &sweep)
+        .unwrap();
+    let prepared = Prepared::plan(inputs, classified, &fixture.0, &results, &sweep).unwrap();
+    let child = prepared.guard.inputs.directory.join(&prepared.relative);
+    let frozen = prepared.admission_bytes.clone();
+    let failed = prepared.publish_with_confirmation(
+        &results,
+        &sweep,
+        |_| Ok(()),
+        |path| {
+            if path == child {
+                Err(Error::Io(
+                    "injected fully staged prelink interruption".into(),
+                ))
+            } else {
+                Ok(())
+            }
+        },
+    );
+    assert!(failed.is_err());
+    let base = results.join(".checkpoint").join(ROOT);
+    assert!(!base.join("next.json").exists());
+    assert_eq!(fs::read(child.join("admitted.json")).unwrap(), frozen);
+    (fixture, sweep, results, retained, child, frozen)
+}
+
+#[test]
+fn fully_staged_unlinked_child_repairs_without_executions_and_reuses_exact_frozen_membership() {
+    let (fixture, sweep, results, inputs, child, frozen) = staged_unlinked_child();
+    assert!(
+        inputs
+            .classify_campaigns(&fixture.0, &results, &sweep)
+            .is_err()
+    );
+    let untouched = sweep
+        .read_campaigns(&results)
+        .unwrap()
+        .remove(0)
+        .root
+        .join("batch-1/starts/4.json");
+    assert!(!untouched.exists());
+    for linked in [true, false] {
+        let report = Inputs::recover_continuation(&fixture.0, &results, &sweep).unwrap();
+        assert_eq!(report["linked"], linked);
+        assert_eq!(report["agent_executions"], 0);
+        assert_eq!(report["evaluations"], 0);
+        assert_eq!(fs::read(child.join("admitted.json")).unwrap(), frozen);
+        assert!(!untouched.exists());
+    }
+    let classified = inputs
+        .classify_campaigns(&fixture.0, &results, &sweep)
+        .unwrap();
+    let prepared = Prepared::plan(inputs, classified, &fixture.0, &results, &sweep).unwrap();
+    assert!(prepared.reactivating);
+    let (_guard, workers) = prepared.publish(&results, &sweep).unwrap();
+    assert_eq!(workers[0].manifest.pending[0].cohort.admitted_slots, [4]);
+    assert!(workers[1].manifest.pending.is_empty());
+    assert_eq!(workers[0].admission_reference, Blob::of(&frozen));
+    assert!(!untouched.exists());
+}
+
+#[test]
+fn unlinked_child_recovery_keeps_candidates_out_of_authoritative_resolution() {
+    let (_fixture, sweep, results, guard, workers) = published_mixed();
+    let original = load(&guard, &sweep, &results)
+        .unwrap()
+        .reference(0)
+        .unwrap();
+    let child = append_metadata_node(&results, 1, &[2]);
+    fs::remove_file(root(&guard.inputs).join("next.json")).unwrap();
+    assert!(load(&guard, &sweep, &results).is_err());
+    let layouts = sweep.read_campaigns(&results).unwrap();
+    let inspection = guard
+        .inputs
+        .read_generation_with(&results, &sweep, &layouts, Catalog::read_for_recovery)
+        .unwrap()
+        .unwrap();
+    assert_eq!(inspection.authoritative.reference(0).unwrap(), original);
+    let candidate = inspection.candidate.unwrap();
+    let snapshot = candidate.snapshot().unwrap();
+    assert_eq!(
+        snapshot.bytes,
+        fs::read(child.join("admitted.json")).unwrap()
+    );
+    let forged_reference = crate::runner::campaign::generation::StartReference {
+        generation: snapshot.admission.generation,
+        configuration: 0,
+        manifest: Blob::of(&snapshot.manifests[0].1),
+        admission: Blob::of(&snapshot.bytes),
+    };
+    assert!(
+        inspection
+            .authoritative
+            .resolve(
+                Some(&forged_reference),
+                0,
+                &layouts[0].plan,
+                &layouts[0].plan.slots[3],
+                Some(&workers[0].manifest.pending[0].cohort),
+            )
+            .is_err()
+    );
+    assert!(!root(&guard.inputs).join("next.json").exists());
+}
+
+#[test]
+fn unlinked_child_metadata_matrix_refuses_partial_foreign_or_rewritten_history() {
+    for case in [
+        "admission",
+        "manifest",
+        "foreign",
+        "next",
+        "lineage",
+        "no-progress",
+        "alias-copy",
+    ] {
+        let (_fixture, sweep, results, guard, _workers) = published_mixed();
+        let child =
+            append_metadata_node(&results, 1, if case == "no-progress" { &[] } else { &[2] });
+        let base = root(&guard.inputs);
+        if case == "lineage" {
+            rewrite_child(&results, |admission, _| {
+                admission.lineage.as_mut().unwrap().ordinal += 1
+            });
+        }
+        fs::remove_file(base.join("next.json")).unwrap();
+        match case {
+            "admission" => fs::rename(
+                child.join("admitted.json"),
+                results.join("retained-admission"),
+            )
+            .unwrap(),
+            "manifest" => {
+                fs::rename(child.join("000001.json"), results.join("retained-manifest")).unwrap()
+            }
+            "foreign" => fs::create_dir(base.join("successors/999999")).unwrap(),
+            "next" => fs::write(child.join("next.json"), b"{}").unwrap(),
+            "alias-copy" => {
+                fs::copy(child.join("admitted.json"), child.join(".aaaa.pending")).unwrap();
+            }
+            _ => (),
+        }
+        let layouts = sweep.read_campaigns(&results).unwrap();
+        assert!(
+            guard
+                .inputs
+                .read_generation_with(&results, &sweep, &layouts, Catalog::read_for_recovery)
+                .is_err(),
+            "{case}"
+        );
+        assert!(child.exists(), "{case}");
+        assert!(!base.join("next.json").exists(), "{case}");
+    }
+}
+
+#[test]
+fn unlinked_child_owned_repair_refuses_late_configuration_or_receipt_conflicts_before_link() {
+    for case in [
+        "runtime",
+        "missing-receipt",
+        "changed-receipt",
+        "pending-workspace",
+        "forged-partition",
+    ] {
+        let (fixture, sweep, results, _inputs, child, frozen) = staged_unlinked_child();
+        let base = results.join(".checkpoint").join(ROOT);
+        let layouts = sweep.read_campaigns(&results).unwrap();
+        let admission: Admission = serde_json::from_slice(&frozen).unwrap();
+        let retained = match case {
+            "runtime" => {
+                let path = layouts[1]
+                    .root
+                    .join(".asb-generations")
+                    .join(&admission.generation)
+                    .join("finished.json");
+                fs::create_dir_all(path.parent().unwrap()).unwrap();
+                fs::write(&path, b"late configuration artifact").unwrap();
+                path
+            }
+            "pending-workspace" => {
+                let path = layouts[0].root.join(&layouts[0].plan.slots[3].workspace);
+                fs::create_dir_all(&path).unwrap();
+                path
+            }
+            "missing-receipt" => {
+                let path = results.join("retained-original-receipt");
+                fs::rename(
+                    results.join(".checkpoint/campaign-completed/000001/000008.json"),
+                    &path,
+                )
+                .unwrap();
+                path
+            }
+            "changed-receipt" => {
+                let path = results.join(".checkpoint/campaign-completed/000001/000008.json");
+                fs::write(&path, b"changed receipt").unwrap();
+                path
+            }
+            _ => {
+                // Recompute the manifest/admission hash, but leave the claimed
+                // receipt absent: self-consistent candidate metadata is not fact.
+                let path = child.join("000000.json");
+                let mut manifest: Manifest =
+                    serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+                manifest.completed.push(Completed {
+                    slot: 4,
+                    receipt: Blob::of(b"invented completion"),
+                });
+                manifest.completed.sort_by_key(|entry| entry.slot);
+                manifest.pending.clear();
+                let bytes = serde_json::to_vec_pretty(&manifest).unwrap();
+                fs::write(&path, &bytes).unwrap();
+                let mut admission = admission;
+                admission.manifests[0].content = Blob::of(&bytes);
+                // Remove only the fixture's known duplicate before rewriting
+                // its candidate, so the refusal tests population, not an alias.
+                for name in fs::read_dir(&child)
+                    .unwrap()
+                    .map(|entry| entry.unwrap().path())
+                {
+                    if name
+                        .extension()
+                        .is_some_and(|extension| extension == "pending")
+                    {
+                        fs::remove_file(name).unwrap();
+                    }
+                }
+                fs::write(
+                    child.join("admitted.json"),
+                    serde_json::to_vec_pretty(&admission).unwrap(),
+                )
+                .unwrap();
+                path
+            }
+        };
+        assert!(
+            Inputs::recover_continuation(&fixture.0, &results, &sweep).is_err(),
+            "{case}"
+        );
+        assert!(!base.join("next.json").exists(), "{case}");
+        assert!(retained.exists(), "{case}");
+        assert!(
+            !layouts[0].root.join("batch-1/starts/4.json").exists(),
+            "{case}"
+        );
+    }
+}
+
+#[test]
+fn unlinked_child_repair_failed_link_sync_is_confirmed_idempotently_without_execution() {
+    let (fixture, sweep, results, _inputs, child, frozen) = staged_unlinked_child();
+    let mut metadata = Inputs::recovery_inputs(&fixture.0, &results, &sweep).unwrap();
+    let error = metadata
+        .recover_continuation_link_after_link(&fixture.0, &results, &sweep, |_| {
+            Err(Error::Io(
+                "injected recovered link directory sync failure".into(),
+            ))
+        })
+        .unwrap_err();
+    assert!(error.to_string().contains("injected recovered link"));
+    let link = results.join(".checkpoint").join(ROOT).join("next.json");
+    let link_bytes = fs::read(&link).unwrap();
+    for _ in 0..2 {
+        let report = Inputs::recover_continuation(&fixture.0, &results, &sweep).unwrap();
+        assert_eq!(report["linked"], false);
+        assert_eq!(report["agent_executions"], 0);
+        assert_eq!(fs::read(&link).unwrap(), link_bytes);
+        assert_eq!(fs::read(child.join("admitted.json")).unwrap(), frozen);
+    }
+}
+
+#[test]
+fn unlinked_child_late_configuration_aggregate_budget_refuses_before_sources_or_receipts() {
+    use crate::cassette::{
+        CompatibilityShape, ImportedTrack, Limits, OriginPlan, RecordingReservation,
+        RecordingSource,
+    };
+    let (fixture, sweep, results) =
+        crate::sweep::checkpoint::campaigns::tests::published_concurrency(
+            crate::tape::Mode::Record,
+            4,
+        );
+    let state = super::inputs(&results, &sweep);
+    state.publish("pending", None).unwrap();
+    state.reserve_campaigns(&results, &sweep).unwrap();
+    let classified = state
+        .classify_campaigns(&fixture.0, &results, &sweep)
+        .unwrap();
+    let prepared = Prepared::plan(state, classified, &fixture.0, &results, &sweep).unwrap();
+    let (guard, workers) = prepared.publish(&results, &sweep).unwrap();
+    drop(workers);
+    let base = root(&guard.inputs);
+    let original = fs::read(base.join("admitted.json")).unwrap();
+    let parent: Admission = serde_json::from_slice(&original).unwrap();
+    let generation = "ffff-aaaa";
+    let child = base.join("successors/000001");
+    fs::create_dir_all(&child).unwrap();
+    let layouts = sweep.read_campaigns(&results).unwrap();
+    let mut references = Vec::new();
+    for (configuration, layout) in layouts.iter().enumerate() {
+        let mut manifest: Manifest =
+            serde_json::from_slice(&fs::read(base.join(manifest_path(configuration))).unwrap())
+                .unwrap();
+        manifest.generation = generation.into();
+        manifest.completed = (1..=5)
+            .map(|slot| Completed {
+                slot,
+                receipt: Blob::of(b"deliberately absent receipt"),
+            })
+            .collect();
+        for batch in &mut manifest.pending {
+            batch
+                .cohort
+                .admitted_slots
+                .retain(|replica| (batch.batch - 1) * 4 + *replica as u64 > 5);
+            batch.cohort.dispatch = None;
+            batch.cohort.dispatch = batch
+                .cohort
+                .admitted_slots
+                .first()
+                .map(|replica| batch.cohort.dispatch_for(*replica, 4).unwrap());
+        }
+        manifest
+            .pending
+            .retain(|batch| !batch.cohort.admitted_slots.is_empty());
+        let descriptor = manifest.recording.as_mut().unwrap();
+        descriptor.physical_id = format!("{generation}-{configuration:x}");
+        descriptor.destination = layout
+            .plan
+            .recording
+            .as_ref()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join(format!("continuation-{}.asb.zip", descriptor.physical_id));
+        descriptor.sources = vec![fixture.0.join(format!("absent-source-{configuration}.zip"))];
+        descriptor.origins = OriginPlan {
+            schema_version: 1,
+            population: 8,
+            sources: vec![RecordingSource {
+                recording_id: "aaaa".into(),
+                manifest_sha256: "a".repeat(64),
+            }],
+            imports: (1..=5)
+                .map(|slot| ImportedTrack {
+                    slot,
+                    source: 0,
+                    metadata_sha256: "b".repeat(64),
+                    bytes: Limits::default().max_track_bytes,
+                })
+                .collect(),
+        };
+        let selection = layout.plan.recording_selection.as_ref().unwrap();
+        descriptor.reservation = RecordingReservation::for_origin_plan(
+            CompatibilityShape {
+                agent: &layout.plan.configuration.agent,
+                provider: &layout.plan.configuration.provider,
+                model: &layout.plan.configuration.model,
+                workload: &selection.workload,
+                task: &selection.task_id,
+            },
+            &descriptor.physical_id,
+            &descriptor.destination,
+            4,
+            &descriptor.origins,
+            Limits::default(),
+        )
+        .unwrap();
+        descriptor
+            .validate(&layout.plan, generation, configuration, 1..=5)
+            .unwrap();
+        // Each declaration alone is admissible; only the later configuration
+        // exceeds the operation-wide payload budget (no actual payload exists).
+        crate::runner::recording::union::admit_population([&*descriptor]).unwrap();
+        let bytes = serde_json::to_vec_pretty(&manifest).unwrap();
+        fs::write(child.join(manifest_path(configuration)), &bytes).unwrap();
+        references.push(ManifestReference {
+            configuration,
+            content: Blob::of(&bytes),
+        });
+    }
+    let admission = Admission {
+        schema_version: 1,
+        scope: SCOPE.into(),
+        generation: generation.into(),
+        run_id: parent.run_id,
+        input_digest: parent.input_digest,
+        original_index: parent.original_index,
+        manifests: references,
+        lineage: Some(crate::runner::campaign::generation::Lineage {
+            schema_version: 1,
+            ordinal: 1,
+            previous_generation: parent.generation,
+            previous_admission: Blob::of(&original),
+        }),
+    };
+    let bytes = serde_json::to_vec_pretty(&admission).unwrap();
+    fs::write(child.join("admitted.json"), &bytes).unwrap();
+    drop(guard);
+    let error = Inputs::recover_continuation(&fixture.0, &results, &sweep).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("union imports exceed global payload budget"),
+        "{error}"
+    );
+    assert!(!base.join("next.json").exists());
+    assert_eq!(fs::read(base.join("admitted.json")).unwrap(), original);
+    assert_eq!(fs::read(child.join("admitted.json")).unwrap(), bytes);
+    for configuration in 0..2 {
+        assert!(
+            !fixture
+                .0
+                .join(format!("absent-source-{configuration}.zip"))
+                .exists()
+        );
+        assert!(
+            !results
+                .join(format!(
+                    ".checkpoint/campaign-completed/{configuration:06}/000001.json"
+                ))
+                .exists()
+        );
+    }
 }

@@ -25,8 +25,32 @@ pub(crate) enum Staging {
     RecoverUnused,
 }
 
+/// Pure admission of all configuration declarations, without payload I/O.
+/// Retained-node recovery calls this before source archive or journal reads;
+/// fresh planning also uses it after deriving descriptors from source indexes.
+pub(crate) fn admit_population<'a>(
+    descriptors: impl IntoIterator<Item = &'a Descriptor>,
+) -> Result<(), Error> {
+    let mut capacity = RecordingReservation::default();
+    let mut imported_bytes = 0u64;
+    for descriptor in descriptors {
+        capacity = capacity
+            .checked_add(&descriptor.reservation)
+            .map_err(recording_error)?;
+        for imported in &descriptor.origins.imports {
+            imported_bytes = imported_bytes
+                .checked_add(imported.bytes)
+                .filter(|bytes| *bytes <= Limits::default().max_total_bytes)
+                .ok_or_else(|| Error::Input("union imports exceed global payload budget".into()))?;
+        }
+    }
+    capacity
+        .validate(crate::cassette::ProofLimits::default())
+        .map_err(recording_error)
+}
+
 impl Descriptor {
-    pub(super) fn recover_unused(
+    pub(crate) fn recover_unused(
         &self,
         compatibility: Option<&Compatibility>,
         concurrency: usize,

@@ -458,6 +458,24 @@ impl Inputs {
         results: &Path,
         plan: &super::plan::SweepPlan,
     ) -> Result<Vec<Value>, Error> {
+        Self::recovery_inputs(parent, results, plan)?
+            .recover_recording_publications(parent, results, plan)
+    }
+
+    pub(super) fn recover_continuation(
+        parent: &Path,
+        results: &Path,
+        plan: &super::plan::SweepPlan,
+    ) -> Result<Value, Error> {
+        Self::recovery_inputs(parent, results, plan)?
+            .recover_continuation_link(parent, results, plan)
+    }
+
+    fn recovery_inputs(
+        parent: &Path,
+        results: &Path,
+        plan: &super::plan::SweepPlan,
+    ) -> Result<Self, Error> {
         use crate::runner::campaign::reading;
         let directory = results.join(".checkpoint");
         let saved: SavedInputSeal = serde_json::from_slice(&reading::bounded_relative(
@@ -495,15 +513,14 @@ impl Inputs {
             results.join("plan.json"),
         ));
         roots.push(Root::path("recovery-original-key", directory.join("key")));
-        let mut metadata = Self {
+        Ok(Self {
             directory,
             snapshotter,
             roots,
             context: json!({"protocol":"asb-publication-recovery-file-stability-v1","scope":"not-execution-admission"}),
             initial: saved.initial,
             runtime: None,
-        };
-        metadata.recover_recording_publications(parent, results, plan)
+        })
     }
 
     fn build(

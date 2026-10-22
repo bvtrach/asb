@@ -11,6 +11,15 @@ const MAX_BYTES: u64 = 256 * 1024 * 1024;
 mod generation;
 pub(in crate::sweep) use generation::{AdmittedCampaign, Guard, Prepared as PreparedContinuation};
 
+#[path = "continuation_link_recovery.rs"]
+mod link_recovery;
+
+struct OwnedCampaigns {
+    origin: Origin,
+    layouts: Vec<Layout>,
+    owners: Vec<crate::output_lock::OutputLock>,
+}
+
 /// A classification cannot be combined with another sweep/input owner, even
 /// when both happen to have the same number of configurations and slots.
 #[derive(Debug, Eq, PartialEq)]
@@ -291,6 +300,17 @@ impl Inputs {
         results: &Path,
         plan: &SweepPlan,
     ) -> Result<Classified, Error> {
+        let owned = self.own_campaigns(parent, results, plan)?;
+        let catalog = self.read_generation_catalog(results, plan, &owned.layouts)?;
+        self.classify_owned(parent, results, plan, owned, catalog)
+    }
+
+    fn own_campaigns(
+        &self,
+        parent: &Path,
+        results: &Path,
+        plan: &SweepPlan,
+    ) -> Result<OwnedCampaigns, Error> {
         let origin = Origin::read(self, parent, results, plan)?;
         self.verify_campaign_reservations(results, plan)?;
         let layouts = shared_layouts(results, plan)?;
@@ -304,8 +324,27 @@ impl Inputs {
                 .map_err(Error::Run)?,
             );
         }
+        Ok(OwnedCampaigns {
+            origin,
+            layouts,
+            owners,
+        })
+    }
+
+    fn classify_owned(
+        &self,
+        parent: &Path,
+        results: &Path,
+        plan: &SweepPlan,
+        owned: OwnedCampaigns,
+        catalog: Option<Catalog>,
+    ) -> Result<Classified, Error> {
+        let OwnedCampaigns {
+            origin,
+            layouts,
+            owners,
+        } = owned;
         let inventory = Inventory::read(&layouts, &self.directory)?;
-        let catalog = self.read_generation_catalog(results, plan, &layouts)?;
         let declarations = self.declare_campaign_layouts_with_catalog(
             parent,
             results,

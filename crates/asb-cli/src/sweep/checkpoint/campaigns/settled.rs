@@ -307,6 +307,20 @@ impl Inputs {
         plan: &SweepPlan,
         layouts: &[Layout],
     ) -> Result<Option<Catalog>, Error> {
+        self.read_generation_with(results, plan, layouts, Catalog::read)
+    }
+
+    fn read_generation_with<T>(
+        &self,
+        results: &Path,
+        plan: &SweepPlan,
+        layouts: &[Layout],
+        read: impl FnOnce(
+            &Path,
+            generation::Context<'_>,
+            &[generation::Expected<'_>],
+        ) -> Result<T, Error>,
+    ) -> Result<Option<T>, Error> {
         if !crate::runner::campaign::reading::present_relative(
             &self.directory,
             Path::new(generation::ROOT),
@@ -330,7 +344,7 @@ impl Inputs {
                 })
             })
             .collect::<Result<Vec<_>, Error>>()?;
-        Catalog::read(
+        read(
             &self.directory,
             generation::Context {
                 run_id: &plan.run_id,
