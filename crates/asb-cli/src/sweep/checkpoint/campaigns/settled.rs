@@ -13,6 +13,9 @@ use std::path::{Path, PathBuf};
 const METADATA: u64 = 64 * 1024;
 const SCOPE: &str = "settled-campaign-slot-declared-evidence";
 
+#[path = "continuation.rs"]
+mod continuation;
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Prepared {
@@ -60,11 +63,33 @@ struct Inspection {
     unsettled: Vec<usize>,
 }
 
+struct DeclaredInspection {
+    layouts: Vec<Layout>,
+    candidates: Vec<Candidate>,
+    records: Vec<Record>,
+    unsettled: Vec<usize>,
+    proofs: OutcomeBatch,
+}
+
+impl DeclaredInspection {
+    fn prove(self) -> Result<Inspection, Error> {
+        let _validated = self.proofs.verify()?;
+        Ok(Inspection {
+            layouts: self.layouts,
+            candidates: self.candidates,
+            records: self.records,
+            unsettled: self.unsettled,
+        })
+    }
+}
+
 struct Record {
     configuration: usize,
     slot: usize,
     path: PathBuf,
     value: Value,
+    bytes: u64,
+    sha256: String,
 }
 
 struct SlotOwner<'a> {
@@ -166,12 +191,25 @@ impl Inputs {
         plan: &SweepPlan,
         verify: impl Fn(&crate::workloads::recovery::RetainedOutcomeContext<'_>) -> Result<(), Error>,
     ) -> Result<Inspection, Error> {
+        self.declare_campaign_layouts(
+            parent,
+            results,
+            plan,
+            shared_layouts(results, plan)?,
+            verify,
+        )?
+        .prove()
+    }
+
+    fn declare_campaign_layouts(
+        &self,
+        parent: &Path,
+        results: &Path,
+        plan: &SweepPlan,
+        layouts: Vec<Layout>,
+        verify: impl Fn(&crate::workloads::recovery::RetainedOutcomeContext<'_>) -> Result<(), Error>,
+    ) -> Result<DeclaredInspection, Error> {
         self.verify_campaign_reservations(results, plan)?;
-        let mut layouts = plan.read_campaigns(results)?;
-        let budget = std::rc::Rc::new(std::cell::Cell::new(256 * 1024 * 1024));
-        for layout in &mut layouts {
-            layout.share_observation_budget(budget.clone());
-        }
         preflight(&layouts)?;
         // Receipt population/type/size is admitted before any recording payload
         // proof. Missing receipts are not fabricated by this read-only pass.
@@ -212,6 +250,8 @@ impl Inputs {
                         slot: index,
                         path: outcome.path,
                         value: outcome.value,
+                        bytes: outcome.bytes,
+                        sha256: outcome.sha256,
                     });
                 }
             }
@@ -297,12 +337,12 @@ impl Inputs {
         }
         declarations.retain_candidates(&eligible);
         let unsettled = declarations.unsettled().to_vec();
-        let _validated = declarations.verify()?;
-        Ok(Inspection {
+        Ok(DeclaredInspection {
             layouts,
             candidates,
             records,
             unsettled,
+            proofs: declarations,
         })
     }
 
@@ -318,76 +358,61 @@ impl Inputs {
             "execution":candidate.execution})
     }
 
-    /// Reuse only a completely verified original population. Partial campaign
-    /// admission is a separate transition; neither absence nor an unsealed
-    /// outcome authorizes retry here. All configurations validate before the
-    /// returned summaries can reach execution/presentation.
-    pub(in crate::sweep) fn resume_campaign_outcomes(
+    fn read_campaign_receipt(
         &self,
-        parent: &Path,
-        results: &Path,
-        plan: &SweepPlan,
-    ) -> Result<crate::sweep::resume::State, Error> {
-        let inspection = self.inspect_campaigns(
-            parent,
-            results,
-            plan,
-            crate::workloads::recovery::verify_retained,
-        )?;
-        if !inspection.unsettled.is_empty()
-            || inspection.candidates.len()
-                != inspection
-                    .layouts
-                    .iter()
-                    .map(|layout| layout.plan.slots.len())
-                    .sum::<usize>()
-        {
-            return Err(resume_error(
-                "campaign continuation requires saved-slot validation; some slots need explicit recovery or untouched-slot admission",
-            ));
-        }
-        let mut remaining = 256 * 1024 * 1024;
-        let mut reused = crate::sweep::resume::State::default();
-        for candidate in inspection.candidates {
-            let path = self.campaign_completion_path(candidate.configuration, candidate.slot);
-            let bytes = crate::runner::campaign::reading::bounded_relative(
+        candidate: &Candidate,
+        remaining: &mut u64,
+    ) -> Result<Receipt, Error> {
+        let path = self.campaign_completion_path(candidate.configuration, candidate.slot);
+        let bytes = crate::runner::campaign::reading::bounded_relative(
                 &self.directory,
                 path.strip_prefix(&self.directory).expect("derived receipt path"),
-                remaining.min(1024 * 1024),
+                (*remaining).min(1024 * 1024),
             )
                 .map_err(|_| resume_error("campaign receipt is missing or unreadable; explicit recovery is required, not retry"))?;
-            remaining -= bytes.len() as u64;
-            let receipt: Receipt = serde_json::from_slice(&bytes)
-                .map_err(|_| resume_error("campaign completion receipt is malformed"))?;
-            if receipt.schema_version != 1
-                || receipt.scope != SCOPE
-                || receipt.configuration != candidate.configuration
-                || receipt.execution != candidate.execution
-                || receipt.input_digest != self.initial.digest
-                || receipt.roots != candidate.roots
-                || !receipt.fingerprint.valid()
-            {
-                return Err(resume_error(
-                    "campaign receipt identity or derived evidence roots differ",
-                ));
-            }
-            let actual = self.snapshotter.fingerprint(
-                &candidate.roots,
-                &self.campaign_completion_context(&candidate),
-                false,
-                &[],
-            )?;
-            if actual != receipt.fingerprint {
-                return Err(resume_error("campaign completed evidence changed"));
-            }
-            reused
-                .groups
-                .entry(candidate.configuration)
-                .or_default()
-                .push(candidate.summary);
+        *remaining -= bytes.len() as u64;
+        let receipt: Receipt = serde_json::from_slice(&bytes)
+            .map_err(|_| resume_error("campaign completion receipt is malformed"))?;
+        if receipt.schema_version != 1
+            || receipt.scope != SCOPE
+            || receipt.configuration != candidate.configuration
+            || receipt.execution != candidate.execution
+            || receipt.input_digest != self.initial.digest
+            || receipt.roots != candidate.roots
+            || !receipt.fingerprint.valid()
+        {
+            return Err(resume_error(
+                "campaign receipt identity or derived evidence roots differ",
+            ));
         }
-        Ok(reused)
+        Ok(receipt)
     }
+
+    fn verify_campaign_candidate(
+        &self,
+        candidate: &Candidate,
+        receipt: &Receipt,
+    ) -> Result<(), Error> {
+        let actual = self.snapshotter.fingerprint(
+            &candidate.roots,
+            &self.campaign_completion_context(candidate),
+            false,
+            &[],
+        )?;
+        if actual != receipt.fingerprint {
+            return Err(resume_error("campaign completed evidence changed"));
+        }
+        Ok(())
+    }
+}
+
+fn shared_layouts(results: &Path, plan: &SweepPlan) -> Result<Vec<Layout>, Error> {
+    let mut layouts = plan.read_campaigns(results)?;
+    let budget = std::rc::Rc::new(std::cell::Cell::new(256 * 1024 * 1024));
+    for layout in &mut layouts {
+        layout.share_observation_budget(budget.clone());
+    }
+    Ok(layouts)
 }
 
 fn preflight(layouts: &[Layout]) -> Result<(), Error> {

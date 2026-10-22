@@ -497,7 +497,7 @@ impl Recorder {
 pub(super) fn base(root: &Path, batch: u64) -> PathBuf {
     root.join(format!("batch-{batch}/capture.jsonl"))
 }
-fn producer(root: &Path, batch: u64, replica: usize, concurrency: usize) -> PathBuf {
+pub(crate) fn producer(root: &Path, batch: u64, replica: usize, concurrency: usize) -> PathBuf {
     let base = base(root, batch);
     if concurrency == 1 {
         base
@@ -528,19 +528,21 @@ fn association_budget(repeat: u64, concurrency: usize) -> Result<u64, Error> {
         })
 }
 fn association_path(evidence: &TrackEvidence) -> Result<PathBuf, Error> {
-    let name = evidence
-        .destination
+    association_for(&evidence.destination, evidence.track.id)
+}
+
+pub(crate) fn association_for(destination: &Path, slot: u64) -> Result<PathBuf, Error> {
+    if slot == 0 || slot > 65_533 {
+        return Err(Error::Input("invalid recording association slot".into()));
+    }
+    let name = destination
         .file_name()
         .and_then(|name| name.to_str())
         .ok_or_else(|| Error::Input("invalid recording destination".into()))?;
-    let parent = evidence
-        .destination
+    let parent = destination
         .parent()
         .ok_or_else(|| Error::Input("invalid recording parent".into()))?;
-    Ok(parent.join(format!(
-        ".{name}.partial/association-{}.json",
-        evidence.track.id
-    )))
+    Ok(parent.join(format!(".{name}.partial/association-{}.json", slot)))
 }
 fn read_association(evidence: &TrackEvidence) -> Result<Association, Error> {
     let path = association_path(evidence)?;

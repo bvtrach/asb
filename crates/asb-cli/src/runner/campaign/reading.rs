@@ -3,6 +3,7 @@ use super::{OutcomeReference, Plan, Slot};
 use crate::{Error, io_error};
 use serde_json::Value;
 use std::cell::Cell;
+use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -23,6 +24,8 @@ pub(crate) struct Layout {
 pub(crate) struct ReferencedOutcome {
     pub path: PathBuf,
     pub value: Value,
+    pub bytes: u64,
+    pub sha256: String,
 }
 
 fn invalid(reason: &str) -> Error {
@@ -58,6 +61,44 @@ pub(crate) fn bounded_relative(root: &Path, relative: &Path, limit: u64) -> Resu
     let file =
         open_relative(root, relative)?.ok_or_else(|| invalid("relative input is missing"))?;
     bounded_file(file, limit)
+}
+
+/// Any existing slot-owned object prevents untouched admission. Directories
+/// are observations too; aliases/errors must never be mistaken for absence.
+pub(crate) fn present_relative(root: &Path, relative: &Path) -> Result<bool, Error> {
+    Ok(open_relative(root, relative)?.is_some())
+}
+
+pub(crate) fn list_relative(
+    root: &Path,
+    relative: &Path,
+    maximum: usize,
+) -> Result<Vec<OsString>, Error> {
+    if maximum > 65_533 {
+        return Err(invalid("completion inventory exceeds population bound"));
+    }
+    #[cfg(unix)]
+    {
+        rooted::list(root, relative, maximum)
+    }
+    #[cfg(not(unix))]
+    {
+        let Some(directory) = open_relative(root, relative)? else {
+            return Ok(Vec::new());
+        };
+        if !directory.metadata().map_err(io_error)?.is_dir() {
+            return Err(invalid("completion inventory is not a directory"));
+        }
+        let mut entries = Vec::new();
+        for entry in fs::read_dir(root.join(relative)).map_err(io_error)? {
+            if entries.len() >= maximum {
+                return Err(invalid("completion inventory exceeds population bound"));
+            }
+            entries.push(entry.map_err(io_error)?.file_name());
+        }
+        entries.sort();
+        Ok(entries)
+    }
 }
 
 fn open_relative(root: &Path, relative: &Path) -> Result<Option<File>, Error> {
@@ -112,8 +153,12 @@ impl Layout {
     /// Read a declared metadata leaf through the same confined descriptor and
     /// observation budget as outcomes. This does not grant resume authority.
     pub(crate) fn declaration(&self, relative: &Path, limit: u64) -> Result<Value, Error> {
-        serde_json::from_slice(&self.read_observation(&self.root.join(relative), limit)?)
+        serde_json::from_slice(&self.declaration_bytes(relative, limit)?)
             .map_err(|_| invalid("malformed campaign declaration"))
+    }
+
+    pub(crate) fn declaration_bytes(&self, relative: &Path, limit: u64) -> Result<Vec<u8>, Error> {
+        self.read_observation(&self.root.join(relative), limit)
     }
 
     fn replay_file(&self, input: &super::ReplayInput) -> Result<File, Error> {
@@ -363,7 +408,12 @@ impl Layout {
                 "outcome summary differs from planned execution or referenced task",
             ));
         }
-        Ok(Some(ReferencedOutcome { path, value }))
+        Ok(Some(ReferencedOutcome {
+            path,
+            value,
+            bytes: reference.bytes,
+            sha256: reference.sha256,
+        }))
     }
 
     fn validate_reference(&self, slot: &Slot, reference: &OutcomeReference) -> Result<(), Error> {
@@ -430,8 +480,8 @@ impl Layout {
 mod rooted {
     #![allow(unsafe_code)]
     use super::*;
-    use std::ffi::{CString, OsStr};
-    use std::os::fd::{AsRawFd, FromRawFd};
+    use std::ffi::{CStr, CString, OsStr};
+    use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd};
     use std::os::unix::{ffi::OsStrExt, fs::OpenOptionsExt};
 
     fn child(parent: &File, name: &OsStr, directory: bool) -> std::io::Result<File> {
@@ -453,6 +503,67 @@ mod rooted {
 
     pub(super) fn open(root: &Path, relative: &Path) -> Result<File, Error> {
         open_optional(root, relative)?.ok_or_else(|| invalid("observation path is missing"))
+    }
+
+    pub(super) fn list(
+        root: &Path,
+        relative: &Path,
+        maximum: usize,
+    ) -> Result<Vec<OsString>, Error> {
+        let Some(file) = open_optional(root, relative)? else {
+            return Ok(Vec::new());
+        };
+        if !file.metadata().map_err(io_error)?.is_dir() {
+            return Err(invalid("completion inventory is not a directory"));
+        }
+        let descriptor = file.into_raw_fd();
+        // SAFETY: the fresh descriptor is transferred to fdopendir exactly
+        // once. On failure it remains ours and is closed by the restored File.
+        let pointer = unsafe { libc::fdopendir(descriptor) };
+        let Some(pointer) = std::ptr::NonNull::new(pointer) else {
+            let error = std::io::Error::last_os_error();
+            drop(unsafe { File::from_raw_fd(descriptor) });
+            return Err(io_error(error));
+        };
+        struct Directory(std::ptr::NonNull<libc::DIR>);
+        impl Drop for Directory {
+            fn drop(&mut self) {
+                // SAFETY: Directory exclusively owns this live DIR stream.
+                unsafe {
+                    libc::closedir(self.0.as_ptr());
+                }
+            }
+        }
+        let directory = Directory(pointer);
+        let mut names = Vec::new();
+        let mut name_bytes = 0usize;
+        loop {
+            errno::set_errno(errno::Errno(0));
+            // SAFETY: this stream remains exclusively borrowed until the next
+            // readdir; its returned name is copied before advancing the stream.
+            let entry = unsafe { libc::readdir(directory.0.as_ptr()) };
+            if entry.is_null() {
+                let error = errno::errno();
+                if error.0 != 0 {
+                    return Err(io_error(error.into()));
+                }
+                break;
+            }
+            let bytes = unsafe { CStr::from_ptr((*entry).d_name.as_ptr()) }.to_bytes();
+            if matches!(bytes, b"." | b"..") {
+                continue;
+            }
+            name_bytes = name_bytes
+                .checked_add(bytes.len())
+                .filter(|bytes| *bytes <= 16 * 1024 * 1024)
+                .ok_or_else(|| invalid("completion inventory names exceed 16 MiB"))?;
+            if names.len() >= maximum {
+                return Err(invalid("completion inventory exceeds population bound"));
+            }
+            names.push(OsStr::from_bytes(bytes).to_os_string());
+        }
+        names.sort();
+        Ok(names)
     }
 
     pub(super) fn open_optional(root: &Path, relative: &Path) -> Result<Option<File>, Error> {

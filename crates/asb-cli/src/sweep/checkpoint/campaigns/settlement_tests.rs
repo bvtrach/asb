@@ -157,8 +157,13 @@ fn fixture_options(
             .unwrap();
         }
     }
+    let state = inputs(&plan, &results);
+    (fixture, plan, results, state)
+}
+
+fn inputs(plan: &SweepPlan, results: &Path) -> Inputs {
     let directory = results.join(".checkpoint");
-    let mut roots = input_roots(&results, &plan).unwrap();
+    let mut roots = input_roots(results, plan).unwrap();
     roots.push(crate::sweep::checkpoint::Root::path(
         "selection-plan",
         results.join("plan.json"),
@@ -177,8 +182,254 @@ fn fixture_options(
         runtime: None,
     };
     state.publish("pending", None).unwrap();
-    state.reserve_campaigns(&results, &plan).unwrap();
+    state.reserve_campaigns(results, plan).unwrap();
+    state
+}
+
+fn untouched(mode: crate::tape::Mode) -> (Fixture, SweepPlan, PathBuf, Inputs) {
+    let (fixture, plan, results) = published(mode);
+    let state = inputs(&plan, &results);
     (fixture, plan, results, state)
+}
+
+#[test]
+fn untouched_classification_keeps_original_reservations_and_ownership_without_attempts() {
+    let (fixture, plan, results, state) = untouched(crate::tape::Mode::Replay);
+    for layout in plan.read_campaigns(&results).unwrap() {
+        // A shared batch/preparation directory is not an agent start or a
+        // fresh-material proof. Generation activation validates its own material.
+        fs::create_dir_all(layout.root.join("batch-1/.asb-completions")).unwrap();
+        fs::write(layout.root.join("batch-1/prepared.json"), "{}").unwrap();
+    }
+    let before = fs::read(results.join(".checkpoint/inputs.json")).unwrap();
+    let classification = state
+        .classify_campaigns(&fixture.0, &results, &plan)
+        .unwrap();
+    assert_eq!(
+        classification.pending_keys(),
+        [(0, 1), (0, 2), (1, 1), (1, 2)].into()
+    );
+    for layout in plan.read_campaigns(&results).unwrap() {
+        assert!(
+            crate::output_lock::OutputLock::acquire_existing(
+                &layout.root.join(".owner.lock"),
+                "busy"
+            )
+            .is_err()
+        );
+    }
+    drop(classification);
+    for layout in plan.read_campaigns(&results).unwrap() {
+        assert!(
+            crate::output_lock::OutputLock::acquire_existing(
+                &layout.root.join(".owner.lock"),
+                "busy"
+            )
+            .is_ok()
+        );
+        assert!(!layout.root.join("batch-1/starts").exists());
+    }
+    assert_eq!(
+        fs::read(results.join(".checkpoint/inputs.json")).unwrap(),
+        before
+    );
+    assert!(!results.join(".checkpoint/campaign-completed").exists());
+}
+
+#[test]
+fn partial_classification_never_recreates_missing_or_busy_original_owner() {
+    for missing in [false, true] {
+        let (fixture, plan, results, state) = untouched(crate::tape::Mode::Replay);
+        let layouts = plan.read_campaigns(&results).unwrap();
+        let path = layouts[1].root.join(".owner.lock");
+        let owner = if missing {
+            fs::remove_file(&path).unwrap();
+            None
+        } else {
+            Some(crate::output_lock::OutputLock::acquire_existing(&path, "fixture").unwrap())
+        };
+        assert!(
+            state
+                .classify_campaigns(&fixture.0, &results, &plan)
+                .is_err()
+        );
+        assert_eq!(path.exists(), !missing);
+        assert!(
+            crate::output_lock::OutputLock::acquire_existing(
+                &layouts[0].root.join(".owner.lock"),
+                "released earlier lock"
+            )
+            .is_ok()
+        );
+        assert!(!results.join(".checkpoint/campaign-completed").exists());
+        drop(owner);
+    }
+}
+
+#[test]
+fn orphan_duplicate_partial_foreign_and_aliased_actual_records_cannot_become_untouched() {
+    for case in [
+        "orphan",
+        "duplicate",
+        "tmp",
+        "foreign",
+        "foreign-batch",
+        "symlink",
+        "directory-alias",
+        "malformed",
+    ] {
+        let (fixture, plan, results, state) = untouched(crate::tape::Mode::Replay);
+        let layouts = plan.read_campaigns(&results).unwrap();
+        let layout = &layouts[1];
+        let directory = layout.root.join("batch-2/.asb-completions");
+        fs::create_dir_all(&directory).unwrap();
+        let mut record =
+            json!({"summary":{"execution":layout.plan.execution(&layout.plan.slots[1])}});
+        if case == "foreign" {
+            record["summary"]["execution"]["campaign"] = json!("foreign");
+        }
+        if case == "foreign-batch" {
+            record["summary"]["execution"] = json!(layout.plan.execution(&layout.plan.slots[0]));
+        }
+        let path = directory.join(if case == "tmp" {
+            ".pending.tmp"
+        } else {
+            "actual.json"
+        });
+        fs::write(
+            &path,
+            if case == "malformed" {
+                b"{".to_vec()
+            } else {
+                serde_json::to_vec(&record).unwrap()
+            },
+        )
+        .unwrap();
+        if case == "duplicate" {
+            fs::copy(&path, directory.join("duplicate.json")).unwrap();
+        }
+        if case == "symlink" {
+            let target = fixture.0.join("foreign-record.json");
+            fs::rename(&path, &target).unwrap();
+            std::os::unix::fs::symlink(target, &path).unwrap();
+        }
+        if case == "directory-alias" {
+            let target = fixture.0.join("foreign-records");
+            fs::rename(&directory, &target).unwrap();
+            std::os::unix::fs::symlink(target, &directory).unwrap();
+        }
+        assert!(
+            state
+                .classify_campaigns(&fixture.0, &results, &plan)
+                .is_err(),
+            "{case}"
+        );
+        for layout in &layouts {
+            assert!(!layout.root.join("batch-1/starts").exists(), "{case}");
+        }
+        assert!(
+            !results.join(".checkpoint/campaign-completed").exists(),
+            "{case}"
+        );
+        assert!(
+            !results.join(".checkpoint/campaign-unsettled").exists(),
+            "{case}"
+        );
+    }
+}
+
+#[test]
+fn each_slot_owned_observation_blocks_pending_admission_in_a_later_configuration() {
+    for case in [
+        "start",
+        "allocation",
+        "workspace",
+        "runtime",
+        "log",
+        "raw",
+        "association",
+        "unsettled",
+        "dangling-start",
+        "dangling-workspace",
+    ] {
+        let (fixture, plan, results, state) = untouched(if case == "association" {
+            crate::tape::Mode::Record
+        } else {
+            crate::tape::Mode::Replay
+        });
+        let layouts = plan.read_campaigns(&results).unwrap();
+        let layout = &layouts[1];
+        let slot = &layout.plan.slots[1];
+        let path = match case {
+            "start" | "dangling-start" => layout.root.join("batch-2/starts/1.json"),
+            "allocation" => layout.root.join("batch-2/allocations/1.json"),
+            "workspace" | "dangling-workspace" => layout.root.join(&slot.workspace),
+            "runtime" => crate::runner::replica::runtime_path(&layout.root.join(&slot.workspace)),
+            "log" => layout.root.join(&slot.log),
+            "raw" => crate::runner::recording::producer(
+                &layout.root,
+                slot.batch,
+                slot.replica,
+                layout.plan.concurrency,
+            ),
+            "association" => crate::runner::recording::association_for(
+                layout.plan.recording.as_ref().unwrap(),
+                slot.id,
+            )
+            .unwrap(),
+            "unsettled" => results.join(".checkpoint/campaign-unsettled/000001/000002.json"),
+            _ => unreachable!(),
+        };
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        if case.starts_with("dangling") {
+            std::os::unix::fs::symlink("absent", &path).unwrap();
+        } else if matches!(case, "workspace" | "runtime") {
+            fs::create_dir(&path).unwrap();
+        } else {
+            fs::write(&path, "retained sentinel").unwrap();
+        }
+        assert!(
+            state
+                .classify_campaigns(&fixture.0, &results, &plan)
+                .is_err(),
+            "{case}"
+        );
+        assert!(fs::symlink_metadata(path).is_ok(), "{case}");
+        assert!(!layouts[0].root.join("batch-1/starts").exists(), "{case}");
+        assert!(
+            !results.join(".checkpoint/campaign-completed").exists(),
+            "{case}"
+        );
+    }
+}
+
+#[test]
+fn rooted_completion_listing_is_bounded_and_distinguishes_stale_errno_from_failure() {
+    let (_fixture, plan, results, _state) = untouched(crate::tape::Mode::Replay);
+    let layouts = plan.read_campaigns(&results).unwrap();
+    let root = &layouts[0].root;
+    fs::create_dir(root.join("empty")).unwrap();
+    errno::set_errno(errno::Errno(libc::ENOENT));
+    assert!(
+        crate::runner::campaign::reading::list_relative(root, Path::new("empty"), 0)
+            .unwrap()
+            .is_empty()
+    );
+    fs::write(root.join("empty/one.json"), "{}").unwrap();
+    assert!(crate::runner::campaign::reading::list_relative(root, Path::new("empty"), 0).is_err());
+    assert_eq!(
+        crate::runner::campaign::reading::list_relative(root, Path::new("empty"), 1)
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(
+        crate::runner::campaign::reading::list_relative(root, Path::new("empty"), usize::MAX)
+            .is_err()
+    );
+    assert!(
+        crate::runner::campaign::reading::list_relative(root, Path::new("../empty"), 1).is_err()
+    );
 }
 
 #[test]
@@ -411,6 +662,25 @@ fn existing_campaign_receipts_verify_exact_original_identity_and_derived_evidenc
                     summaries
                         .iter()
                         .all(|summary| summary["workload_success"] == false)
+                );
+            }
+            for layout in &layouts {
+                assert!(
+                    crate::output_lock::OutputLock::acquire_existing(
+                        &layout.root.join(".owner.lock"),
+                        "held through reuse"
+                    )
+                    .is_err()
+                );
+            }
+            drop(reused);
+            for layout in &layouts {
+                assert!(
+                    crate::output_lock::OutputLock::acquire_existing(
+                        &layout.root.join(".owner.lock"),
+                        "released after reuse"
+                    )
+                    .is_ok()
                 );
             }
         } else {

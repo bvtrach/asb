@@ -488,6 +488,7 @@ impl SettledSweep<'_> {
             options,
             results,
             warnings,
+            reused: reused_guard,
             _output_lock,
             ..
         } = activated;
@@ -580,6 +581,7 @@ impl SettledSweep<'_> {
             primary,
             schedule_error.map_or(Ok(()), Err),
         );
+        drop(reused_guard);
         drop(_output_lock);
         outcome
     }

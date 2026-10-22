@@ -226,6 +226,55 @@ fn campaign_input_seals_stay_stable_after_record_publication_and_offline_replay(
         records(&fs::read(project.0.join("attempts.jsonl")).unwrap()).len(),
         8
     );
+    let result_root = project.0.join("sweep-results");
+    let index: Value =
+        serde_json::from_slice(&fs::read(result_root.join("plan.json")).unwrap()).unwrap();
+    let campaign = result_root.join(index["entries"][0]["campaign"]["root"].as_str().unwrap());
+    let reference_path = campaign.join("batch-2/outcomes/2.json");
+    let reference: Value = serde_json::from_slice(&fs::read(&reference_path).unwrap()).unwrap();
+    let outcome = campaign.join(reference["path"].as_str().unwrap());
+    let directory = outcome.parent().unwrap();
+    let attempts = fs::read(project.0.join("attempts.jsonl")).unwrap();
+    let report_path = project.0.join("results/sweep-comparison/comparison.json");
+    let report = fs::read(&report_path).unwrap();
+    for case in ["duplicate", "orphan", "temporary"] {
+        let extra = directory.join(if case == "temporary" {
+            ".unfinished.tmp"
+        } else {
+            "duplicate.json"
+        });
+        let held = campaign.join("held-outcome-reference");
+        match case {
+            "duplicate" => {
+                fs::copy(&outcome, &extra).unwrap();
+            }
+            "orphan" => fs::rename(&reference_path, &held).unwrap(),
+            "temporary" => fs::write(&extra, b"unfinished").unwrap(),
+            _ => unreachable!(),
+        }
+        let rejected = sweep(&project, None, &["--replay", "--resume"]);
+        assert!(!rejected.status.success(), "{case}");
+        assert!(
+            String::from_utf8_lossy(&rejected.stderr).contains("explicit recovery"),
+            "{case}: {}",
+            String::from_utf8_lossy(&rejected.stderr)
+        );
+        assert!(
+            rejected.stdout.is_empty(),
+            "no earlier result presentation before global admission: {case}"
+        );
+        assert!(
+            fs::read(project.0.join("attempts.jsonl")).unwrap() == attempts,
+            "{case}"
+        );
+        assert!(fs::read(&report_path).unwrap() == report, "{case}");
+        if case == "orphan" {
+            fs::rename(&held, &reference_path).unwrap();
+        } else {
+            fs::remove_file(&extra).unwrap();
+        }
+    }
+    assert_reused(None, "--replay");
     fs::write(
         project.0.join("grader-error-first"),
         "one unknown grade, no retry",

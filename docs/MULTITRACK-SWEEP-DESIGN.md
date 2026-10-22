@@ -561,6 +561,46 @@ terminal state. Such refusal is not full modern-continuation acceptance.
 
 ### Reviewed next transition: partial continuation generations (not implemented)
 
+The classification and participant-gate prerequisites below are now implemented
+on this branch; generation publication and pending-slot execution are not yet
+implemented. Classification is deliberately not a launch capability.
+
+`Gate::selected` and its deferred launch counterpart retain original C and an
+explicit pending membership set. Only actual selected arrivals contribute to
+readiness; reused peers remain unregistered and unready. Focused cases cover
+noncontiguous [2,4] of C=4, duplicate/nonmember/renumbered identities, missing
+arrivals, mismatch, cancellation, deadlines and observer publication ordering.
+
+The read-only classifier holds each original persistent ownership inode without
+creating a missing lock. It checks slot workspace/runtime/log/measurement leaves,
+starts, allocations, outcome references, raw producer and external association
+paths plus recovery-only markers. It also inventories all declared batches'
+actual random-named completion records. Inventory entry/byte metadata is admitted
+before parsing that inventory; later strict declarations retain their separate
+metadata preflight. Both stages share the same actual observation-read budget.
+Actual/reference path, length and checksum form an exact bijection. Temp,
+duplicate, malformed, foreign, aliased and orphan records require recovery,
+never an implicit retry. Original receipt identities and pending observations
+pass before grouped recording proof; fingerprints pass before returned reuse.
+
+The existing Unix descriptor-relative reader now owns bounded DIR enumeration
+through fdopendir/readdir. The already-locked errno 0.3.14 dependency is explicitly
+declared for Unix so each readdir distinguishes EOF from errors portably. Names
+are copied before advancing, with entry/name-byte bounds and automatic closure.
+Non-Unix pathname enumeration does not claim this descriptor-pinned guarantee;
+Windows runtime qualification remains absent. No provider, evaluator or client
+is started by inventory/classification.
+
+Ownership survives the returned classification and completed-only reuse state
+through final input verification and comparison, then releases before the sweep
+output lock. Tests cover all exact observation families, shared preparation
+alone staying untouched, missing/busy ownership without recreation, stale errno,
+bounded enumeration, later-configuration refusal and preservation of old evidence.
+Actual registered-Pi synthetic CLI coverage adds a copied completion, a removed
+reference and an unfinished temporary record; each must refuse before result
+presentation while preserving attempt count and the prior comparison. The test
+restores only its owned injected fault and then verifies unchanged normal reuse.
+
 The next admission owner must classify every original slot under the existing
 sweep/campaign locks before publishing any generation or starting any worker.
 Besides referenced outcomes, inspect bounded actual completion records, starts,
