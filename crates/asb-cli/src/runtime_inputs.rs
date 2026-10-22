@@ -345,11 +345,36 @@ mod tests {
             } else {
                 vec![Dependency::file("/fixture/absent-file")]
             };
+            let began = Instant::now();
             let result = discover_with_timeout(
                 &root.join("fake-python"),
                 &dependencies,
                 Duration::from_millis(150),
             );
+            // Retain bounded fixture-only observations before the success
+            // assertion. Never log dependency paths, interpreter output or
+            // arbitrary exception strings to diagnose loaded-host timing.
+            let code = match &result {
+                Ok(_) => "ok",
+                Err(error) => {
+                    let error = error.to_string();
+                    if error.ends_with("local helper exchange deadline exceeded") {
+                        "exchange-deadline"
+                    } else if error.ends_with("local helper helper failed") {
+                        "helper-failed"
+                    } else {
+                        "other-error"
+                    }
+                }
+            };
+            std::fs::write(
+                root.join("exchange-observation.json"),
+                serde_json::to_vec(
+                    &serde_json::json!({"code":code,"elapsed_ms":began.elapsed().as_millis()}),
+                )
+                .unwrap(),
+            )
+            .unwrap();
             if case == "held-stdin" {
                 let error = result.unwrap_err().to_string();
                 assert!(!error.contains("PRIVATE_RUNTIME_COMPONENT"));
@@ -451,9 +476,26 @@ mod tests {
             !Path::new(&format!("/proc/{descendant}")).exists(),
             "watchdog left an owned descendant"
         );
+        let observation = std::fs::File::open(root.0.join("exchange-observation.json"))
+            .ok()
+            .and_then(|file| {
+                use std::io::Read;
+                let mut bytes = Vec::new();
+                file.take(256).read_to_end(&mut bytes).ok()?;
+                let value: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+                let code = value["code"].as_str()?;
+                if !matches!(
+                    code,
+                    "ok" | "exchange-deadline" | "helper-failed" | "other-error"
+                ) {
+                    return None;
+                }
+                Some(format!("{code}, {} ms", value["elapsed_ms"].as_u64()?))
+            })
+            .unwrap_or_else(|| "no completed fixture observation".into());
         assert!(
             status.is_some_and(|status| status.success()) && root.0.join("returned").exists(),
-            "runtime discovery exceeded its short exchange budget after zero-exit helper ({case}); outer watchdog reaped the entire fixture tree"
+            "runtime discovery exceeded its short exchange budget after zero-exit helper ({case}); outer watchdog reaped the entire fixture tree; {observation}"
         );
     }
 
