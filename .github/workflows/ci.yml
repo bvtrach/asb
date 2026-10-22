@@ -22,6 +22,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
       - name: Check formatting
         run: cargo fmt --all -- --check
       - name: Run tests
@@ -96,6 +99,17 @@ jobs:
           node-version: '22'
       - name: Use the runner's Rust toolchain
         run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - name: Verify the existing offline Python prerequisite
+        shell: bash
+        run: |
+          set -euo pipefail
+          for asb_python in python3.12 python3.13; do
+            if command -v "$asb_python" >/dev/null && timeout 10s "$asb_python" -I -S -c 'import sys, venv; assert sys.version_info[:2] in [(3, 12), (3, 13)]; print(sys.version.split()[0])'; then
+              exit 0
+            fi
+          done
+          echo 'Offline tests require an existing Python 3.12 or 3.13 with venv on PATH; provision it outside this hardened runner job.' >&2
+          exit 1
       - name: Check Clippy
         run: cargo clippy --locked --all-targets --all-features -- -D warnings
       - name: Check formatting

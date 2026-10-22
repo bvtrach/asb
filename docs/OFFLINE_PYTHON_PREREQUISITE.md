@@ -43,7 +43,8 @@ only LLVM_PROFILE_FILE instrumentation may be inherited. All stdout/stderr,
 observed JSON and markers are intentionally retained after success or failure.
 Owned-tree quiescence precedes interpretation. This establishes bootstrap/tools
 mutation causality, not the unobserved old hosted proxy's precise target.
-This source fixture has NOT been executed; build-FIRST/source review is required.
+At the original da4f7106 source checkpoint this fixture had NOT been executed;
+the later controlled qualification below records the actual reviewed execution.
 
 ## Approved repair plan after evidence
 
@@ -107,3 +108,33 @@ does not exist; no right to provision it is assumed. Existing globally readable
 change or host install was performed. Prefer a bounded prerequisite check on
 the native job, official provisioning only on the GitHub-hosted job. CI and
 test-guard repair remains source work AFTER this observed evidence checkpoint.
+
+## Reviewed repair candidate (not yet executed)
+
+Following the accepted controlled evidence, ordinary offline_cli Project
+fixtures now carry explicit Ordinary versus IntentionalBootstrap test policy.
+All ordinary init invocations, including second-init/refusal cases, factually
+probe the exact effective raw PATH at the actual command cwd before admitting
+ASB. Relative/empty entries remain child-cwd relative. Only the three existing
+intentional bootstrap cases opt into IntentionalBootstrap; normal base projects
+and all proxy/reset tests remain Ordinary. Explicit custom PATH is still last
+and authoritative; no production config/flag/bootstrap behavior changes.
+
+The small Unix test prerequisite helper reuses the existing OneSlotKeeper. It
+executes the selected named interpreter with -I/-S, imports venv and requires
+actual exact3.12/3.13 output AND successful exit (not exit0 alone). A nonblocking
+private socket caps response at128bytes and the probe has a five-second caller
+deadline. Pre-established direct-child custody handles early errors/unwind;
+it is not arbitrary-descendant supervision or a host-sandbox claim. No package,
+provider, SDK or external request is made. Optional LLVM_PROFILE_FILE is retained;
+all other inherited state is cleared. The Command's retained parent writer is
+closed before waiting for EOF. Guard tests cover genuine real-runtime paths,
+relative/empty/nonUTF8 search at a specific cwd, missing paths, noninterpreters
+that exit0, fake3.14 and explicit ordinary refusal before ASB/config/curl markers.
+
+Hosted CI provisions3.12 using actions/setup-python@v7; its current official
+documentation identifies v7 and the same explicit python-version input. Native
+CI instead uses timeout-bounded existing3.12/3.13 version+venv verification, no
+provisioning/sudo/service changes. Developer prerequisites and test-only scope
+are documented. This source candidate requires independent review before any
+runtime or full-suite qualification. The90% gate remains removed.
