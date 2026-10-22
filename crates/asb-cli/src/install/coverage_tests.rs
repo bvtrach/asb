@@ -5,7 +5,7 @@ use std::os::unix::fs::{PermissionsExt, symlink};
 
 const CHILD_CASE: &str = "ASB_INSTALL_FIXTURE_CASE";
 
-struct Fixture(PathBuf);
+struct Fixture(PathBuf, std::cell::Cell<bool>);
 
 impl Fixture {
     fn new() -> Self {
@@ -19,7 +19,7 @@ impl Fixture {
             "tools_dir='tools'\nworkloads_dir='workloads'\nworkspace_dir='workspace'\n",
         )
         .unwrap();
-        Self(root.canonicalize().unwrap())
+        Self(root.canonicalize().unwrap(), std::cell::Cell::new(true))
     }
 
     fn script(&self, name: &str, contents: &str) -> PathBuf {
@@ -30,37 +30,101 @@ impl Fixture {
         path
     }
 
-    fn run(&self, case: &str) {
-        let mut command = Command::new(std::env::current_exe().unwrap());
-        command
-            .env_clear()
-            .env(CHILD_CASE, case)
-            .env("PATH", self.0.join("bin"))
-            .env("HOME", &self.0)
-            .env("ASB_FIXTURE_ROOT", &self.0)
-            .current_dir(&self.0)
-            .args([
-                "--exact",
-                "install::coverage_tests::installation_fixture_child",
-                "--nocapture",
-            ]);
-        // Child processes must retain instrumentation, never inherited keys.
-        if let Some(profile) = std::env::var_os("LLVM_PROFILE_FILE") {
-            command.env("LLVM_PROFILE_FILE", profile);
+    fn owned_step(
+        &self,
+        program: impl AsRef<std::ffi::OsStr>,
+        label: &str,
+        configure: impl FnOnce(&mut Command),
+    ) -> process::CompletedStep {
+        self.1.set(false);
+        let (_, mut config) = project::load(&self.0).unwrap();
+        config.installation.operation_timeout_seconds = 20;
+        let context = OperationContext::new(&self.0, &config).unwrap();
+        struct Cancel(OperationContext);
+        impl Drop for Cancel {
+            fn drop(&mut self) {
+                self.0.cancel();
+            }
         }
-        let output = command.output().unwrap();
+        let _cancel = Cancel(context.clone());
+        let owner = ProducerDirectory::open(&self.0).unwrap();
+        let mut scope = owner.scope(&context);
+        let mut step = scope.prepare(program, Purpose::Probe, label).unwrap();
+        step.capture(process::Capture::Inspect {
+            stream_bytes: 1024 * 1024,
+            total_bytes: 2 * 1024 * 1024,
+        });
+        configure(step.command_mut());
+        let (send, receive) = std::sync::mpsc::sync_channel(1);
+        std::thread::spawn(move || {
+            let result = scope.run(step).and_then(|output| {
+                owner.consume(scope.finish()?)?;
+                Ok(output)
+            });
+            let _ = send.send(result);
+        });
+        let output = receive
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .unwrap_or_else(|error| {
+                panic!(
+                    "{label}: owned fixture remains uncertain: {error}; retained {}",
+                    self.0.display()
+                )
+            })
+            .unwrap_or_else(|error| {
+                panic!(
+                    "{label}: fixture did not settle: {error}; retained {}",
+                    self.0.display()
+                )
+            });
+        // Actual same-owner proof is consumed before interpreting child status.
         assert!(
             output.status.success(),
-            "{case}: {}\n{}",
+            "{label}: {}\n{}; retained {}",
             String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
+            String::from_utf8_lossy(&output.stderr),
+            self.0.display()
+        );
+        self.1.set(true);
+        output
+    }
+
+    fn run(&self, case: &str) {
+        let output = self.owned_step(std::env::current_exe().unwrap(), case, |command| {
+            command
+                .env_clear()
+                .env(CHILD_CASE, case)
+                .env("PATH", self.0.join("bin"))
+                .env("HOME", &self.0)
+                .env("ASB_FIXTURE_ROOT", &self.0)
+                .current_dir(&self.0)
+                .args([
+                    "--exact",
+                    "install::coverage_tests::installation_fixture_child",
+                    "--nocapture",
+                    "--test-threads=1",
+                ])
+                .stdin(Stdio::null());
+            // Child processes must retain instrumentation, never inherited keys.
+            if let Some(profile) = std::env::var_os("LLVM_PROFILE_FILE") {
+                command.env("LLVM_PROFILE_FILE", profile);
+            }
+        });
+        assert!(
+            String::from_utf8_lossy(&output.stdout).lines().any(|line| {
+                line.starts_with("test result: ok. 1 passed; 0 failed; 0 ignored;")
+            }),
+            "{case}: exact child did not execute its one fixture test; retained {}",
+            self.0.display()
         );
     }
 }
 
 impl Drop for Fixture {
     fn drop(&mut self) {
-        crate::fixture_writer::cleanup(&self.0).unwrap();
+        if self.1.get() && !std::thread::panicking() {
+            crate::fixture_writer::cleanup(&self.0).unwrap();
+        }
     }
 }
 
@@ -133,15 +197,15 @@ fn local_bundle_extract_reuse_and_corrupt_installation_are_distinguished() {
         "retained upstream fixture source",
     )
     .unwrap();
-    let status = Command::new("/usr/bin/tar")
-        .args(["-czf"])
-        .arg(fixture.0.join("fixture.tar.gz"))
-        .arg("-C")
-        .arg(&fixture.0)
-        .arg("upstream-fixture")
-        .status()
-        .unwrap();
-    assert!(status.success());
+    fixture.owned_step("/usr/bin/tar", "create local bundle fixture", |command| {
+        command
+            .args(["-czf"])
+            .arg(fixture.0.join("fixture.tar.gz"))
+            .arg("-C")
+            .arg(&fixture.0)
+            .arg("upstream-fixture")
+            .stdin(Stdio::null());
+    });
     fixture.run("bundle");
 }
 

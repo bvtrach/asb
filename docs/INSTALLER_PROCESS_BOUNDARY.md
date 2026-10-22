@@ -1270,3 +1270,29 @@ proofs precede message checks. Raw/candidate test discovery now excludes ONLY
 the exact separate log prefix .asb-install-step-, retaining log evidence and
 all other .asb-install-* raw/candidate assertions. This diagnostic repair
 candidate has not yet been executed; no fresh pass/full claim is made.
+
+### Actionable Source diagnostics qualified; remaining fixture port
+
+Source63093b94 was built FIRST in14.05s. Its actual/frozen binary SHA256 is
+`262e5444a8e66a691abdd757d1ceb0d3cb3d9e558eadc32793419ca379415bc2`.
+Sequential installer44-source-diagnostic-fix transcripts record Source25/0/0
+in18.60s, process32/0/0 in6.57s, native7/0/0 in0.02s, original4/0/0 in1.08s,
+and actual CLI2/0/0 in2.66s:70 distinct top-level tests, no failures/skips.
+Strict workspace/all-target/all-feature Clippy passed in17.78s; fmt and diff
+checks passed. Before/after/final actual and frozen hashes match. These are
+focused results only, not broad full/current-stack clearance.
+
+Root approved a TEST-only port of coverage_tests::Fixture before its runtime:
+the old exact-child Command.output and archive Command.status are replaced by
+the same bounded ProcessScope/ProducerDirectory pattern already reviewed for
+Source fixtures. The same-owner permission is consumed before child status is
+interpreted;20s operation/30s parent bounds,1MiB streams/2MiB total capture and
+independent unwind cancellation apply. Exact fixture children require the
+one-passed/zero-failed/zero-ignored footer and run only their own single test
+serially. LLVM_PROFILE_FILE remains the sole optional inherited instrumentation
+variable across the cleared child environment. Failed/uncertain/panicking
+fixtures retain raw evidence; the existing shared executable writer is reused.
+The local tar preparation now uses that same bounded owned step. Existing
+functional/error/actionability assertions are unchanged. This port has not yet
+been compiled or executed; root source review precedes renewed runtime. It
+does not restore the removed90% coverage gate or introduce coverage policy.
