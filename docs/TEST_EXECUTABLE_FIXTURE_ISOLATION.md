@@ -151,3 +151,28 @@ production reaper APIs without an explicit test-only design. Existing Python/
 Node fixtures launched as separate single-case processes are not equivalent to
 writing an executable in the shared Rust parent. No integration/full repair is
 claimed by this inventory. Root must approve final scope before implementation.
+
+## Cross-harness implementation refinement submitted before code
+
+Root approved implementation in this new worktree, but explicitly requires the
+identified integration exposures to remain in final scope. Existing lib.rs
+already includes tests/support/mod.rs as `crate::test_support`; integration
+targets include that same file as `support`. No public product API is needed.
+Proposed shared tests/support/fixture_writer.rs owns one generic bounded writer
+protocol/caller guard, parameterized by a tiny private custody interface. The
+library's cfg(test) wrapper supplies its existing OwnedReaper. Integration
+harnesses supply a standalone one-slot pre-established keeper in that same
+test-only module (Arc/Mutex/Condvar, one actual Child, no competing owner).
+Only the keeper worker may wait for an adopted child; no caller wait/join or
+new worker in Drop. Unconfirmed child custody is not fabricated completion.
+
+Namespace retention must work across the existing outer/inner process boundary:
+a process-local registry alone cannot stop the OUTER Fixture::Drop deleting a
+failed INNER writer's files. Use an owned-root pending marker established before
+writer admission; remove only after confirmed successful child exit/closed FDs.
+Affected owning Drop/explicit cleanup paths inspect that marker and retain the
+namespace quietly on any pending/failed writer. A failed marker creation or
+bounded request/keeper preflight admits no writer; unknown child error/unwind
+retains both actual Child and marker. No recursive cleanup is authorized by a
+reaper handoff alone. This small sharing/retention tradeoff was sent to root for
+confirmation before implementation; no helper or fixture migration exists yet.
