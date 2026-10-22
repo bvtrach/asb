@@ -59,7 +59,7 @@ jobs:
             assets/scripts/network-fetch.mjs \
             assets/workloads/bug-fix.txt \
             assets/workloads/fixtures/bug-fix/src/parser.py; do
-            printf '%s\n' "$archive" | grep -Fq "/$asset"
+            grep -Fq "/$asset" <<<"$archive"
           done
       - name: Test packaged crate
         shell: bash
@@ -93,7 +93,10 @@ jobs:
     # isolated runner and explicitly enables the repository variable.
     if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' && vars.ASB_LOCAL_CI_ENABLED == 'true'
     runs-on: [self-hosted, linux, x64, asb-local-ci]
-    timeout-minutes: 20
+    # Serial execution preserves isolation for real host fixtures; allow the
+    # complete suite to finish rather than cancelling it at the old parallel
+    # suite budget.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
         with:
@@ -121,7 +124,10 @@ jobs:
       - name: Build
         run: cargo build --locked
       - name: Run tests
-        run: cargo test --locked
+        # This runner exercises the same real process trees and shared
+        # filesystem fixtures as `checks`; retain all coverage while avoiding
+        # overlapping fixture lifecycles on one host.
+        run: cargo test --locked -- --test-threads=1
       - name: Test checkout updates
         run: python3 scripts/test_update_checkout.py
       - name: Remove test-generated workspace files

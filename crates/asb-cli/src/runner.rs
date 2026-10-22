@@ -193,6 +193,7 @@ fn isolated_direct_config(
     config_path: &Path,
     mut config: BenchmarkConfig,
 ) -> Result<(BenchmarkConfig, PathBuf), Error> {
+    let configured_workspace = resolve_log_path(config_path, &config.workspace);
     let parent = config_path.parent().unwrap_or_else(|| Path::new("."));
     let root = parent
         .join("results")
@@ -225,6 +226,14 @@ fn isolated_direct_config(
         .join("workspace")
         .to_string_lossy()
         .into_owned();
+    // A direct run owns a fresh result workspace, but an existing configured
+    // workspace is its initial task material.  Copy it before workload
+    // preparation adds missing built-in fixtures, keeping attempts isolated
+    // without silently discarding the caller's checked-out source tree.
+    if configured_workspace.is_dir() {
+        workloads::copy_tree(&configured_workspace, Path::new(&config.workspace))
+            .map_err(Error::Run)?;
+    }
     config.log_file = result_directory
         .join("run.log")
         .to_string_lossy()
@@ -271,7 +280,8 @@ fn run_loaded(
             return reuse::render_reused(std::slice::from_ref(summary), options.json, output);
         }
     }
-    if public_direct_run(&options) {
+    let configured_log = public_direct_run(&options).then(|| config.log_file.clone());
+    if configured_log.is_some() {
         (config, _) = isolated_direct_config(config_path, config)?;
     }
     let mut cohort = measurements::ExecutionCohort {
@@ -289,7 +299,55 @@ fn run_loaded(
         execution_cohort: Some(&cohort),
         ..options
     };
-    run_dispatched(config_path, config, options, output, warnings)
+    let generated_log = config.log_file.clone();
+    let concurrency = config.concurrency;
+    let result = run_dispatched(config_path, config, options, output, warnings);
+    if let Some(configured_log) = configured_log {
+        publish_configured_logs(config_path, &configured_log, &generated_log, concurrency)?;
+    }
+    result
+}
+
+/// Keep the explicit configured log as a user-facing append-only view while
+/// the canonical attempt evidence stays under its fresh result directory.
+fn publish_configured_logs(
+    config_path: &Path,
+    configured: &str,
+    generated: &str,
+    concurrency: usize,
+) -> Result<(), Error> {
+    use std::io::Write;
+
+    for index in 1..=concurrency {
+        let source = if concurrency == 1 {
+            PathBuf::from(generated)
+        } else {
+            PathBuf::from(parallel_path(generated, index))
+        };
+        let destination = if concurrency == 1 {
+            resolve_log_path(config_path, configured)
+        } else {
+            resolve_log_path(config_path, &parallel_path(configured, index))
+        };
+        let bytes = match std::fs::read(&source) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(Error::Io(error.to_string())),
+        };
+        if let Some(parent) = destination.parent() {
+            std::fs::create_dir_all(parent).map_err(|error| Error::Io(error.to_string()))?;
+        }
+        let mut output = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(destination)
+            .map_err(|error| Error::Io(error.to_string()))?;
+        output
+            .write_all(&bytes)
+            .and_then(|()| output.sync_all())
+            .map_err(|error| Error::Io(error.to_string()))?;
+    }
+    Ok(())
 }
 
 /// Only the public one-shot entrypoint allocates a new result generation.
