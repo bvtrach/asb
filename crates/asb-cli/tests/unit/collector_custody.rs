@@ -2,6 +2,14 @@
 //! Initially red: qualify these before implementing collector custody changes.
 use super::*;
 
+/// The reader treats ready-file visibility as a complete producer observation.
+/// Writing the final path directly can expose an empty or partial PID.
+fn readiness_publisher(ready: &Path) -> String {
+    format!(
+        "import os,pathlib\n_ready = pathlib.Path({ready:?})\ndef publish_ready(value, before_publish=None):\n    temporary = _ready.with_name('.ready.pending')\n    with temporary.open('x') as output: output.write(value)\n    if before_publish is not None: before_publish()\n    os.replace(temporary, _ready)\n"
+    )
+}
+
 struct Fixture {
     directory: PathBuf,
     target: Child,
@@ -62,11 +70,40 @@ impl Drop for Fixture {
 }
 
 #[test]
+fn readiness_is_not_visible_until_the_complete_pid_is_published() {
+    let fixture = Fixture::new();
+    let ready = fixture.directory.join("ready");
+    let staged = fixture.directory.join("staged");
+    let release = fixture.directory.join("release");
+    let script = format!(
+        "{}\nimport time\ndef hold_publication():\n    pathlib.Path({staged:?}).write_text('staged')\n    deadline = time.monotonic()+3\n    while not pathlib.Path({release:?}).exists():\n        assert time.monotonic()<deadline, 'fixture publication was not released'\n        time.sleep(.005)\npublish_ready('12345', hold_publication)\n",
+        readiness_publisher(&ready)
+    );
+    let snapshot = fixture.snapshot(
+        script,
+        File::create(fixture.directory.join("stdout")).unwrap(),
+    );
+    fixture.wait_for(&staged);
+    let invisible = !ready.exists();
+    fs::write(&release, b"publish complete observation").unwrap();
+    let value = fixture.wait_for(&ready);
+    let _ = snapshot.stop();
+    assert!(
+        invisible,
+        "ready must not expose a partially written final file"
+    );
+    assert_eq!(value, "12345");
+    assert_eq!(value.parse::<u32>().unwrap(), 12345);
+    assert!(!fixture.directory.join(".ready.pending").exists());
+}
+
+#[test]
 fn stopping_snapshot_cancels_an_active_owned_command_instead_of_joining_its_duration() {
     let fixture = Fixture::new();
     let ready = fixture.directory.join("ready");
     let script = format!(
-        "import pathlib,time\npathlib.Path({ready:?}).write_text('ready')\ntime.sleep(1.5)\n"
+        "{}\nimport time\npublish_ready('ready')\ntime.sleep(1.5)\n",
+        readiness_publisher(&ready)
     );
     let snapshot = fixture.snapshot(
         script,
@@ -89,7 +126,8 @@ fn snapshot_stop_is_not_held_by_a_duplicate_writer_after_its_command_exits() {
     let ready = fixture.directory.join("ready");
     let release = fixture.directory.join("release");
     let script = format!(
-        "import os,pathlib,time\npathlib.Path({ready:?}).write_text(str(os.getpid()))\nwhile not pathlib.Path({release:?}).exists(): time.sleep(.005)\nos._exit(0)\n"
+        "{}\nimport time\npublish_ready(str(os.getpid()))\nwhile not pathlib.Path({release:?}).exists(): time.sleep(.005)\nos._exit(0)\n",
+        readiness_publisher(&ready)
     );
     let snapshot = fixture.snapshot(
         script,
@@ -132,7 +170,8 @@ fn actual_enospc_is_reported_as_producer_failure_instead_of_silent_completion() 
     let fixture = Fixture::new();
     let ready = fixture.directory.join("ready");
     let script = format!(
-        "import pathlib,sys\nsys.stdout.write('CPU %usr %system %CPU\\nall 7 3 10\\n')\nsys.stdout.flush()\npathlib.Path({ready:?}).write_text('ready')\n"
+        "{}\nimport sys\nsys.stdout.write('CPU %usr %system %CPU\\nall 7 3 10\\n')\nsys.stdout.flush()\npublish_ready('ready')\n",
+        readiness_publisher(&ready)
     );
     let snapshot = fixture.snapshot(
         script,
