@@ -341,9 +341,14 @@ mod tests {
                 if sibling_alive {
                     sibling.kill().unwrap();
                 }
-                sibling.wait().unwrap();
             }
+            let sibling_wait = sibling.wait();
             denied.wait().unwrap();
+            if sibling_reaped {
+                assert_eq!(sibling_wait.unwrap_err().raw_os_error(), Some(libc::ECHILD));
+            } else {
+                sibling_wait.unwrap();
+            }
             std::fs::write(
                 std::path::PathBuf::from(root).join("sibling.json"),
                 serde_json::to_vec(&serde_json::json!({
@@ -427,11 +432,14 @@ mod tests {
             let sibling_reaped = was_reaped(&sibling_identity);
             let live_alive = !exited(&live_identity, 0);
             failed.wait().unwrap();
-            if !sibling_reaped {
-                sibling.wait().unwrap();
-            }
+            let sibling_wait = sibling.wait();
             live.kill().unwrap();
             live.wait().unwrap();
+            if sibling_reaped {
+                assert_eq!(sibling_wait.unwrap_err().raw_os_error(), Some(libc::ECHILD));
+            } else {
+                sibling_wait.unwrap();
+            }
             std::fs::write(
                 std::path::PathBuf::from(root).join("reap.json"),
                 serde_json::to_vec(&serde_json::json!({
