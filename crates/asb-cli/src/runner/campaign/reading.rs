@@ -87,10 +87,10 @@ pub(crate) fn list_relative(
     relative: &Path,
     maximum: usize,
 ) -> Result<Vec<OsString>, Error> {
-    // Generation metadata has one final admission marker in addition to its
-    // bounded population of configuration manifests. Slot callers still pass
-    // their independent 65,533-record maximum.
-    if maximum > 65_534 {
+    // Generation metadata has a final admission, optional successor link and
+    // fixed successors directory besides configuration manifests. Slot callers
+    // still pass their independent 65,533-record maximum.
+    if maximum > 65_536 {
         return Err(invalid("directory inventory exceeds its bound"));
     }
     #[cfg(unix)]

@@ -4,6 +4,16 @@ Status: independently reviewed design for the remaining feature-5 work, not an
 implemented or qualified capability. The current single-generation path must
 remain safe until this entire change and its public fault matrix are complete.
 
+Decoder checkpoint: the passive catalog now validates an explicit bounded chain,
+preserves original-node start/recording resolution and cumulative head receipt
+membership, and refuses orphan successors, non-progressing generations and
+changed inherited bindings. Legacy first admissions omit `lineage` unchanged.
+The publication path still refuses a second generation; head-only recording
+discovery/recovery is not yet inheritance support. The synthetic metadata tests
+below are not evidence that repeated public continuation works. Do not mark this
+feature delivered until the consuming publication path, recording ledger
+inheritance/recovery and actual C4/N3 qualification below are complete.
+
 ## Explicit append-only authority
 
 Keep the existing `.checkpoint/campaign-continuation` admission as the first

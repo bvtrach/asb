@@ -301,6 +301,7 @@ impl Prepared {
                 sha256: origin.index_sha256.clone(),
             },
             manifests: references,
+            lineage: None,
         };
         let admission_bytes = encode(&admission)?;
         total_bytes

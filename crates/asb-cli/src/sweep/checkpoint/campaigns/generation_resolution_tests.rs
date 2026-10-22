@@ -4,6 +4,15 @@ use crate::runner::campaign::StartIntent;
 use crate::runner::campaign::generation::{Catalog, Context, Expected};
 
 fn load(guard: &Guard, sweep: &SweepPlan, results: &Path) -> Result<Catalog, Error> {
+    load_with_limit(guard, sweep, results, MAX_GENERATION)
+}
+
+fn load_with_limit(
+    guard: &Guard,
+    sweep: &SweepPlan,
+    results: &Path,
+    limit: usize,
+) -> Result<Catalog, Error> {
     let layouts = sweep.read_campaigns(results)?;
     let expected = sweep
         .entries
@@ -14,7 +23,7 @@ fn load(guard: &Guard, sweep: &SweepPlan, results: &Path) -> Result<Catalog, Err
             plan: &layout.plan,
         })
         .collect::<Vec<_>>();
-    Catalog::read(
+    Catalog::read_with_metadata_limit(
         &guard.inputs.directory,
         Context {
             run_id: &sweep.run_id,
@@ -22,13 +31,335 @@ fn load(guard: &Guard, sweep: &SweepPlan, results: &Path) -> Result<Catalog, Err
             original_index: Blob::of(&fs::read(results.join("plan.json")).unwrap()),
         },
         &expected,
+        limit,
     )
+}
+
+fn rewrite_child(results: &Path, mutate: impl FnOnce(&mut Admission, &Path)) {
+    let base = results.join(".checkpoint").join(ROOT);
+    let child = base.join("successors/000001");
+    let path = child.join("admitted.json");
+    let mut admission: Admission = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    mutate(&mut admission, &child);
+    let bytes = serde_json::to_vec_pretty(&admission).unwrap();
+    fs::write(path, &bytes).unwrap();
+    let path = base.join("next.json");
+    let mut link: crate::runner::campaign::generation::NextReference =
+        serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    link.admission = Blob::of(&bytes);
+    fs::write(path, serde_json::to_vec_pretty(&link).unwrap()).unwrap();
+}
+
+#[test]
+fn successor_lineage_rejects_recomputed_hashes_for_mutated_inheritance_or_identity() {
+    for case in [
+        "ordinal",
+        "previous-generation",
+        "previous-admission",
+        "receipt",
+        "duplicate-id",
+    ] {
+        let (_fixture, sweep, results, guard, _workers) = published_mixed();
+        append_metadata_node(&results, 1, &[2]);
+        rewrite_child(&results, |admission, child| match case {
+            "ordinal" => admission.lineage.as_mut().unwrap().ordinal += 1,
+            "previous-generation" => {
+                admission.lineage.as_mut().unwrap().previous_generation = "aaaa".into()
+            }
+            "previous-admission" => {
+                admission
+                    .lineage
+                    .as_mut()
+                    .unwrap()
+                    .previous_admission
+                    .sha256 = "0".repeat(64)
+            }
+            "receipt" => {
+                let path = child.join("000000.json");
+                let mut manifest: Manifest =
+                    serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+                manifest.completed[0].receipt.sha256 = "0".repeat(64);
+                let bytes = serde_json::to_vec_pretty(&manifest).unwrap();
+                fs::write(path, &bytes).unwrap();
+                admission.manifests[0].content = Blob::of(&bytes);
+            }
+            "duplicate-id" => {
+                admission.generation = admission
+                    .lineage
+                    .as_ref()
+                    .unwrap()
+                    .previous_generation
+                    .clone();
+                for reference in &mut admission.manifests {
+                    let path = child.join(manifest_path(reference.configuration));
+                    let mut manifest: Manifest =
+                        serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+                    manifest.generation = admission.generation.clone();
+                    let bytes = serde_json::to_vec_pretty(&manifest).unwrap();
+                    fs::write(path, &bytes).unwrap();
+                    reference.content = Blob::of(&bytes);
+                }
+            }
+            _ => unreachable!(),
+        });
+        if case == "duplicate-id" {
+            let path = results.join(".checkpoint").join(ROOT).join("next.json");
+            let mut link: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+            let admission: Admission = serde_json::from_slice(
+                &fs::read(results.join(".checkpoint").join(ROOT).join("admitted.json")).unwrap(),
+            )
+            .unwrap();
+            link["generation"] = admission.generation.into();
+            fs::write(path, serde_json::to_vec_pretty(&link).unwrap()).unwrap();
+        }
+        assert!(load(&guard, &sweep, &results).is_err(), "{case}");
+    }
+}
+
+#[test]
+fn successor_metadata_budget_is_cumulative_and_exact_at_the_boundary() {
+    let (_fixture, sweep, results, guard, _workers) = published_mixed();
+    let child = append_metadata_node(&results, 1, &[2]);
+    let base = results.join(".checkpoint").join(ROOT);
+    let mut total = fs::metadata(base.join("next.json")).unwrap().len() as usize;
+    for node in [&base, &child] {
+        total += fs::metadata(node.join("admitted.json")).unwrap().len() as usize;
+        for configuration in 0..sweep.entries.len() {
+            total += fs::metadata(node.join(manifest_path(configuration)))
+                .unwrap()
+                .len() as usize;
+        }
+    }
+    assert!(load_with_limit(&guard, &sweep, &results, total).is_ok());
+    assert!(load_with_limit(&guard, &sweep, &results, total - 1).is_err());
+}
+
+#[cfg(unix)]
+#[test]
+fn successor_metadata_never_follows_child_or_link_aliases() {
+    for leaf in ["next.json", "successors/000001"] {
+        let (_fixture, sweep, results, guard, _workers) = published_mixed();
+        append_metadata_node(&results, 1, &[2]);
+        let base = results.join(".checkpoint").join(ROOT);
+        let original = base.join(leaf);
+        // Outside ROOT: an extra root entry would make the envelope fail before
+        // traversal reached the child alias, proving the wrong property.
+        let retained = results.join("retained-alias-target");
+        fs::rename(&original, &retained).unwrap();
+        use std::os::unix::fs::MetadataExt;
+        let identity = fs::metadata(&retained).unwrap();
+        std::os::unix::fs::symlink(&retained, &original).unwrap();
+        assert!(load(&guard, &sweep, &results).is_err(), "{leaf}");
+        let after = fs::metadata(&retained).unwrap();
+        assert_eq!(
+            (identity.dev(), identity.ino(), identity.len()),
+            (after.dev(), after.ino(), after.len())
+        );
+    }
 }
 
 fn published_mixed() -> (Fixture, SweepPlan, PathBuf, Guard, Vec<AdmittedCampaign>) {
     let (fixture, sweep, results, prepared) = mixed();
     let (guard, workers) = prepared.publish(&results, &sweep).unwrap();
     (fixture, sweep, results, guard, workers)
+}
+
+/// Passive wire fixture only: publishing these synthetic completed bindings
+/// does not demonstrate an actual execution or grant a worker capability.
+fn append_metadata_node(results: &Path, ordinal: usize, complete: &[u64]) -> PathBuf {
+    use crate::runner::campaign::generation::{Lineage, NextReference};
+    let base = results.join(".checkpoint").join(ROOT);
+    let previous = if ordinal == 1 {
+        base.clone()
+    } else {
+        base.join("successors").join(format!("{:06}", ordinal - 1))
+    };
+    let previous_bytes = fs::read(previous.join("admitted.json")).unwrap();
+    let previous_admission: Admission = serde_json::from_slice(&previous_bytes).unwrap();
+    let generation = format!("ffff-0000-{ordinal:06}");
+    let directory = base.join("successors").join(format!("{ordinal:06}"));
+    fs::create_dir_all(&directory).unwrap();
+    let mut manifests = Vec::new();
+    for reference in &previous_admission.manifests {
+        let mut manifest: Manifest = serde_json::from_slice(
+            &fs::read(previous.join(manifest_path(reference.configuration))).unwrap(),
+        )
+        .unwrap();
+        manifest.generation = generation.clone();
+        if reference.configuration == 0 {
+            for slot in complete {
+                manifest.completed.push(Completed {
+                    slot: *slot,
+                    receipt: Blob::of(format!("synthetic receipt {slot}").as_bytes()),
+                });
+            }
+            manifest.completed.sort_by_key(|entry| entry.slot);
+            for batch in &mut manifest.pending {
+                batch.cohort.admitted_slots.retain(|replica| {
+                    !complete.contains(&((batch.batch - 1) * 4 + *replica as u64))
+                });
+                batch.cohort.dispatch = None;
+                batch.cohort.dispatch = batch
+                    .cohort
+                    .admitted_slots
+                    .first()
+                    .map(|replica| batch.cohort.dispatch_for(*replica, 4).unwrap());
+            }
+            manifest
+                .pending
+                .retain(|batch| !batch.cohort.admitted_slots.is_empty());
+        }
+        let bytes = serde_json::to_vec_pretty(&manifest).unwrap();
+        fs::write(
+            directory.join(manifest_path(reference.configuration)),
+            &bytes,
+        )
+        .unwrap();
+        manifests.push(ManifestReference {
+            configuration: reference.configuration,
+            content: Blob::of(&bytes),
+        });
+    }
+    let admission = Admission {
+        schema_version: 1,
+        scope: SCOPE.into(),
+        generation: generation.clone(),
+        run_id: previous_admission.run_id,
+        input_digest: previous_admission.input_digest,
+        original_index: previous_admission.original_index,
+        manifests,
+        lineage: Some(Lineage {
+            schema_version: 1,
+            ordinal,
+            previous_generation: previous_admission.generation,
+            previous_admission: Blob::of(&previous_bytes),
+        }),
+    };
+    let bytes = serde_json::to_vec_pretty(&admission).unwrap();
+    fs::write(directory.join("admitted.json"), &bytes).unwrap();
+    fs::write(
+        previous.join("next.json"),
+        serde_json::to_vec_pretty(&NextReference {
+            schema_version: 1,
+            ordinal,
+            generation,
+            admission: Blob::of(&bytes),
+            previous_admission: Blob::of(&previous_bytes),
+        })
+        .unwrap(),
+    )
+    .unwrap();
+    directory
+}
+
+#[test]
+fn successive_metadata_nodes_preserve_original_start_and_receipt_bindings() {
+    let (_fixture, sweep, results, guard, workers) = published_mixed();
+    let first = load(&guard, &sweep, &results)
+        .unwrap()
+        .reference(0)
+        .unwrap();
+    let original = &workers[0];
+    append_metadata_node(&results, 1, &[2]);
+    let second = load(&guard, &sweep, &results)
+        .unwrap()
+        .reference(0)
+        .unwrap();
+    let second_manifest: Manifest = serde_json::from_slice(
+        &fs::read(
+            results
+                .join(".checkpoint")
+                .join(ROOT)
+                .join("successors/000001/000000.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let inherited = load(&guard, &sweep, &results)
+        .unwrap()
+        .completed_receipt(0, 2)
+        .unwrap()
+        .clone();
+    append_metadata_node(&results, 2, &[4]);
+    let catalog = load(&guard, &sweep, &results).unwrap();
+    assert_ne!(first, second);
+    assert_ne!(second, catalog.reference(0).unwrap());
+    assert_eq!(catalog.completed_receipt(0, 2), Some(&inherited));
+    for (reference, manifest, id) in [
+        (&first, &original.manifest, 2),
+        (&second, &second_manifest, 4),
+    ] {
+        let slot = &original.plan.slots[id - 1];
+        let batch = &manifest.pending[0];
+        let resolved = catalog
+            .resolve(
+                Some(reference),
+                0,
+                &original.plan,
+                slot,
+                Some(&batch.cohort),
+            )
+            .unwrap();
+        assert_eq!(
+            resolved.prepared,
+            batch.directory(&reference.generation).join("prepared.json")
+        );
+        assert!(
+            catalog
+                .resolve(None, 0, &original.plan, slot, Some(&batch.cohort))
+                .is_err()
+        );
+        assert!(
+            catalog
+                .resolve(
+                    Some(&catalog.reference(0).unwrap()),
+                    0,
+                    &original.plan,
+                    slot,
+                    Some(&batch.cohort)
+                )
+                .is_err()
+        );
+    }
+    assert!(
+        catalog
+            .resolve(None, 0, &original.plan, &original.plan.slots[0], None)
+            .unwrap()
+            .evidence
+            .is_empty()
+    );
+}
+
+#[test]
+fn successor_metadata_rejects_no_progress_and_unlinked_or_foreign_children() {
+    for case in [
+        "no-progress",
+        "orphan",
+        "foreign",
+        "wrong-link",
+        "changed-ancestor",
+    ] {
+        let (_fixture, sweep, results, guard, _workers) = published_mixed();
+        let child =
+            append_metadata_node(&results, 1, if case == "no-progress" { &[] } else { &[2] });
+        let base = results.join(".checkpoint").join(ROOT);
+        match case {
+            "orphan" => fs::remove_file(base.join("next.json")).unwrap(),
+            "foreign" => fs::create_dir(base.join("successors/999999")).unwrap(),
+            "wrong-link" => {
+                let path = base.join("next.json");
+                let mut value: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+                value["previous_admission"]["sha256"] = "0".repeat(64).into();
+                fs::write(path, serde_json::to_vec(&value).unwrap()).unwrap();
+            }
+            "changed-ancestor" => rewrite_manifest(&results, 0, |value| {
+                value["completed"][0]["receipt"]["sha256"] = "0".repeat(64).into();
+            }),
+            _ => (),
+        }
+        assert!(load(&guard, &sweep, &results).is_err(), "{case}");
+        assert!(child.join("admitted.json").exists());
+    }
 }
 
 fn rewrite_manifest(results: &Path, configuration: usize, mutate: impl FnOnce(&mut Value)) {

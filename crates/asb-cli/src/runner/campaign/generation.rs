@@ -90,6 +90,29 @@ pub(crate) struct Admission {
     pub input_digest: String,
     pub original_index: Blob,
     pub manifests: Vec<ManifestReference>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lineage: Option<Lineage>,
+}
+
+/// Successor identity binds exact predecessor bytes, not a caller-selected path.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct Lineage {
+    pub schema_version: u32,
+    pub ordinal: usize,
+    pub previous_generation: String,
+    pub previous_admission: Blob,
+}
+
+/// Published last in the predecessor after the successor is durable.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct NextReference {
+    pub schema_version: u32,
+    pub ordinal: usize,
+    pub generation: String,
+    pub admission: Blob,
+    pub previous_admission: Blob,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -115,12 +138,21 @@ pub(crate) struct Expected<'a> {
 
 /// Immutable validated metadata, not a deserializable worker capability.
 pub(crate) struct Catalog {
+    nodes: Vec<Node>,
+    indices: std::collections::BTreeMap<String, usize>,
+}
+
+/// One immutable admission and its private validated derivatives. Keeping node
+/// lookup separate prevents later continuation from rebinding historical starts
+/// or recording identities against the newest generation.
+struct Node {
     root: PathBuf,
     admission: Admission,
     admission_blob: Blob,
     manifests: Vec<Manifest>,
     // Private derivatives of the validated manifests, not serialized authority.
     origin_commitments: Vec<Option<String>>,
+    metadata_bytes: usize,
 }
 
 pub(crate) struct Resolved {
@@ -234,14 +266,14 @@ impl Manifest {
     }
 }
 
-impl Catalog {
-    pub(crate) fn has_recording_union(&self, configuration: usize) -> Result<bool, Error> {
+impl Node {
+    fn has_recording_union(&self, configuration: usize) -> Result<bool, Error> {
         self.manifests
             .get(configuration)
             .map(|manifest| manifest.recording.is_some())
             .ok_or_else(|| invalid("configuration is outside manifest"))
     }
-    pub(crate) fn recordings(
+    fn recordings(
         &self,
     ) -> impl Iterator<Item = (usize, &crate::runner::recording::union::Descriptor)> {
         self.manifests
@@ -254,7 +286,7 @@ impl Catalog {
                     .map(|recording| (index, recording))
             })
     }
-    pub(crate) fn completed_receipt(&self, configuration: usize, slot: u64) -> Option<&Blob> {
+    fn completed_receipt(&self, configuration: usize, slot: u64) -> Option<&Blob> {
         let completed = &self.manifests.get(configuration)?.completed;
         completed
             .binary_search_by_key(&slot, |entry| entry.slot)
@@ -263,10 +295,12 @@ impl Catalog {
     }
     /// Validate every metadata envelope before parsing individual manifests.
     /// No provider, private JSONL, recording payload or receipt proof is read.
-    pub(crate) fn read(
+    fn read(
         checkpoint: &Path,
-        context: Context<'_>,
+        relative: &Path,
+        context: &Context<'_>,
         expected: &[Expected<'_>],
+        remaining: usize,
     ) -> Result<Self, Error> {
         if expected.is_empty()
             || expected.len() > 65_533
@@ -275,11 +309,11 @@ impl Catalog {
         {
             return Err(invalid("owning context is invalid"));
         }
-        let root = std::path::absolute(checkpoint.join(ROOT)).map_err(crate::io_error)?;
+        let root = std::path::absolute(checkpoint.join(relative)).map_err(crate::io_error)?;
         let bytes = reading::bounded_relative(
             checkpoint,
-            &Path::new(ROOT).join("admitted.json"),
-            MAX_MANIFEST as u64,
+            &relative.join("admitted.json"),
+            MAX_MANIFEST.min(remaining) as u64,
         )?;
         let admission: Admission =
             serde_json::from_slice(&bytes).map_err(|_| invalid("final admission is malformed"))?;
@@ -303,12 +337,20 @@ impl Catalog {
             }
             budget = budget
                 .checked_add(reference.content.bytes as usize)
-                .filter(|total| *total <= MAX_GENERATION)
-                .ok_or_else(|| invalid("generation metadata exceeds 64 MiB"))?;
+                .filter(|total| *total <= remaining)
+                .ok_or_else(|| invalid("cumulative generation metadata exceeds 64 MiB"))?;
             declared_names.insert(manifest_path(index));
         }
+        for name in ["next.json", "successors"] {
+            if reading::present_relative(&root, Path::new(name))? {
+                if name == "successors" && relative != Path::new(ROOT) {
+                    return Err(invalid("successor directory outside the fixed base"));
+                }
+                declared_names.insert(PathBuf::from(name));
+            }
+        }
         let actual_names: BTreeSet<_> =
-            reading::list_relative(checkpoint, Path::new(ROOT), expected.len() + 1)?
+            reading::list_relative(checkpoint, relative, expected.len() + 3)?
                 .into_iter()
                 .map(PathBuf::from)
                 .collect();
@@ -334,7 +376,7 @@ impl Catalog {
             let manifest: Manifest = serde_json::from_slice(&bytes)
                 .map_err(|_| invalid("generation manifest is malformed"))?;
             manifest.validate(
-                &context,
+                context,
                 &admission.generation,
                 reference.configuration,
                 original,
@@ -355,10 +397,11 @@ impl Catalog {
             admission_blob: Blob::of(&bytes),
             manifests,
             origin_commitments,
+            metadata_bytes: budget,
         })
     }
 
-    pub(crate) fn reference(&self, configuration: usize) -> Result<StartReference, Error> {
+    fn reference(&self, configuration: usize) -> Result<StartReference, Error> {
         let manifest = self
             .admission
             .manifests
@@ -372,7 +415,7 @@ impl Catalog {
         })
     }
 
-    pub(crate) fn recording_descriptor(
+    fn recording_descriptor(
         &self,
         configuration: usize,
         reference: &StartReference,
@@ -387,7 +430,7 @@ impl Catalog {
     }
 
     /// Resolve recording identity against the already validated owning catalog.
-    pub(crate) fn recording(
+    fn recording(
         &self,
         configuration: usize,
         binding: &crate::runner::recording::union::Binding,
@@ -431,7 +474,7 @@ impl Catalog {
     }
 
     /// Return derived evidence locations only; this cannot authorize execution.
-    pub(crate) fn resolve(
+    fn resolve(
         &self,
         reference: Option<&StartReference>,
         configuration: usize,
@@ -498,4 +541,218 @@ impl Catalog {
             ],
         })
     }
+}
+
+impl Catalog {
+    fn head(&self) -> &Node {
+        self.nodes
+            .last()
+            .expect("validated nonempty generation chain")
+    }
+
+    fn node_for(&self, reference: &StartReference) -> Result<&Node, Error> {
+        let node = self
+            .indices
+            .get(&reference.generation)
+            .and_then(|index| self.nodes.get(*index))
+            .ok_or_else(|| invalid("start names an unknown generation"))?;
+        if node.reference(reference.configuration)? != *reference {
+            return Err(invalid("historical admission/manifest reference changed"));
+        }
+        Ok(node)
+    }
+
+    pub(crate) fn read(
+        checkpoint: &Path,
+        context: Context<'_>,
+        expected: &[Expected<'_>],
+    ) -> Result<Self, Error> {
+        Self::read_bounded(checkpoint, context, expected, MAX_GENERATION)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn read_with_metadata_limit(
+        checkpoint: &Path,
+        context: Context<'_>,
+        expected: &[Expected<'_>],
+        limit: usize,
+    ) -> Result<Self, Error> {
+        Self::read_bounded(checkpoint, context, expected, limit.min(MAX_GENERATION))
+    }
+
+    fn read_bounded(
+        checkpoint: &Path,
+        context: Context<'_>,
+        expected: &[Expected<'_>],
+        limit: usize,
+    ) -> Result<Self, Error> {
+        let mut nodes: Vec<Node> = Vec::new();
+        let mut indices = std::collections::BTreeMap::new();
+        let mut remaining = limit;
+        let mut next: Option<NextReference> = None;
+        let mut relative = PathBuf::from(ROOT);
+        loop {
+            let node = Node::read(checkpoint, &relative, &context, expected, remaining)?;
+            remaining = remaining
+                .checked_sub(node.metadata_bytes)
+                .ok_or_else(|| invalid("cumulative generation metadata exceeds 64 MiB"))?;
+            let ordinal = nodes.len();
+            if let Some(previous) = nodes.last() {
+                let link = next.as_ref().expect("successor requires validated link");
+                if node.admission.lineage
+                    != Some(Lineage {
+                        schema_version: 1,
+                        ordinal,
+                        previous_generation: previous.admission.generation.clone(),
+                        previous_admission: previous.admission_blob.clone(),
+                    })
+                    || node.admission_blob != link.admission
+                    || node.admission.generation != link.generation
+                {
+                    return Err(invalid("successor differs from its linked predecessor"));
+                }
+                validate_transition(previous, &node)?;
+            } else if node.admission.lineage.is_some() {
+                return Err(invalid("first generation unexpectedly has a predecessor"));
+            }
+            if indices
+                .insert(node.admission.generation.clone(), ordinal)
+                .is_some()
+            {
+                return Err(invalid("generation chain repeats an identity"));
+            }
+            next = if reading::present_relative(&node.root, Path::new("next.json"))? {
+                let bytes = reading::bounded_relative(
+                    &node.root,
+                    Path::new("next.json"),
+                    remaining.min(MAX_MANIFEST) as u64,
+                )?;
+                remaining = remaining
+                    .checked_sub(bytes.len())
+                    .ok_or_else(|| invalid("cumulative generation metadata exceeds 64 MiB"))?;
+                let link: NextReference = serde_json::from_slice(&bytes)
+                    .map_err(|_| invalid("successor link is malformed"))?;
+                if link.schema_version != 1
+                    || link.ordinal != ordinal + 1
+                    || !valid_id(&link.generation)
+                    || !link.admission.bounded(MAX_MANIFEST)
+                    || link.previous_admission != node.admission_blob
+                    || ordinal + 1 >= 65_533
+                {
+                    return Err(invalid("successor link identity/ordinal is invalid"));
+                }
+                Some(link)
+            } else {
+                None
+            };
+            nodes.push(node);
+            if let Some(link) = &next {
+                relative = Path::new(ROOT)
+                    .join("successors")
+                    .join(format!("{:06}", link.ordinal));
+            } else {
+                break;
+            }
+        }
+        // Enumerate only the fixed topology, never select a generation by name,
+        // recency or directory order. An unlinked child is recovery-only state.
+        let actual: BTreeSet<_> =
+            reading::list_relative(checkpoint, &Path::new(ROOT).join("successors"), nodes.len())?
+                .into_iter()
+                .collect();
+        let declared: BTreeSet<_> = (1..nodes.len())
+            .map(|ordinal| std::ffi::OsString::from(format!("{ordinal:06}")))
+            .collect();
+        if actual != declared {
+            return Err(invalid(
+                "orphan or foreign successor requires metadata recovery",
+            ));
+        }
+        Ok(Self { nodes, indices })
+    }
+
+    pub(crate) fn reference(&self, configuration: usize) -> Result<StartReference, Error> {
+        self.head().reference(configuration)
+    }
+
+    pub(crate) fn has_recording_union(&self, configuration: usize) -> Result<bool, Error> {
+        self.head().has_recording_union(configuration)
+    }
+
+    pub(crate) fn recordings(
+        &self,
+    ) -> impl Iterator<Item = (usize, &crate::runner::recording::union::Descriptor)> {
+        self.head().recordings()
+    }
+
+    pub(crate) fn completed_receipt(&self, configuration: usize, slot: u64) -> Option<&Blob> {
+        self.head().completed_receipt(configuration, slot)
+    }
+
+    pub(crate) fn recording_descriptor(
+        &self,
+        configuration: usize,
+        reference: &StartReference,
+    ) -> Result<&crate::runner::recording::union::Descriptor, Error> {
+        self.node_for(reference)?
+            .recording_descriptor(configuration, reference)
+    }
+
+    pub(crate) fn recording(
+        &self,
+        configuration: usize,
+        binding: &crate::runner::recording::union::Binding,
+        evidence: &crate::runner::recording::Evidence,
+        start: &super::StartIntent,
+        plan: &Plan,
+        slot: &Slot,
+    ) -> Result<(), Error> {
+        self.node_for(&binding.reference)?.recording(
+            configuration,
+            binding,
+            evidence,
+            start,
+            plan,
+            slot,
+        )
+    }
+
+    pub(crate) fn resolve(
+        &self,
+        reference: Option<&StartReference>,
+        configuration: usize,
+        plan: &Plan,
+        slot: &Slot,
+        cohort: Option<&ExecutionCohort>,
+    ) -> Result<Resolved, Error> {
+        let node = match reference {
+            Some(reference) => self.node_for(reference)?,
+            None => &self.nodes[0],
+        };
+        node.resolve(reference, configuration, plan, slot, cohort)
+    }
+}
+
+fn validate_transition(previous: &Node, next: &Node) -> Result<(), Error> {
+    let mut progress = false;
+    for (before, after) in previous.manifests.iter().zip(&next.manifests) {
+        for entry in &before.completed {
+            let inherited = after
+                .completed
+                .binary_search_by_key(&entry.slot, |entry| entry.slot)
+                .ok()
+                .map(|index| &after.completed[index]);
+            if inherited.is_none_or(|inherited| inherited.receipt != entry.receipt) {
+                return Err(invalid("successor changed an inherited completion receipt"));
+            }
+        }
+        progress |= after.completed.len() > before.completed.len();
+    }
+    // Each node independently partitions the same original population. Once
+    // inherited receipts are preserved, every newly completed slot was pending
+    // in its predecessor, and all residual slots remain predecessor pending.
+    if !progress {
+        return Err(invalid("successor makes no completed-slot progress"));
+    }
+    Ok(())
 }
