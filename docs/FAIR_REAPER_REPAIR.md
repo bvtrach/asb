@@ -170,3 +170,53 @@ result or alter host/product policy. Existing wait_with_output collection/error
 and deadline limitations remain inherited; no broader harness-custody repair is
 claimed. No new build/runtime/full rerun has occurred on this correction; source
 review is required first. Final gates/publication remain held.
+
+## Renewed complete integrated qualification at ab877c31
+
+After independent fixture-repair approval, actual ASB was built FIRST again,
+then separately frozen at `target/qualification/fair46-ab877c31-asb`. The change
+was test-only, so its hash remains the same as full-v1 actual:
+`4916ec139fb4ebf4f62bd7c0d01fb3f3a2a08291daa7796bed8d24f025d2ff1c`.
+The corrected consent fixture passed1outer/0, exercising all11 unchanged child
+cases in0.14s, and all seven reaper tests passed7/0/0. Fresh complete locked/
+offline workspace/all-target/all-feature full-v2 exited0: **1478passed,0failed,
+21existing opt-in ignored across24outer targets**. Library1223/0/13 took22.05s;
+last unmeasured target2/0 took15.66s. The27raw summary rows include three nested
+subprocess rows, which are excluded from the24outer target count. Full-v1
+failure, its exact4916/f2ea binaries and all raw evidence remain preserved; no
+test was ignored or assertion weakened to obtain this result.
+
+Actual/frozen4916 hashes matched before/after full-v2 and after all subsequent
+make/doc/completion gates. Separate workspace/all-feature doctests passed0/0.
+Strict locked/offline workspace/all-target/all-feature Clippy passed15.38s;
+fmt/diff passed. Sequential make build passed private Rustdocs, pinned read-only
+AutoUML0.7.2, type/flow SVGs, interactive views and shell completions. Bash/Zsh
+syntax checks passed. Checkout-update tests passed7/0 (1.735s), not make update
+or mutation of the real checkout. No source edit/actual relink occurred during
+runtime; each prior handle terminated before the next compilation gate.
+
+Before packaging, the generated `.asb/install.log` was verified regular,
+nonsymlink and zero-byte, then moved recoverably with its metadata under
+`target/fixture-preservation/fair46-v2/`; only its empty parent was removed.
+All source-local target diagnostics remain intact and are absent from the
+package. Locked/offline cargo package verification exited0:512files,
+6.1MiB/1.3MiB compressed,13.27s. Archive SHA256:
+`88e847ed2f4ed463d29d16c082216533485a288b19c1ff6ebd24accd816011d1`.
+Required runtime assets, fair source/tests, runner phases and both shared fixture
+support files are included; mock-process-gate.sh is mode0755, unchanged SHA256
+`d16a2513892ab4503e31e120de3527e6125783a081e4435279da321b0382b7a2`.
+No generated target tree is packaged. Package verification relinked ordinary
+debug ASB after all full tests/gates; its separately frozen help-only copy at
+`target/qualification/fair46-ab877c31-packaged-asb` has SHA256
+`32656be1511f576a63b296d04ff4851cc930c3e9f2775de5569e19800aecb00b`.
+It passed --help only, not the full test suite. The full-qualified4916 executable
+and corresponding libtest remain frozen separately.
+
+All handles are terminal. Evidence uses `target/fair46-v2-*` build/focus/full/
+doctest/clippy/fmt/diff/make/update/package/completion logs and digest files.
+This is local offline Linux x86-64 qualification, not real permission-denied
+kernel behavior, live SDK/Docker/providers, Windows/ARM or an extracted-package
+full-suite run. The staged46 patch remains provisional: independent final proof
+review, actual310/runner45 ancestry and delivery, exact-head hosted/package CI,
+both post-merge jobs and signed release remain required. No PR/push/tag here;
+the removed90%coverage gate remains removed.
