@@ -142,3 +142,32 @@ frozen image. Default CI keeps its existing expected debug layout; this is not
 universal executable discovery. Both paths require an absolute existing file,
 and the script records the actual image's bounded streaming hash. Actual-FIRST
 build/freeze remains mandatory. No compile failure is claimed from source review.
+
+## Revised owning diagnostic local focus, source f3d6f5e3
+
+Actual ASB built FIRST13.30s, then froze as
+target/qualification/hosted-owned-f3d6f5e3-asb, SHA256
+`0c174b0fc766af6b0545f377febfcb5f10aa58a4c6b6dec2e315ef7bcbfd7462`.
+The exact owned diagnostic passed1/0/0 in0.37s using its explicit frozen-image
+override. All nine fixed declarations returned ok on LOCAL Ubuntu24;106 bounded
+loader files and the private summary remain under the printed0700 fixture.
+The gate-settled marker follows actual matching exit/QUIESCENT and the separate
+sentinel's survival/cleanup. Summary mode0600 was independently checked. No
+hosted26 cause or four-failure repair is inferred from this local control.
+Default and real BusyBox gated launch controls also passed1/0/0 each. Actual and
+frozen before/after/final hashes match; source/executable stayed frozen during
+runtime, and all handles are terminal. Post-runtime exact libtest was preserved
+as qualification/hosted-owned-f3d6f5e3-libtests, SHA256
+`3e4f4632eb4e020a21e1864c4448a863f347654a664172973d3a8df789b5c2ae`;
+there is no pre-compilation libtest stability claim.
+
+Strict locked/offline workspace/all-target/all-feature Clippy -Dwarnings passed
+15.79s; fmt/diffcheck passed. Unfiltered actionlint reported ONLY the existing
+asb-local-ci label and its older catalog's unknown ubuntu-26.04 label; full
+unfiltered transcript is retained. A second actionlint invocation ignores ONLY
+those two exact verified label warnings and passed. No other warning class is
+suppressed and no repository lint config or normal CI command is removed.
+Logs/digests use target/hosted-owned-*. This is focused harness qualification,
+not a full suite or Ubuntu26 diagnosis. No revised-source compile/runtime failure
+occurred; the historical postmerge five-failure log remains preserved. Independent
+review precedes any push/temporary hosted diagnostic execution or repair claim.
