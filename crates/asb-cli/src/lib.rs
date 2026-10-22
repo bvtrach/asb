@@ -14,6 +14,9 @@ mod evidence;
 #[path = "../tests/unit/executable_fixture_writer.rs"]
 mod executable_fixture_writer_tests;
 mod executables;
+#[cfg(test)]
+#[path = "../tests/support/fixture_namespace.rs"]
+pub(crate) mod fixture_namespace;
 #[cfg(all(test, unix))]
 #[path = "../tests/support/fixture_writer.rs"]
 pub(crate) mod fixture_writer;

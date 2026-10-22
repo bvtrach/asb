@@ -3,6 +3,61 @@
 use super::*;
 use std::io::Write;
 
+// Offered fixture input need not be consumed on already-configured hosts.
+// An early exit must still be reaped and checked before accepting EPIPE.
+#[cfg(target_os = "linux")]
+fn check_fixture_input(
+    output: &std::process::Output,
+    input: std::io::Result<()>,
+) -> Result<(), String> {
+    if !output.status.success() {
+        return Err(format!(
+            "child failed: {}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    match input {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
+        Err(error) => Err(format!("fixture stdin delivery failed: {error}")),
+    }
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn fixture_input_settlement_requires_success_even_after_early_pipe_close() {
+    use std::process::Stdio;
+    for code in [0, 7] {
+        let mut child = Command::new("/bin/sh")
+            .env_clear()
+            .args(["-c", if code == 0 { "exit 0" } else { "exit 7" }])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut input = child.stdin.take().unwrap();
+        // Waiting for this exact direct child makes the pipe closure certain,
+        // rather than depending on a fast child winning a scheduling race.
+        let output = child.wait_with_output().unwrap();
+        let error = input.write_all(b"unused offered input").unwrap_err();
+        drop(input);
+        assert_eq!(error.kind(), std::io::ErrorKind::BrokenPipe);
+        assert_eq!(check_fixture_input(&output, Err(error)).is_ok(), code == 0);
+        if code == 0 {
+            assert!(
+                check_fixture_input(
+                    &output,
+                    Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+                )
+                .is_err()
+            );
+            assert!(check_fixture_input(&output, Ok(())).is_ok());
+        }
+    }
+}
+
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 #[path = "project_proc_boundaries.rs"]
 mod proc_boundaries;
@@ -71,19 +126,10 @@ exit 0
                 .stderr(Stdio::piped())
                 .spawn()
                 .unwrap();
-            child
-                .stdin
-                .take()
-                .unwrap()
-                .write_all(input.as_bytes())
-                .unwrap();
+            let input_result = child.stdin.take().unwrap().write_all(input.as_bytes());
             let output = child.wait_with_output().unwrap();
-            assert!(
-                output.status.success(),
-                "case {case}: {}\n{}",
-                String::from_utf8_lossy(&output.stdout),
-                String::from_utf8_lossy(&output.stderr)
-            );
+            check_fixture_input(&output, input_result)
+                .unwrap_or_else(|error| panic!("case {case}: {error}"));
             assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
             if let Ok(log) = fs::read_to_string(log) {
                 assert!(

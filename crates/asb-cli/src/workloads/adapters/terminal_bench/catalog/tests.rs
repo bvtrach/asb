@@ -17,7 +17,8 @@ struct Fixture(PathBuf);
 impl Fixture {
     fn new() -> Self {
         let root =
-            std::env::temp_dir().join(TaskIdentity::local("catalog-coverage", None).attempt_id);
+            crate::fixture_namespace::allocate(&std::env::temp_dir(), "asb-terminal-catalog-")
+                .unwrap();
         for task in ["first", "second"] {
             fs::create_dir_all(root.join(format!("workloads/fixture-suite/source/tasks/{task}")))
                 .unwrap();
@@ -58,7 +59,7 @@ impl Fixture {
         fs::create_dir_all(root.join("venv/bin")).unwrap();
         for name in ["python", "tb"] {
             let path = root.join("venv/bin").join(name);
-            fs::write(&path, content).unwrap();
+            crate::write_test_file(&self.0, &path, content).unwrap();
             fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
         }
         root
@@ -66,6 +67,9 @@ impl Fixture {
 }
 impl Drop for Fixture {
     fn drop(&mut self) {
+        #[cfg(unix)]
+        let _ = crate::fixture_writer::cleanup(&self.0);
+        #[cfg(not(unix))]
         let _ = fs::remove_dir_all(&self.0);
     }
 }
@@ -218,7 +222,12 @@ fn local_install_verifies_runtime_and_catalog_without_fetching_or_replacing_subs
         "verified local catalogs must not download"
     );
     assert!(runtime_available(&ADAPTER, &tool).unwrap());
-    fs::write(tool.join("venv/bin/python"), "#!/bin/sh\nexit 7\n").unwrap();
+    crate::write_test_file(
+        &fixture.0,
+        &tool.join("venv/bin/python"),
+        "#!/bin/sh\nexit 7\n",
+    )
+    .unwrap();
     assert!(!runtime_available(&ADAPTER, &tool).unwrap());
     fs::remove_file(tool.join("venv/bin/python")).unwrap();
     assert!(runtime_available(&ADAPTER, &tool).is_err());
