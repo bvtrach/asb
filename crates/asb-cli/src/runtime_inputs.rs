@@ -517,7 +517,7 @@ mod tests {
     }
 
     #[test]
-    fn duplex_response_bounds_and_silent_active_deadlines_are_enforced() {
+    fn exact_response_byte_bound_accepts_limit_and_rejects_one_byte_over() {
         for (source, accepted) in [
             (
                 "import sys\nsys.stdin.buffer.read()\nsys.stdout.write('{\"schema_version\":1,\"paths\":[]}'+ ' '*(4*1024*1024-31))\n",
@@ -527,16 +527,67 @@ mod tests {
                 "import sys\nsys.stdin.buffer.read()\nsys.stdout.write('x'*(4*1024*1024+1))\n",
                 false,
             ),
-            ("import time\ntime.sleep(30)\n", false),
-            ("import os\nwhile True: os.write(1,b'x'*16384)\n", false),
+        ] {
+            let root = Directory::new();
+            let python = helper(&root, source);
+            let receipts = crate::process_cleanup::test_support::Scope::new();
+            let result = discover_with_timeout(&python, &[], Duration::from_secs(2));
+            receipts.wait_finished();
+            if accepted {
+                assert!(result.unwrap().is_empty());
+            } else {
+                assert!(
+                    result
+                        .unwrap_err()
+                        .to_string()
+                        .contains("response exceeds its byte bound")
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn duplex_response_bounds_and_silent_active_deadlines_are_enforced() {
+        for source in [
+            "import sys\nsys.stdin.buffer.read()\nsys.stdout.write('x'*(4*1024*1024+1))\n",
+            "import time\ntime.sleep(30)\n",
+            "import os\nwhile True: os.write(1,b'x'*16384)\n",
         ] {
             let root = Directory::new();
             let python = helper(&root, source);
             let started = Instant::now();
             let result = discover_with_timeout(&python, &[], Duration::from_millis(300));
-            assert_eq!(result.is_ok(), accepted, "{result:?}");
+            assert!(result.is_err(), "{result:?}");
             assert!(started.elapsed() < Duration::from_secs(2));
         }
+    }
+
+    #[test]
+    fn continuous_small_responses_do_not_reset_the_absolute_deadline() {
+        let root = Directory::new();
+        let marker = root.0.join("output-progress");
+        let python = helper(
+            &root,
+            &format!(
+                "import os,pathlib,sys,time\nsys.stdin.buffer.read()\nfor index in range(300):\n os.write(1,b'x')\n with pathlib.Path({}).open('ab',buffering=0) as progress: progress.write(b'x')\n time.sleep(.01)\n",
+                serde_json::to_string(&marker).unwrap()
+            ),
+        );
+        let receipts = crate::process_cleanup::test_support::Scope::new();
+        let started = Instant::now();
+        let error = discover_with_timeout(&python, &[], Duration::from_millis(300))
+            .unwrap_err()
+            .to_string();
+        let elapsed = started.elapsed();
+        receipts.wait_finished();
+        let bytes = std::fs::read(&marker).unwrap().len();
+        assert!(
+            (2..=300).contains(&bytes),
+            "actual output progress: {bytes}"
+        );
+        assert!(error.contains("exchange deadline exceeded"), "{error}");
+        assert!(!error.contains("response exceeds its byte bound"));
+        assert!(elapsed < Duration::from_secs(2));
     }
 
     #[test]

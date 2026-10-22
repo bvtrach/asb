@@ -316,3 +316,27 @@ test compares actual directory dev/inode identities, preserves a preexisting
 candidate sentinel, checks64-collision exhaustion/sentinels and one-attempt
 non-AlreadyExists failure. This source awaits focused execution and review.
 Untracked generated .asb and artifact target evidence remain preserved.
+
+## Stopped allocator full and response-bound fixture separation
+
+Source f8e11fdb actual-first build and six integration targets passed188/0/5ignored;
+the same-clock allocator test ran in each. Strict Clippy/fmt/diff passed.
+The next authorized full stopped EXIT101 in the library1208/1/13ignored:
+the valid exact4MiB response returned "local helper exchange deadline exceeded"
+under the table's300ms budget. Evidence is `target/fixture-allocator-full.log`;
+actual/frozen68f6 stayed equal. Frozen failed library
+`target/qualification/fixture-allocator-f8e11fdb-failed-libtests` SHA256
+`fa59f706c7b59d944acd0aa2c34f9564f1caab33144a1449cb726ff582089baf`.
+No unchanged-head rerun or subsequent gates occurred; no historical scheduling
+cause is claimed.
+
+The approved test-only split separates byte-limit correctness from deadline
+rejection: exact4MiB acceptance and one-byte-over rejection get fixed2s (the
+neighboring healthy request budget), with the overflow required to report the
+actual response byte bound, not any deadline error. All original three negative
+controls remain300ms and must return within2s. A new continuously active child
+emits at most300 one-byte writes with10ms cadence, append-only records actual
+progress, and must fail specifically on the absolute deadline, not byte bound.
+Actual reaper receipts settle before marker assertions. No production limits,
+admission/cleanup policy, retry, skip or suite serialization changed. This
+signed source checkpoint precedes its next focused execution/review.
