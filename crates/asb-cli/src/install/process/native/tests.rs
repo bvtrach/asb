@@ -243,7 +243,7 @@ fn log_fault_phases_distinguish_namespace_open_start_and_flush() {
     let root = root();
     let foreign = root.join("foreign");
     fs::write(&foreign, "keep foreign bytes").unwrap();
-    let mut namespace = LogSink::new(&foreign, None);
+    let namespace = LogSink::new(&foreign, None);
     namespace.push(b"inert-not-retained");
     let namespace = namespace.finish();
     assert!(namespace.settled, "a never-started writer is not pending");
@@ -280,7 +280,7 @@ fn log_fault_phases_distinguish_namespace_open_start_and_flush() {
             assert_eq!(fs::read(log).unwrap(), b"keep arriving bytes");
         }
     }
-    let mut missing_worker = LogSink::new_inner(&root, None, Some(io::ErrorKind::Other));
+    let missing_worker = LogSink::new_inner(&root, None, Some(io::ErrorKind::Other));
     missing_worker.push(b"inert-not-written");
     let missing_worker = missing_worker.finish();
     assert!(missing_worker.settled);
