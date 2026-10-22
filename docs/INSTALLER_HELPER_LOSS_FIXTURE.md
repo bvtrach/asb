@@ -29,3 +29,28 @@ only a verified-idle own custom debug cache may seed this new checkout's own
 target; copied artifacts are not qualification. Actual ASB must be built FIRST
 from this owning49 source, Cargo JSON selected, frozen and hashed before the
 complete actual TUI fixture executes. No public version allocation or delivery.
+
+## Observed inherited failure-log assertion and owning correction
+
+The actual owning49 build passed15.10s; Cargo JSON selected the actual image,
+frozen as target/qualification/helper49-asb with SHA256
+54ccb286616b56ae43b9a6fbf69e035e1c9f3f3a9d877d9b165caf07a01f490d.
+The first complete direct fixture stopped BEFORE helper-loss at the unchanged
+legacy secret-in-project-log assertion (target/helper49-ancestry.log). No later
+runtime or strict gate was run past that first failure.
+
+Root authorized one persistent fail-only diagnostic, not a blind rerun. Its
+owned namespace target/diagnosis/fail-cenvszrn/case and transcript
+target/helper49-fail-diagnosis.log remain. Actual project install.log contains
+the original package-install category, real exit7 and repair hint; exact raw
+stderr is preserved in the owned step output.log with mode0600. The separate
+node probe log also has mode0600. Actual/frozen image hashes remained stable.
+
+Only the failure-action assertion now checks that actual summary and its
+absence of raw secret, plus exactly one matching private raw capture among at
+most eight known step logs. Reads are bounded; files are opened NOFOLLOW and
+must be regular0600. Existing secret absence on the terminal/stderr remains.
+This is owning49's unchanged logging policy, intentionally different from the
+custom-publication helper's explicit unavailable-detail/no-project-log policy.
+No production error retention is weakened or resurrected for an obsolete test.
+Fresh actual-FIRST and complete fixture qualification remain required.

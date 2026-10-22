@@ -8,6 +8,7 @@ import select
 import signal
 import shutil
 import socket
+import stat
 import struct
 import subprocess
 import sys
@@ -193,7 +194,27 @@ def tui(binary, root, action):
         if action in ["success", "replacement"]:
             assert (root / ".asb-tools/pi/node_modules/.bin/pi").is_file()
         if action == "fail":
-            assert b"credential-looking-value" in (root / ".asb/install.log").read_bytes()
+            with (root / ".asb/install.log").open("rb") as stream:
+                summary = stream.read(4097)
+            assert len(summary) <= 4096
+            assert b"agent package installation failed (exit status: 7)" in summary
+            assert b"verify the prerequisite tool and rerun `asb tool install`" in summary
+            assert b"credential-looking-value" not in summary
+            captures = list(root.glob(".asb-install-step-*/output.log"))
+            assert 0 < len(captures) <= 8, captures
+            failures = 0
+            for capture in captures:
+                descriptor = os.open(capture, os.O_RDONLY | os.O_NOFOLLOW)
+                try:
+                    metadata = os.fstat(descriptor)
+                    assert stat.S_ISREG(metadata.st_mode)
+                    assert stat.S_IMODE(metadata.st_mode) == 0o600
+                    content = os.read(descriptor, 1025)
+                    assert len(content) <= 1024
+                    failures += content == b"fixture failure with secret credential-looking-value\n"
+                finally:
+                    os.close(descriptor)
+            assert failures == 1
         if action == "helper-loss":
             assert helper_signalled
             assert b"missing final status" in transcript, transcript[-2000:]
