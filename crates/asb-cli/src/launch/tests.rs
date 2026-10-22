@@ -182,9 +182,6 @@ fn non_utf8_executable_arguments_and_explicit_client_arg0_are_preserved() {
         std::env::var_os("ASB_TEST_MULTICALL_ECHO_IMAGE").unwrap_or_else(|| "/bin/echo".into());
     std::fs::copy(image, &client).unwrap();
     let mut launch = ProcessLaunch::new(&client);
-    // Multicall implementations dispatch on argv[0], independently of the
-    // non-UTF8 executable pathname and argument bytes under test here.
-    launch.arg0("echo");
     launch.arg(OsStr::from_bytes(b"argument-\xfe"));
     let (command, route) = launch.native(Some(&binary()));
     let target = route.target(&command);

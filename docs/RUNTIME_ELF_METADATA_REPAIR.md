@@ -1,4 +1,4 @@
-# ELF metadata discovery and portable native launch fixtures
+# Bounded ELF metadata discovery
 
 This repair separates two existing responsibilities: discovering a native
 runtime's loader/library identity and copying its complete payload into an owned
@@ -16,6 +16,11 @@ discovery error before the repair. The repaired production discovery path accept
 that exact class of executable. This reproducer establishes the size defect; it
 does not assert an observed byte size for the earlier hosted binary.
 
+During this work, PR #312 merged the observed Ubuntu 26 loader-format and
+offline-Python-prerequisite repairs into main. Those are retained unchanged;
+this is a separate oversized-metadata defect and is not presented as the
+established cause of the historical hosted failures.
+
 `asb_runtime.elf_identity` now reads only ELF64 identity/program/interpreter
 headers from one pinned regular descriptor. A shared parser preserves the full
 payload reader's format/type/version/architecture validation and bounds all
@@ -31,12 +36,6 @@ pre-parse mutation check. It uses the same header parser on the already-open
 descriptor and checks stability again afterward, without allocating another
 payload-sized metadata buffer. Runtime declaration discovery uses the metadata
 reader; complete keyed input fingerprints and guest staging remain independent.
-
-The hosted non-UTF8 launch fixture had an independent portability problem:
-its copied `/bin/echo` was a multicall implementation selecting an applet from
-`argv[0]`. The fixture now supplies `echo` as that logical name while retaining
-the non-UTF8 executable pathname and argument assertions. The separate explicit
-non-UTF8 `argv[0]` assertion is unchanged.
 
 ## Extensible qualification
 
