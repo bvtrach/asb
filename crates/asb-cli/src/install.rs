@@ -9,9 +9,9 @@ use crate::workloads;
 use std::fs::{self, OpenOptions};
 use std::io;
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
 #[cfg(test)]
-use std::process::{Command, ExitStatus};
+use std::process::Command;
+use std::process::Stdio;
 
 pub(crate) mod operation;
 pub(crate) mod process;
@@ -49,16 +49,11 @@ const NPM_INSTALL_MANIFEST: &str = r#"{
 
 #[cfg(test)]
 pub(crate) trait LoggedStatus {
-    fn logged_status(&mut self) -> io::Result<ExitStatus>;
     fn logged_spawn(&mut self) -> io::Result<std::process::Child>;
 }
 
 #[cfg(test)]
 impl LoggedStatus for Command {
-    fn logged_status(&mut self) -> io::Result<ExitStatus> {
-        self.logged_spawn()?.wait()
-    }
-
     fn logged_spawn(&mut self) -> io::Result<std::process::Child> {
         project::apply_network_proxy(self, Path::new("."))
             .map_err(|error| io::Error::other(error.to_string()))?;
@@ -1180,31 +1175,6 @@ pub(crate) fn verify_sha256_preserving(
         label,
         source::MAX_SOURCE_BYTES,
     )
-}
-
-#[cfg(test)]
-pub(crate) fn command_output<S: AsRef<std::ffi::OsStr>>(
-    program: &Path,
-    args: &[S],
-    label: &str,
-) -> Result<String, Error> {
-    let output = Command::new(program)
-        .args(args)
-        .output()
-        .map_err(|error| Error::Io(format!("cannot inspect {label}: {error}")))?;
-    if !output.status.success() {
-        return Err(Error::Io(format!(
-            "cannot inspect {label}: command exited with {}",
-            output.status
-        )));
-    }
-    let text = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-    if text.is_empty() {
-        return Err(Error::Io(format!(
-            "cannot inspect {label}: command returned no output"
-        )));
-    }
-    Ok(text)
 }
 
 pub(crate) fn command_output_in<S: AsRef<std::ffi::OsStr>>(

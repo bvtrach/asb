@@ -1,6 +1,6 @@
-//! Observed-red fixtures for the old raw installer API. No production repair.
+//! Original observed-red obligations, now exercising the typed installer API.
 //!
-//! Every raw call runs inside a separately admitted actual ASB guardian. The
+//! Every call runs inside a separately admitted actual ASB guardian. The
 //! parent watchdog owns that gate, its complete descendant tree and a distinct
 //! sentinel gate. Failure assertions run only after matching cleanup receipts.
 use super::*;
@@ -9,7 +9,7 @@ use crate::process_gate::{Admission, ManagedGate};
 use std::time::{Duration, Instant};
 
 const CHILD: &str = "ASB_INSTALL_BOUNDARY_RED_CHILD";
-const OBSERVATION: Duration = Duration::from_millis(500);
+const OBSERVATION: Duration = Duration::from_secs(3);
 const INSPECTION_BYTES: usize = 4096;
 
 struct Harness {
@@ -73,6 +73,9 @@ impl Harness {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
+        if let Some(profile) = std::env::var_os("LLVM_PROFILE_FILE") {
+            command.env("LLVM_PROFILE_FILE", profile);
+        }
         let mut gate = Admission::new(route.validate_gate(&mut command).unwrap())
             .unwrap()
             .spawn()
@@ -162,20 +165,36 @@ fn child(case: &str) -> bool {
     let python = PathBuf::from(std::env::var_os("ASB_INSTALL_BOUNDARY_PYTHON").unwrap());
     let root = std::env::current_dir().unwrap();
     let helper = root.join("helper.py");
-    let value = match case {
-        "stuck" | "mutating" => {
-            let result = Command::new(python).arg(&helper).arg(case).logged_status();
-            serde_json::json!({"returned":true,"error":result.is_err(),"success":result.as_ref().is_ok_and(|status|status.success())})
+    let mut config = crate::project::ProjectConfig::default();
+    config.installation.operation_timeout_seconds = 1;
+    let context = OperationContext::new(&root, &config).unwrap();
+    let directory = ProducerDirectory::open(&root).unwrap();
+    let mut scope = directory.scope(&context);
+    let mut step = scope
+        .prepare(&python, Purpose::Probe, "original boundary obligation")
+        .unwrap();
+    step.command_mut()
+        .arg(&helper)
+        .arg(case)
+        .current_dir(&root)
+        .stdin(Stdio::null());
+    if matches!(case, "pipes" | "overflow") {
+        step.capture(super::process::Capture::Inspect {
+            stream_bytes: INSPECTION_BYTES,
+            total_bytes: INSPECTION_BYTES * 2,
+        });
+    }
+    let value = match scope.run(step) {
+        Ok(result) => {
+            directory.consume(scope.finish().unwrap()).unwrap();
+            serde_json::json!({"returned":true,"error":false,"success":result.status.success(),
+                "status":result.status.to_string(),"bytes":result.stdout.len(),"cleanup_confirmed":true})
         }
-        "pipes" | "overflow" => {
-            let result = command_output(
-                &python,
-                &[helper.as_os_str(), std::ffi::OsStr::new(case)],
-                "owned red fixture",
-            );
-            serde_json::json!({"returned":true,"error":result.is_err(),"bytes":result.as_ref().map(String::len).ok()})
-        }
-        _ => unreachable!(),
+        Err(InstallFailure::Abort(abort)) => serde_json::json!({"returned":true,"error":true,
+            "success":false,"status":null,"cause":format!("{:?}",abort.cause),
+            "cleanup_confirmed":abort.cleanup_confirmed,"capture_complete":abort.capture_complete}),
+        Err(InstallFailure::Ordinary(_)) => serde_json::json!({"returned":true,"error":true,
+            "success":false,"status":null,"cause":"ordinary","cleanup_confirmed":false}),
     };
     fs::write(
         root.join(".returned.tmp"),
@@ -184,7 +203,7 @@ fn child(case: &str) -> bool {
     .unwrap();
     fs::rename(root.join(".returned.tmp"), root.join("returned.json")).unwrap();
     // Stay alive until the explicit watchdog settles the whole tree, so an
-    // outer normal exit cannot hide the legacy orphan-writer race.
+    // outer normal exit cannot hide any orphan-writer regression.
     loop {
         std::thread::sleep(Duration::from_millis(20));
     }
@@ -199,17 +218,26 @@ fn status_step_requires_a_bounded_wait_and_owned_cleanup() {
         "stuck",
         "install::process_boundary_red::status_step_requires_a_bounded_wait_and_owned_cleanup",
     );
+    let started = owner.await_file("helper-ready", Duration::from_secs(5));
+    let returned = started && owner.await_file("returned.json", OBSERVATION);
+    owner.settle();
     assert!(
-        owner.await_file("helper-ready", Duration::from_secs(5)),
+        started,
         "fixture helper did not start: {}",
         owner.root.display()
     );
-    let returned = owner.await_file("returned.json", OBSERVATION);
-    owner.settle();
     assert!(
         returned,
-        "legacy LoggedStatus waited beyond the fixture deadline; owned watchdog cleaned the actual stuck helper: {}",
+        "typed status exceeded its operation deadline; owned watchdog cleaned the actual stuck helper: {}",
         owner.root.display()
+    );
+    let result: serde_json::Value =
+        serde_json::from_slice(&fs::read(owner.root.join("returned.json")).unwrap()).unwrap();
+    assert_eq!(result["cause"], "Deadline");
+    assert_eq!(result["cleanup_confirmed"], true);
+    assert!(
+        result["status"].is_null(),
+        "Abort invented a process exit status"
     );
 }
 
@@ -222,30 +250,29 @@ fn status_return_must_not_leave_a_descendant_writer_mutating_staging() {
         "mutating",
         "install::process_boundary_red::status_return_must_not_leave_a_descendant_writer_mutating_staging",
     );
-    assert!(
-        owner.await_file("helper-ready", Duration::from_secs(5)),
-        "fixture did not start"
-    );
-    assert!(
-        owner.await_file("returned.json", Duration::from_secs(2)),
-        "fixture status did not return"
-    );
+    let started = owner.await_file("helper-ready", Duration::from_secs(5));
+    let returned = started && owner.await_file("returned.json", OBSERVATION);
+    let initial = fs::read_to_string(owner.root.join("stage")).ok();
+    let released = fs::write(owner.root.join("release-writer"), "release").is_ok();
+    let mutated = owner.await_file("writer-mutated", Duration::from_millis(500));
+    owner.settle();
+    assert!(started, "fixture did not start");
+    assert!(returned, "fixture status did not return");
     let result: serde_json::Value =
         serde_json::from_slice(&fs::read(owner.root.join("returned.json")).unwrap()).unwrap();
     assert_eq!(
-        result["success"], true,
-        "the raw direct principal must have returned a real exit zero"
+        result["success"], false,
+        "direct principal exit zero cannot authorize a still-live descendant"
     );
-    assert_eq!(
-        fs::read_to_string(owner.root.join("stage")).unwrap(),
-        "initial"
-    );
-    fs::write(owner.root.join("release-writer"), "release").unwrap();
-    let mutated = owner.await_file("writer-mutated", OBSERVATION);
-    owner.settle();
+    assert!(owner.root.join("principal-exiting-zero").is_file());
+    assert_eq!(result["cause"], "Deadline");
+    assert_eq!(result["cleanup_confirmed"], true);
+    assert!(result["status"].is_null());
+    assert_eq!(initial.as_deref(), Some("initial"));
+    assert!(released);
     assert!(
         !mutated,
-        "raw status succeeded before descendant quiescence; owned writer changed staging after return: {}",
+        "typed status returned before descendant quiescence; owned writer changed staging after return: {}",
         owner.root.display()
     );
 }
@@ -259,17 +286,20 @@ fn inspection_must_bound_inherited_pipe_lifetime_after_principal_exit() {
         "pipes",
         "install::process_boundary_red::inspection_must_bound_inherited_pipe_lifetime_after_principal_exit",
     );
-    assert!(
-        owner.await_file("helper-ready", Duration::from_secs(5)),
-        "fixture did not start"
-    );
-    let returned = owner.await_file("returned.json", OBSERVATION);
+    let started = owner.await_file("helper-ready", Duration::from_secs(5));
+    let returned = started && owner.await_file("returned.json", OBSERVATION);
     owner.settle();
+    assert!(started, "fixture did not start");
     assert!(
         returned,
-        "raw command_output waited for an orphan's inherited pipe, not its exited principal: {}",
+        "typed inspection exceeded the operation deadline while an orphan held its pipe: {}",
         owner.root.display()
     );
+    let result: serde_json::Value =
+        serde_json::from_slice(&fs::read(owner.root.join("returned.json")).unwrap()).unwrap();
+    assert_eq!(result["cause"], "Deadline");
+    assert_eq!(result["cleanup_confirmed"], true);
+    assert!(result["status"].is_null());
 }
 
 #[test]
@@ -281,22 +311,21 @@ fn inspection_must_reject_output_exceeding_its_declared_byte_budget() {
         "overflow",
         "install::process_boundary_red::inspection_must_reject_output_exceeding_its_declared_byte_budget",
     );
-    assert!(
-        owner.await_file("helper-ready", Duration::from_secs(5)),
-        "fixture did not start"
-    );
-    assert!(
-        owner.await_file("returned.json", Duration::from_secs(2)),
-        "finite overflow helper did not return"
-    );
+    let started = owner.await_file("helper-ready", Duration::from_secs(5));
+    let returned = started && owner.await_file("returned.json", OBSERVATION);
+    owner.settle();
+    assert!(started, "fixture did not start");
+    assert!(returned, "finite overflow helper did not return");
     let result: serde_json::Value =
         serde_json::from_slice(&fs::read(owner.root.join("returned.json")).unwrap()).unwrap();
-    owner.settle();
     assert_eq!(
         result["error"],
         true,
-        "legacy command_output accepted {} bytes with no way to enforce the fixture's {INSPECTION_BYTES}-byte budget: {}",
+        "typed inspection accepted {} bytes beyond the fixture's {INSPECTION_BYTES}-byte budget: {}",
         result["bytes"],
         owner.root.display()
     );
+    assert_eq!(result["cause"], "CaptureOverflow");
+    assert_eq!(result["cleanup_confirmed"], true);
+    assert!(result["status"].is_null());
 }
