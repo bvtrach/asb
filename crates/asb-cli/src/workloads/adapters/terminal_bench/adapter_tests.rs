@@ -22,6 +22,11 @@ impl Fixture {
             ..Default::default()
         };
         fs::create_dir_all(root.join(".asb/attempts")).unwrap();
+        fs::write(
+            root.join(".asb/project.toml"),
+            toml::to_string(&project).unwrap(),
+        )
+        .unwrap();
         fs::create_dir_all(root.join("workspace")).unwrap();
         let root = root.canonicalize().unwrap();
         let installed = root.join("workloads").join(adapter.id);
@@ -189,6 +194,13 @@ fn preparation_checks_selection_runtime_and_allocation_before_any_task_launch() 
             .join(adapter.engine.tool())
             .join("venv/bin/python");
         fs::create_dir_all(interpreter.parent().unwrap()).unwrap();
+        assert_eq!(
+            crate::install::OperationContext::load(interpreter.parent().unwrap())
+                .unwrap()
+                .root(),
+            fixture.root,
+            "the real runtime probe must resolve this initialized private project"
+        );
         symlink("/bin/false", &interpreter).unwrap();
         assert!(reason(&context).contains("installed evaluator runtime is incomplete"));
         fs::remove_file(&interpreter).unwrap();
@@ -198,6 +210,22 @@ fn preparation_checks_selection_runtime_and_allocation_before_any_task_launch() 
         assert_eq!(
             reason(&context),
             "fixture refuses allocation before process launch"
+        );
+        #[cfg(target_os = "linux")]
+        assert_eq!(
+            fs::read_dir(&fixture.root)
+                .unwrap()
+                .filter(|entry| {
+                    let entry = entry.as_ref().unwrap();
+                    entry
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with(".asb-install-step-")
+                        && entry.path().join("output.log").is_file()
+                })
+                .count(),
+            2,
+            "both evaluator diagnostics stay in this adapter's private project"
         );
         assert!(
             !fixture

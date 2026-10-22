@@ -16,8 +16,11 @@ const ADAPTER: TerminalBenchAdapter = TerminalBenchAdapter {
 struct Fixture(PathBuf);
 impl Fixture {
     fn new() -> Self {
-        let root =
-            std::env::temp_dir().join(TaskIdentity::local("catalog-coverage", None).attempt_id);
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/catalog-coverage-fixtures")
+            .join(TaskIdentity::local("catalog-coverage", None).attempt_id);
+        fs::create_dir_all(root.join(".asb")).unwrap();
+        fs::write(root.join(".asb/project.toml"), "").unwrap();
         for task in ["first", "second"] {
             fs::create_dir_all(root.join(format!("workloads/fixture-suite/source/tasks/{task}")))
                 .unwrap();
@@ -222,6 +225,29 @@ fn local_install_verifies_runtime_and_catalog_without_fetching_or_replacing_subs
         !fixture.0.join(".asb-cache").exists(),
         "verified local catalogs must not download"
     );
+    assert_eq!(
+        crate::install::OperationContext::load(&tool)
+            .unwrap()
+            .root(),
+        fixture.0,
+        "legacy runtime lookup must resolve this initialized private project"
+    );
+    #[cfg(target_os = "linux")]
+    let diagnostic_count = || {
+        fs::read_dir(&fixture.0)
+            .unwrap()
+            .filter(|entry| {
+                let entry = entry.as_ref().unwrap();
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".asb-install-step-")
+                    && entry.path().join("output.log").is_file()
+            })
+            .count()
+    };
+    #[cfg(target_os = "linux")]
+    let before = diagnostic_count();
     assert!(runtime_available(&ADAPTER, &tool).unwrap());
     fs::write(tool.join("venv/bin/python"), "#!/bin/sh\nexit 7\n").unwrap();
     assert!(!runtime_available(&ADAPTER, &tool).unwrap());
@@ -244,6 +270,12 @@ fn local_install_verifies_runtime_and_catalog_without_fetching_or_replacing_subs
     }
     #[cfg(not(target_os = "linux"))]
     assert!(!missing.is_empty()); // Keep native direct-exec error semantics.
+    #[cfg(target_os = "linux")]
+    assert_eq!(
+        diagnostic_count() - before,
+        3,
+        "all three legacy probe diagnostics remain fixture-owned; the missing executable never launches"
+    );
 }
 
 #[cfg(unix)]

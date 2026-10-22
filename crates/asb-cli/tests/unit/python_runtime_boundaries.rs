@@ -45,16 +45,44 @@ fn environment_preservation_keeps_previous_backups_and_dangling_links() {
 
 #[test]
 fn noninterpreters_and_missing_programs_are_not_accepted_as_python() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/python-probe-fixtures")
+        .join(crate::workloads::TaskIdentity::local("fixture", None).attempt_id);
+    fs::create_dir_all(&root).unwrap();
+    let root = root.canonicalize().unwrap();
+    let context = OperationContext::new(&root, &project::ProjectConfig::default()).unwrap();
+    assert_eq!(context.root(), root);
     for executable in [
         "/bin/true",
         "/bin/false",
         "/bin/echo",
         "/asb-fixture-missing-python",
     ] {
-        assert!(version(Path::new(executable)).is_none(), "{executable}");
+        assert!(
+            version(&context, Path::new(executable)).is_none(),
+            "{executable}"
+        );
         assert!(!matches_project(
+            &context,
             Path::new(executable),
             Path::new("/bin/true")
         ));
     }
+    #[cfg(target_os = "linux")]
+    {
+        let logs = fs::read_dir(&root)
+            .unwrap()
+            .map(|entry| entry.unwrap().path().join("output.log"))
+            .collect::<Vec<_>>();
+        assert_eq!(logs.len(), 6, "all six diagnostics belong to this fixture");
+        assert!(logs.iter().all(|path| path.is_file()));
+        assert_eq!(
+            logs.iter()
+                .filter(|path| !fs::read(path).unwrap().is_empty())
+                .count(),
+            2,
+            "the two echo probes retain their real diagnostics"
+        );
+    }
+    fs::remove_dir_all(root).unwrap();
 }

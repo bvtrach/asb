@@ -72,23 +72,19 @@ pub(crate) fn matches_project_in(
 }
 
 #[cfg(test)]
-fn version(executable: &Path) -> Option<(u32, u32)> {
-    let context = OperationContext::load(Path::new(".")).ok()?;
+fn version(context: &OperationContext, executable: &Path) -> Option<(u32, u32)> {
     let owner = ProducerDirectory::open(context.root()).ok()?;
-    let mut scope = owner.scope(&context);
+    let mut scope = owner.scope(context);
     let result = version_in(&mut scope, executable).ok()?;
     owner.consume(scope.finish().ok()?).ok()?;
     result
 }
 #[cfg(test)]
-fn matches_project(executable: &Path, project_python: &Path) -> bool {
-    let Ok(context) = OperationContext::load(Path::new(".")) else {
-        return false;
-    };
+fn matches_project(context: &OperationContext, executable: &Path, project_python: &Path) -> bool {
     let Ok(owner) = ProducerDirectory::open(context.root()) else {
         return false;
     };
-    let mut scope = owner.scope(&context);
+    let mut scope = owner.scope(context);
     let result = matches_project_in(&mut scope, executable, project_python);
     let settled = scope
         .finish()
