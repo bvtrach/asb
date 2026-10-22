@@ -1131,8 +1131,14 @@ fn ordinary_preexec_failure_must_retain_actual_stage_after_observer_release() {
                 executable: false,
             },
             move |path, scope| {
-                let weak = Arc::downgrade(scope.lease._owner.as_ref().unwrap());
-                owner_send.send((path.to_owned(), weak)).unwrap();
+                let completion = scope
+                    .lease
+                    ._owner
+                    .as_ref()
+                    .unwrap()
+                    .drop_completion()
+                    .unwrap();
+                owner_send.send((path.to_owned(), completion)).unwrap();
                 let mut step = scope.prepare("/bin/sh", Purpose::Probe, "preexec failure")?;
                 step.command_mut()
                     .current_dir(&command_root)
@@ -1178,7 +1184,7 @@ fn ordinary_preexec_failure_must_retain_actual_stage_after_observer_release() {
         );
         let _ = send.send(result);
     });
-    let (raw, weak) = owner_receive.recv_timeout(Duration::from_secs(5)).unwrap();
+    let (raw, completion) = owner_receive.recv_timeout(Duration::from_secs(5)).unwrap();
     let end = Instant::now() + Duration::from_secs(5);
     while !reached.load(Ordering::Acquire) {
         if Instant::now() >= end {
@@ -1196,10 +1202,10 @@ fn ordinary_preexec_failure_must_retain_actual_stage_after_observer_release() {
     assert!(sentinel.0.try_wait().unwrap().is_none());
     drop(releasing);
     let end = Instant::now() + Duration::from_secs(5);
-    while weak.upgrade().is_some() {
+    while !completion.load(Ordering::Acquire) {
         assert!(
             Instant::now() < end,
-            "actual observer did not release its Stage"
+            "actual Stage destructor did not finish"
         );
         std::thread::sleep(Duration::from_millis(2));
     }
@@ -1215,4 +1221,74 @@ fn ordinary_preexec_failure_must_retain_actual_stage_after_observer_release() {
     );
     assert_eq!(fs::read(destination).unwrap(), b"old installed bytes");
     assert!(!root.join("forbidden-client").exists());
+}
+
+#[test]
+fn local_validation_abort_and_cancel_must_retain_raw_after_actual_stage_drop() {
+    let root = root();
+    let mut violations = Vec::new();
+    for explicit_abort in [false, true] {
+        let directory = root.join(if explicit_abort {
+            "explicit-abort"
+        } else {
+            "cancel"
+        });
+        fs::create_dir(&directory).unwrap();
+        let context = context(&directory);
+        let source = directory.join("input");
+        let destination = directory.join("installed");
+        fs::write(&source, "new local bytes").unwrap();
+        fs::write(&destination, "old local bytes").unwrap();
+        let mut owned = None;
+        let result = crate::install::source::install_input_in(
+            &context,
+            &crate::install::source::Input::pin_local(source).unwrap(),
+            &destination,
+            crate::install::source::Options {
+                kind: "local validation abort fixture",
+                limit: 4096,
+                checksum: None,
+                executable: false,
+            },
+            |path, scope| {
+                let completion = scope
+                    .lease
+                    ._owner
+                    .as_ref()
+                    .unwrap()
+                    .drop_completion()
+                    .unwrap();
+                owned = Some((path.to_owned(), completion));
+                if explicit_abort {
+                    Err(context.custody_failure("explicit validation abort fixture", path))
+                } else {
+                    context.cancel();
+                    Ok(())
+                }
+            },
+            crate::install::source::Publication::Replace,
+        );
+        let (raw, completion) = owned.unwrap();
+        assert!(
+            completion.load(Ordering::Acquire),
+            "local Stage destructor did not finish"
+        );
+        if !matches!(result, Err(InstallFailure::Abort(_))) || !raw.exists() {
+            violations.push(if explicit_abort {
+                "explicit-abort"
+            } else {
+                "cancel"
+            });
+        }
+        assert_eq!(fs::read(destination).unwrap(), b"old local bytes");
+    }
+    fs::write(
+        root.join("local-abort-drop-confirmed"),
+        format!("violations: {violations:?}"),
+    )
+    .unwrap();
+    assert!(
+        violations.is_empty(),
+        "local typed Abort deleted actual raw after final Drop: {violations:?}"
+    );
 }

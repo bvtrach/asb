@@ -284,6 +284,10 @@ pub(crate) trait ProducerOwner: Send + Sync {
     fn observation(self: Arc<Self>) -> Option<ObservationCheck> {
         None
     }
+    #[cfg(test)]
+    fn drop_completion(&self) -> Option<Arc<AtomicBool>> {
+        None
+    }
 }
 pub(crate) type ObservationCheck = Box<dyn FnMut() -> Result<(), String> + Send>;
 

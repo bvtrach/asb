@@ -84,6 +84,17 @@ pub(in crate::install) struct Staging {
     producer: crate::install::process::ProducerState,
     producer_quiet: std::sync::atomic::AtomicBool,
     monitor: std::sync::OnceLock<ProducerMonitor>,
+    // Last field: test receipt follows the Drop body AND all resource fields.
+    #[cfg(test)]
+    drop_completion: DropCompletion,
+}
+#[cfg(test)]
+struct DropCompletion(std::sync::Arc<std::sync::atomic::AtomicBool>);
+#[cfg(test)]
+impl Drop for DropCompletion {
+    fn drop(&mut self) {
+        self.0.store(true, std::sync::atomic::Ordering::Release);
+    }
 }
 struct ProducerMonitor {
     kind: String,
@@ -146,6 +157,10 @@ impl Staging {
                 producer: crate::install::process::ProducerState::default(),
                 producer_quiet: std::sync::atomic::AtomicBool::new(true),
                 monitor: std::sync::OnceLock::new(),
+                #[cfg(test)]
+                drop_completion: DropCompletion(std::sync::Arc::new(
+                    std::sync::atomic::AtomicBool::new(false),
+                )),
             })
         })();
         created.map_err(|error: io::Error| {
@@ -621,6 +636,10 @@ impl Drop for Staging {
 }
 
 impl crate::install::process::ProducerOwner for Staging {
+    #[cfg(test)]
+    fn drop_completion(&self) -> Option<std::sync::Arc<std::sync::atomic::AtomicBool>> {
+        Some(std::sync::Arc::clone(&self.drop_completion.0))
+    }
     fn producer_state(&self) -> &crate::install::process::ProducerState {
         &self.producer
     }
