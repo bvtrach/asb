@@ -31,10 +31,10 @@ test "$1" = --disable
 destination=''; previous=''; source=''; bounded=0; timed=0
 for value in "$@"; do
  if test "$previous" = --output; then destination="$value"; fi
- if test "$value" = --max-filesize; then bounded=1; fi
+ if test "$previous" = --max-filesize; then test "$value" -gt 0; bounded=1; fi
  # The owning operation enforces the frozen overall download deadline; curl's
  # connect timeout remains explicit without a second fixed --max-time cap.
- if test "$value" = --connect-timeout; then timed=1; fi
+ if test "$previous" = --connect-timeout; then test "$value" = 10; timed=1; fi
  previous="$value"; source="$value"
 done
 test "$bounded" = 1; test "$timed" = 1; test -f "$destination"
