@@ -59,6 +59,7 @@ pub(in crate::install) fn install_input_in(
     validate: impl FnOnce(&Path, &mut ProcessScope) -> InstallResult<()>,
     publication: Publication,
 ) -> InstallResult<()> {
+    context.check_before_admission(options.kind, destination)?;
     let staging = Arc::new(Staging::new(destination)?);
     staging.monitor_producer(options.kind, options.limit)?;
     let mut scope = staging.producer_scope(context);
@@ -147,7 +148,7 @@ pub(in crate::install) fn install_input_in(
         return Err(InstallFailure::Abort(abort));
     }
     let permission = scope.finish()?;
-    staging.accept_producer_permission(permission)?;
+    let permission = staging.accept_producer_permission(permission)?;
     let mut staging = Arc::try_unwrap(staging).map_err(|stage| {
         context.custody_failure(
             "settled installation producer still retains its staging owner",
@@ -155,17 +156,27 @@ pub(in crate::install) fn install_input_in(
         )
     })?;
     let result = match prepared {
-        Ok(pinned) => (|| -> Result<(), Error> {
+        Ok(pinned) => (|| -> Result<(), super::prepared::PublicationFailure<InstallFailure>> {
             staging.synchronize()?;
             checkpoint(FaultPoint::Commit, &staging.file)?;
             if !pinned.matches(&staging.snapshot(&options)?) {
-                return Err(Error::Input("staged installation source changed before commit; previous installation was preserved".into()));
+                return Err(Error::Input("staged installation source changed before commit; previous installation was preserved".into()).into());
             }
             staging.file_owned().map_err(crate::io_error)?;
-            staging.publish_copy(destination, &options, &pinned, publication)
+            staging.publish_copy_checked(destination, &options, &pinned, publication, || {
+                permission.check()
+            })
         })(),
-        Err(InstallFailure::Ordinary(error)) => Err(error),
+        Err(InstallFailure::Ordinary(error)) => {
+            Err(super::prepared::PublicationFailure::CorePublication(error))
+        }
         Err(InstallFailure::Abort(_)) => unreachable!("typed abort returned before settlement"),
     };
-    staging.finish(result).map_err(Into::into)
+    match result {
+        Ok(()) => staging.finish(Ok(())).map_err(Into::into),
+        Err(super::prepared::PublicationFailure::CorePublication(error)) => {
+            staging.finish(Err(error)).map_err(Into::into)
+        }
+        Err(super::prepared::PublicationFailure::Check(error)) => Err(error),
+    }
 }

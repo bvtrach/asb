@@ -986,3 +986,112 @@ fn operation_review_actual_required_capture_abort_must_stop_another_owner_lane()
         "required capture abort did not stop a different actual owner lane"
     );
 }
+
+#[test]
+fn checked_publication_rejects_late_cancel_and_expiry_for_both_commit_variants() {
+    use crate::install::source::{
+        FaultPoint, Input, Options, Publication, faults, install_input_in,
+    };
+    let root = root();
+    for publication in [Publication::Replace, Publication::NoClobber] {
+        for expire in [false, true] {
+            let directory = root.join(format!(
+                "{}-{expire}",
+                if matches!(publication, Publication::Replace) {
+                    "replace"
+                } else {
+                    "no-clobber"
+                }
+            ));
+            fs::create_dir(&directory).unwrap();
+            let mut context = context(&directory);
+            if expire {
+                context.deadline = Instant::now() + Duration::from_millis(500);
+            }
+            let destination = directory.join("installed");
+            let source = directory.join("source");
+            fs::write(&source, "new product").unwrap();
+            if matches!(publication, Publication::Replace) {
+                fs::write(&destination, "old product").unwrap();
+            }
+            let operation = context.clone();
+            let reached = Arc::new(AtomicBool::new(false));
+            let observed = Arc::clone(&reached);
+            let _hook = faults::set(FaultPoint::CommitRename, move |_| {
+                observed.store(true, Ordering::Release);
+                if expire {
+                    while Instant::now() < operation.deadline {
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
+                } else {
+                    operation.cancel();
+                }
+                Ok(())
+            });
+            let result = install_input_in(
+                &context,
+                &Input::pin_local(source).unwrap(),
+                &destination,
+                Options {
+                    kind: "late publication fixture",
+                    limit: 4096,
+                    checksum: None,
+                    executable: false,
+                },
+                |_, _| Ok(()),
+                publication,
+            );
+            assert!(
+                reached.load(Ordering::Acquire),
+                "commit hook was not reached"
+            );
+            assert!(matches!(result, Err(InstallFailure::Abort(_))));
+            if matches!(publication, Publication::Replace) {
+                assert_eq!(fs::read(&destination).unwrap(), b"old product");
+            } else {
+                assert!(!destination.exists());
+            }
+            // Both detached raw bytes and the quiet candidate remain inspectable.
+            let retained: Vec<_> = fs::read_dir(&directory)
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter(|entry| entry.file_type().unwrap().is_dir())
+                .collect();
+            assert!(
+                retained.len() >= 2,
+                "raw/candidate namespace was removed on typed rejection"
+            );
+            let products = retained
+                .iter()
+                .flat_map(|entry| fs::read_dir(entry.path()).unwrap())
+                .filter_map(Result::ok)
+                .filter(|entry| fs::read(entry.path()).ok().as_deref() == Some(b"new product"))
+                .count();
+            assert!(products >= 2, "raw/candidate bytes were not both retained");
+        }
+    }
+}
+
+#[test]
+fn consumed_commit_guard_rejects_a_later_attempt_on_the_same_actual_owner() {
+    let root = root();
+    let context = context(&root);
+    let stage = Arc::new(crate::install::source::Staging::new(&root.join("installed")).unwrap());
+    let permission = stage.producer_scope(&context).finish().unwrap();
+    let guard = stage.accept_producer_permission(permission).unwrap();
+    assert!(guard.check().is_ok());
+    let mut scope = stage.producer_scope(&context);
+    let mut step = scope
+        .prepare(
+            "/bin/sh",
+            Purpose::Probe,
+            "forbidden post-consumption producer",
+        )
+        .unwrap();
+    step.command_mut()
+        .current_dir(&root)
+        .args(["-c", "printf forbidden > forbidden"]);
+    assert!(matches!(scope.run(step), Err(InstallFailure::Abort(_))));
+    assert!(matches!(guard.check(), Err(InstallFailure::Abort(_))));
+    assert!(!root.join("forbidden").exists());
+}

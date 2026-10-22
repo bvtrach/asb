@@ -326,7 +326,15 @@ pub(super) fn run(
     let mut cancellation_end = None;
     loop {
         match receive.recv_timeout(Duration::from_millis(25)) {
-            Ok(result) => return result,
+            Ok(result) => {
+                // A physical required-capture/custody abort ends this shared
+                // operation, not just this owner lane. Ordinary known negatives
+                // and invalid authority-token rejections do not take this path.
+                if matches!(&result, Err(InstallFailure::Abort(_))) {
+                    cancel.store(true, Ordering::Release);
+                }
+                return result;
+            }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 cancel.store(true, Ordering::Release);
                 ticket.poison();

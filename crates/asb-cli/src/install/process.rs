@@ -96,13 +96,7 @@ impl OperationContext {
         authority_failure(self, label, Some(evidence.to_owned()))
     }
     pub(crate) fn check_before_admission(&self, label: &str, evidence: &Path) -> InstallResult<()> {
-        let cause = if Instant::now() >= self.deadline {
-            Some(AbortCause::Deadline)
-        } else if self.cancel.load(Ordering::Acquire) {
-            Some(AbortCause::Cancelled)
-        } else {
-            None
-        };
+        let cause = self.stopped_reason();
         if let Some(cause) = cause {
             return Err(InstallFailure::Abort(AbortInstallation {
                 cause,
@@ -116,6 +110,15 @@ impl OperationContext {
             }));
         }
         Ok(())
+    }
+    fn stopped_reason(&self) -> Option<AbortCause> {
+        if Instant::now() >= self.deadline {
+            Some(AbortCause::Deadline)
+        } else if self.cancel.load(Ordering::Acquire) {
+            Some(AbortCause::Cancelled)
+        } else {
+            None
+        }
     }
     pub(crate) fn new(root: &Path, config: &ProjectConfig) -> InstallResult<Self> {
         let config_path = root.join(".asb/project.toml");
@@ -400,7 +403,8 @@ pub(crate) struct ProducerPermission {
 impl ProducerPermission {
     fn current(&self) -> bool {
         let state = self.owner.lock();
-        state.generation == self.generation
+        self.context.stopped_reason().is_none()
+            && state.generation == self.generation
             && !state.active
             && !state.poisoned
             && !state.consumed
@@ -411,6 +415,12 @@ impl ProducerPermission {
                 .is_some_and(|operation| Arc::ptr_eq(operation, &self.context.cancel))
     }
     pub(crate) fn consume_for(self, owner: &ProducerState) -> InstallResult<()> {
+        self.consume_guard_for(owner).map(drop)
+    }
+    pub(crate) fn consume_guard_for(
+        self,
+        owner: &ProducerState,
+    ) -> InstallResult<ConsumedPermission> {
         let mut state = owner.lock();
         let valid = Arc::ptr_eq(&self.owner.0, &owner.0)
             && state.generation == self.generation
@@ -429,9 +439,67 @@ impl ProducerPermission {
                 self.evidence,
             ));
         }
+        if let Some(cause) = self.context.stopped_reason() {
+            let failure = ended_permission(&self.context, cause, &state, self.evidence);
+            state.poisoned = true;
+            return Err(failure);
+        }
         state.consumed = true;
+        drop(state);
+        Ok(ConsumedPermission(self))
+    }
+}
+
+/// A consumed permission is not a receipt. The actual publication admission
+/// rechecks the intrinsic owner's generation and the original operation.
+pub(crate) struct ConsumedPermission(ProducerPermission);
+impl ConsumedPermission {
+    pub(crate) fn check(&self) -> InstallResult<()> {
+        self.check_for(&self.0.owner)
+    }
+    pub(crate) fn check_for(&self, owner: &ProducerState) -> InstallResult<()> {
+        let permission = &self.0;
+        let state = owner.lock();
+        if !Arc::ptr_eq(&permission.owner.0, &owner.0)
+            || state.generation != permission.generation
+            || state.active
+            || state.poisoned
+            || !state.consumed
+            || state.proof != Some(permission.proof)
+            || !state
+                .operation
+                .as_ref()
+                .is_some_and(|operation| Arc::ptr_eq(operation, &permission.context.cancel))
+        {
+            return Err(authority_failure(
+                &permission.context,
+                "consumed producer permission changed before publication",
+                permission.evidence.clone(),
+            ));
+        }
+        if let Some(cause) = permission.context.stopped_reason() {
+            return Err(ended_permission(
+                &permission.context,
+                cause,
+                &state,
+                permission.evidence.clone(),
+            ));
+        }
         Ok(())
     }
+}
+
+fn ended_permission(
+    context: &OperationContext,
+    cause: AbortCause,
+    state: &OwnerState,
+    evidence: Option<PathBuf>,
+) -> InstallFailure {
+    let quiet = !state.active && state.proof.is_some();
+    InstallFailure::Abort(AbortInstallation { cause, cleanup_confirmed: quiet,
+        capture_complete: quiet && !state.poisoned, label: "installation publication or settlement".into(),
+        config_path: context.config_path.clone(), limit_key: "operation_timeout_seconds", evidence,
+        detail: Some("the operation is no longer live; publication and quiet scratch settlement were refused".into()) })
 }
 
 fn authority_failure(
@@ -690,6 +758,15 @@ impl ProcessScope {
     pub(crate) fn finish(mut self) -> InstallResult<ProducerPermission> {
         if let Some(abort) = self.terminal.take() {
             return Err(InstallFailure::Abort(abort));
+        }
+        if let Some(cause) = self.context.stopped_reason() {
+            let state = self.lease.state.lock();
+            return Err(ended_permission(
+                &self.context,
+                cause,
+                &state,
+                self.lease.evidence.clone(),
+            ));
         }
         match self.permission.take() {
             Some(permission) if permission.current() => Ok(permission),

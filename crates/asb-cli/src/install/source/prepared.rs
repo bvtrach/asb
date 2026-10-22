@@ -3,6 +3,18 @@ use super::*;
 use sha2::{Digest, Sha256};
 use std::io::{Seek, SeekFrom};
 
+/// Keep the caller's admission failure typed and out of ordinary cleanup or
+/// candidate-fallback handling. Only the core's own failures are core errors.
+pub(super) enum PublicationFailure<E> {
+    CorePublication(Error),
+    Check(E),
+}
+impl<E> From<Error> for PublicationFailure<E> {
+    fn from(error: Error) -> Self {
+        Self::CorePublication(error)
+    }
+}
+
 #[derive(Debug)]
 pub(in crate::install) enum Input {
     Remote(String),
@@ -228,6 +240,7 @@ impl Staging {
     pub(super) fn published(&mut self) {
         self.published = true;
     }
+    #[cfg(test)]
     pub(super) fn publish_copy(
         &mut self,
         destination: &Path,
@@ -235,6 +248,22 @@ impl Staging {
         validated: &Snapshot,
         publication: Publication,
     ) -> Result<(), Error> {
+        match self.publish_copy_checked(destination, options, validated, publication, || {
+            Ok::<(), std::convert::Infallible>(())
+        }) {
+            Ok(()) => Ok(()),
+            Err(PublicationFailure::CorePublication(error)) => Err(error),
+            Err(PublicationFailure::Check(never)) => match never {},
+        }
+    }
+    pub(super) fn publish_copy_checked<E>(
+        &mut self,
+        destination: &Path,
+        options: &Options<'_>,
+        validated: &Snapshot,
+        publication: Publication,
+        check: impl FnOnce() -> Result<(), E>,
+    ) -> Result<(), PublicationFailure<E>> {
         self.require_quiet_producer().map_err(crate::io_error)?;
         // The probe knows the original pathname (and may retain its directory
         // handle). Move that entry out before trusting a commit pathname.
@@ -251,7 +280,8 @@ impl Staging {
             if !validated.same_payload(&detached) {
                 return Err(Error::Input(
                     "validated installation bytes changed during detachment".into(),
-                ));
+                )
+                .into());
             }
             // Never publish from any pathname supplied to a downloader/probe.
             // Copy the admitted handle into a NEW quiet namespace; a retained
@@ -270,7 +300,8 @@ impl Staging {
                 if count != detached.metadata.len() {
                     return Err(Error::Input(
                         "validated installation changed during commit copying".into(),
-                    ));
+                    )
+                    .into());
                 }
                 output
                     .set_permissions(detached.metadata.permissions())
@@ -283,11 +314,20 @@ impl Staging {
                 {
                     return Err(Error::Input(
                         "validated installation changed before publication".into(),
-                    ));
+                    )
+                    .into());
                 }
                 // Fault hooks deliberately receive only the old exposed name,
                 // never the private commit namespace.
                 checkpoint(FaultPoint::CommitRename, &self.file)?;
+                // Admission is checked after the last fault hook and directly
+                // before BOTH commit variants. This does not make the clock
+                // check and the following filesystem syscall atomic.
+                if let Err(error) = check() {
+                    self.retain_producer_scratch();
+                    commit.retain_producer_scratch();
+                    return Err(PublicationFailure::Check(error));
+                }
                 match publication {
                     Publication::Replace => fs::rename(&commit.file, destination),
                     Publication::NoClobber => match fs::hard_link(&commit.file, destination) {
@@ -314,9 +354,23 @@ impl Staging {
                 commit.published();
                 Ok(())
             })();
-            commit.finish(copied)
+            match copied {
+                Ok(()) => commit.finish(Ok(())).map_err(Into::into),
+                Err(PublicationFailure::CorePublication(error)) => {
+                    commit.finish(Err(error)).map_err(Into::into)
+                }
+                Err(PublicationFailure::Check(error)) => Err(PublicationFailure::Check(error)),
+            }
         })();
-        quiet.finish(result)
+        match result {
+            Ok(()) => quiet.finish(Ok(())).map_err(Into::into),
+            Err(PublicationFailure::CorePublication(error)) => {
+                quiet.finish(Err(error)).map_err(Into::into)
+            }
+            // Quarantined has no destructive Drop. Both actual staging owners
+            // above were disarmed before this typed rejection escapes.
+            Err(PublicationFailure::Check(error)) => Err(PublicationFailure::Check(error)),
+        }
     }
     fn settle(&self) -> io::Result<()> {
         self.require_quiet_producer()?;
@@ -646,13 +700,17 @@ impl Staging {
     pub(in crate::install) fn accept_producer_permission(
         &self,
         permission: crate::install::process::ProducerPermission,
-    ) -> crate::install::process::InstallResult<()> {
+    ) -> crate::install::process::InstallResult<crate::install::process::ConsumedPermission> {
         self.producer_quiet
             .store(false, std::sync::atomic::Ordering::Release);
-        permission.consume_for(&self.producer)?;
+        let guard = permission.consume_guard_for(&self.producer)?;
         self.producer_quiet
             .store(true, std::sync::atomic::Ordering::Release);
-        Ok(())
+        Ok(guard)
+    }
+    pub(in crate::install) fn retain_producer_scratch(&self) {
+        self.producer_quiet
+            .store(false, std::sync::atomic::Ordering::Release);
     }
     #[cfg(all(test, target_os = "linux"))]
     pub(in crate::install) fn producer_path(&self) -> &Path {

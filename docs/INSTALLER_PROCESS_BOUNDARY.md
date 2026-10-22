@@ -795,3 +795,49 @@ CLI/fallback cases, meaningful final timeout diagnostics and the new operation
 regressions still need completion. No full suite, PR, push, merge or release.
 Actual delivered main ancestry will be merged normally before combined final
 qualification; immutable prior source, failures and frozen binaries are preserved.
+
+### Review checkpoint: operation liveness and typed final commit admission
+
+This SOURCE-ONLY follow-up preserves the three observed failures above. The
+operation-liveness correction alone built the actual ASB successfully in13.22s
+(`target/installer44-operation-live-repair-build.log`); no post-fix runtime result
+is claimed yet. Physical native Abort now cancels the shared operation, while a
+stale/different authority rejection does not cancel a legitimate original lane.
+Pure-copy entry, permission current/consume and scope finish check operation
+liveness, not just Arc identity. Rejected authority never becomes a receipt.
+
+Root requested a minimal protected publication seam before further runtime.
+`publish_copy_checked<E>` returns distinct CorePublication(Error) and Check(E).
+The old test compatibility wrapper supplies an infallible check and preserves
+its prior ordinary publication and cleanup semantics. A nonclone consumed
+permission retains the actual intrinsic owner's state, generation, proof and
+original frozen operation. Its final constant-time check validates consumed,
+inactive, unpoisoned matching state plus operation liveness; it performs no
+callback IO. No external caller can supply an arbitrary owner state.
+
+The check runs AFTER the existing CommitRename fault hook and immediately
+BEFORE either replacement rename or no-clobber hard link. This is validation at
+commit admission, NOT an atomic clock-plus-filesystem operation or a promise
+that a potentially blocking rename completes before the operation deadline.
+Typed Check rejection disarms both actual staging owners, leaves detached raw
+and quiet candidate namespaces retained, skips quiet.finish/commit.finish, and
+does not fall through ordinary cleanup, fallback or public-error conversion.
+Ordinary core failures retain the existing settlement/error behavior.
+
+New unexecuted owning tests cover late cancel/expiry at the real fault hook for
+both commit variants (old target bytes unchanged or no new target, both raw and
+candidate payloads retained), and a same-owner post-consumption admission
+attempt invalidating the guard without executing its forbidden client. These
+are test source, not qualification evidence. Source review is requested BEFORE
+building/running this protected seam.
+
+An additional independently identified ordinary-pre-admission observer issue
+remains explicitly open in this checkpoint: an observer may keep the actual
+Stage after an ordinary spawn/pre_exec failure, while early permission acceptance
+re-enables quiet Drop before Arc::try_unwrap fails. The required deterministic
+old-path regression must prove eventual Stage Drop retains raw after an Abort,
+not just inspect before releasing that observer. The proposed minimal repair
+acquires the uniquely owned Stage BEFORE consuming its intrinsic permission;
+Arc uniqueness is resource acquisition, never substituted for producer proof.
+That repair is deliberately NOT included before observing the requested RED.
+No full suite, PR, push, merge or release is authorized or claimed here.
