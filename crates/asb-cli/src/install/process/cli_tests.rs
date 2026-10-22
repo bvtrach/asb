@@ -7,6 +7,56 @@ use std::os::unix::fs::PermissionsExt;
 use std::process::Stdio;
 
 const OLD: &[u8] = b"#!/bin/sh\nprintf 'previous tool\\n'\n";
+const EXACT_CASE: &str = "ASB_INSTALLER_EXACT_CLI_CASE";
+
+fn isolated_case(test: &str, case: &str) {
+    // Parent libtest creates directories only, never executable inodes whose
+    // writable descriptions could be inherited by another parallel test fork.
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/installer-cli-entry")
+        .join(crate::tools::runtime::unique_id());
+    fs::create_dir_all(&root).unwrap();
+    let root = fs::canonicalize(root).unwrap();
+    let mut config = ProjectConfig::default();
+    config.installation.operation_timeout_seconds = 12;
+    let context = OperationContext::new(&root, &config).unwrap();
+    let owner = ProducerDirectory::open(&root).unwrap();
+    let mut scope = owner.scope(&context);
+    let mut step = scope
+        .prepare(
+            std::env::current_exe().unwrap(),
+            Purpose::Probe,
+            "exact installer CLI fixture child",
+        )
+        .unwrap();
+    step.command_mut()
+        .args(["--exact", test, "--nocapture", "--test-threads=1"])
+        .current_dir(&root)
+        .env_clear()
+        .env("HOME", &root)
+        .env(
+            "PATH",
+            std::env::var_os("PATH").unwrap_or_else(|| "/usr/bin:/bin".into()),
+        )
+        .env(EXACT_CASE, case)
+        .stdin(Stdio::null());
+    step.capture(Capture::inspection());
+    let result = scope.run(step).unwrap();
+    // The exact child (including its nested CLI and sentinel) must actually
+    // settle before interpreting any status or captured assertion text.
+    owner.consume(scope.finish().unwrap()).unwrap();
+    fs::write(
+        root.join("matching-exact-child-cleanup-confirmed"),
+        "exact child guardian quiesced and matching actual directory proof consumed",
+    )
+    .unwrap();
+    assert!(
+        result.status.success(),
+        "{case}: exact fixture child failed\n{}\n{}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr)
+    );
+}
 
 struct Fixture {
     root: PathBuf,
@@ -198,12 +248,26 @@ fn executable(path: &Path, bytes: &[u8]) {
 
 #[test]
 fn public_perf_install_abort_never_falls_back_retries_or_publishes() {
-    for case in [
+    let cases = [
         "catalog-overflow",
         "download-timeout",
         "runnable-overflow",
         "runnable-timeout",
-    ] {
+    ];
+    let selected = std::env::var(EXACT_CASE).ok();
+    assert!(selected.as_deref().is_none_or(|case| cases.contains(&case)));
+    for case in cases {
+        if let Some(selected) = &selected {
+            if selected != case {
+                continue;
+            }
+        } else {
+            isolated_case(
+                "install::process::cli_tests::public_perf_install_abort_never_falls_back_retries_or_publishes",
+                case,
+            );
+            continue;
+        }
         let mut fixture = Fixture::new(case, "perf");
         let (status, output) = fixture.finish();
         assert!(!status.success(), "{case}: {output}");
@@ -251,7 +315,21 @@ fn public_perf_install_abort_never_falls_back_retries_or_publishes() {
 
 #[test]
 fn public_bpftrace_install_abort_preserves_old_binary_metadata_and_error_class() {
-    for case in ["bpf-overflow", "bpf-timeout"] {
+    let cases = ["bpf-overflow", "bpf-timeout"];
+    let selected = std::env::var(EXACT_CASE).ok();
+    assert!(selected.as_deref().is_none_or(|case| cases.contains(&case)));
+    for case in cases {
+        if let Some(selected) = &selected {
+            if selected != case {
+                continue;
+            }
+        } else {
+            isolated_case(
+                "install::process::cli_tests::public_bpftrace_install_abort_preserves_old_binary_metadata_and_error_class",
+                case,
+            );
+            continue;
+        }
         let mut fixture = Fixture::new(case, "bpftrace");
         let (status, output) = fixture.finish();
         assert!(!status.success(), "{case}: {output}");
