@@ -1292,3 +1292,253 @@ fn local_validation_abort_and_cancel_must_retain_raw_after_actual_stage_drop() {
         "local typed Abort deleted actual raw after final Drop: {violations:?}"
     );
 }
+
+#[test]
+fn operation_reports_one_bounded_diagnostic_summary_and_drains_it_once() {
+    let root = root();
+    let context = context(&root);
+    for index in 0..130 {
+        context.record_log(&native::LogReport {
+            path: Some(root.join(format!("private-step-{index}/output.log"))),
+            retained: 3,
+            accepted: 5,
+            discarded: 2,
+            fault: (index % 2 == 0).then_some(io::ErrorKind::WriteZero),
+            settled: index % 2 == 0,
+            truncated: true,
+        });
+    }
+    let mut output = Vec::new();
+    context.report_diagnostics(&mut output).unwrap();
+    let output = String::from_utf8(output).unwrap();
+    assert_eq!(output.matches("Warning:").count(), 1);
+    assert_eq!(output.lines().count(), 130); // One heading,128 paths,one omitted count.
+    assert!(output.contains("private-step-0/output.log: 3 bytes retained, 5 bytes accepted, 2 bytes discarded; writer settled; a log write failed"));
+    assert!(output.contains("private-step-1/output.log: 3 bytes retained, 5 bytes accepted, 2 bytes discarded; writer pending (completion unconfirmed)"));
+    assert!(output.contains("2 additional diagnostic log snapshots omitted"));
+    assert!(!output.contains("private-step-128/"));
+    assert!(!output.contains("private-step-129/"));
+    assert!(!output.contains("capture complete"));
+    let mut second = Vec::new();
+    context.report_diagnostics(&mut second).unwrap();
+    assert!(second.is_empty());
+}
+
+struct FaultReader {
+    inner: Box<dyn std::io::Read + Send>,
+    panic: bool,
+    fired: bool,
+}
+impl std::io::Read for FaultReader {
+    fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+        if !self.fired {
+            self.fired = true;
+            assert!(!self.panic, "private synthetic pipe read panic");
+            return Err(io::Error::from_raw_os_error(libc::EIO));
+        }
+        self.inner.read(bytes)
+    }
+}
+
+#[test]
+fn migrated_source_callback_faults_cannot_continue_publish_or_destroy_raw() {
+    let root = root();
+    let mut sentinel = Sentinel::start();
+    for fault in ["read", "panic", "overflow", "owner-loss"] {
+        let directory = root.join(fault);
+        fs::create_dir(&directory).unwrap();
+        let context = context(&directory);
+        let source = directory.join("input");
+        let destination = directory.join("installed");
+        fs::write(&source, "new source bytes").unwrap();
+        fs::write(&destination, "old installation bytes").unwrap();
+        let mut owner = None;
+        let result = crate::install::source::install_input_in(
+            &context,
+            &crate::install::source::Input::pin_local(source).unwrap(),
+            &destination,
+            crate::install::source::Options {
+                kind: "migrated source callback fault fixture",
+                limit: 4096,
+                checksum: None,
+                executable: false,
+            },
+            |path, scope| {
+                owner = Some((
+                    path.to_owned(),
+                    scope
+                        .lease
+                        ._owner
+                        .as_ref()
+                        .unwrap()
+                        .drop_completion()
+                        .unwrap(),
+                ));
+                let mut step =
+                    scope.prepare("/bin/sh", Purpose::Version, "migrated source validation")?;
+                step.command_mut().current_dir(&directory).env_clear().env("PATH", "/usr/bin:/bin")
+                    .args(["-c", "printf %s $$ > principal.pid; /bin/sh -c 'printf %s $$ > descendant.pid; exec /bin/sleep 30' & while ! test -s descendant.pid; do /bin/sleep 0.001; done; if test \"$2\" = owner-loss; then /bin/rm -- \"$1\"; printf foreign-owner-arrival > \"$1\"; else printf too-much-data; fi; wait", "fixture"])
+                    .arg(path).arg(fault);
+                step.before_continue = Some(native::AdmissionPause {
+                    reached: Arc::new(AtomicBool::new(false)),
+                    release: Arc::new(AtomicBool::new(true)),
+                    settled: Arc::new(AtomicBool::new(false)),
+                    client_marker: directory.join("descendant.pid"),
+                });
+                match fault {
+                    "read" | "panic" => {
+                        let panic = fault == "panic";
+                        step.reader_factory = Some(Box::new(move |inner| {
+                            Box::new(FaultReader {
+                                inner,
+                                panic,
+                                fired: false,
+                            })
+                        }));
+                    }
+                    "overflow" => step.capture(Capture::Inspect {
+                        stream_bytes: 1,
+                        total_bytes: 1,
+                    }),
+                    _ => {}
+                }
+                scope.run(step)?;
+                fs::write(
+                    directory.join("forbidden-callback-continuation"),
+                    "must not reach",
+                )
+                .map_err(crate::io_error)?;
+                Ok(())
+            },
+            crate::install::source::Publication::Replace,
+        );
+        let abort = match result {
+            Err(InstallFailure::Abort(abort)) => abort,
+            _ => panic!("{fault}: migrated callback converted uncertainty into ordinary/success"),
+        };
+        assert_eq!(
+            abort.cause,
+            match fault {
+                "read" => AbortCause::CaptureRead,
+                "panic" => AbortCause::Worker,
+                "overflow" => AbortCause::CaptureOverflow,
+                _ => AbortCause::OwnerObservation,
+            }
+        );
+        assert!(
+            abort.cleanup_confirmed,
+            "{fault}: no actual matching tree settlement"
+        );
+        assert!(!abort.capture_complete);
+        assert!(
+            !fs::read(directory.join("descendant.pid"))
+                .unwrap()
+                .is_empty()
+        );
+        let (raw, completion) = owner.unwrap();
+        let end = Instant::now() + Duration::from_secs(5);
+        while !completion.load(Ordering::Acquire) {
+            assert!(
+                Instant::now() < end,
+                "{fault}: actual Stage Drop did not finish"
+            );
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert!(
+            raw.exists(),
+            "{fault}: raw destroyed after final owner Drop"
+        );
+        if fault == "owner-loss" {
+            assert_eq!(fs::read(raw).unwrap(), b"foreign-owner-arrival");
+        }
+        assert_eq!(fs::read(destination).unwrap(), b"old installation bytes");
+        assert!(!directory.join("forbidden-callback-continuation").exists());
+        assert!(sentinel.0.try_wait().unwrap().is_none());
+    }
+    sentinel.0.stop().unwrap();
+}
+
+#[test]
+fn migrated_source_worker_start_failure_is_known_never_admitted_not_unknown_success() {
+    let root = root();
+    let context = context(&root);
+    let source = root.join("input");
+    let destination = root.join("installed");
+    fs::write(&source, "new bytes").unwrap();
+    fs::write(&destination, "old bytes").unwrap();
+    let mut owner = None;
+    let result = crate::install::source::install_input_in(
+        &context,
+        &crate::install::source::Input::pin_local(source).unwrap(),
+        &destination,
+        crate::install::source::Options {
+            kind: "migrated never-admitted fixture",
+            limit: 4096,
+            checksum: None,
+            executable: false,
+        },
+        |path, scope| {
+            owner = Some((
+                path.to_owned(),
+                scope
+                    .lease
+                    ._owner
+                    .as_ref()
+                    .unwrap()
+                    .drop_completion()
+                    .unwrap(),
+            ));
+            let mut step = scope.prepare("/bin/sh", Purpose::Version, "worker start failure")?;
+            step.command_mut()
+                .current_dir(&root)
+                .args(["-c", "printf forbidden > forbidden-client"]);
+            step.fail_worker_start = Some(io::ErrorKind::Other);
+            scope.run(step).map(drop)
+        },
+        crate::install::source::Publication::Replace,
+    );
+    assert!(matches!(&result, Err(InstallFailure::Ordinary(_))));
+    assert!(
+        result
+            .err()
+            .unwrap()
+            .into_public()
+            .to_string()
+            .contains("custody worker")
+    );
+    let (raw, completion) = owner.unwrap();
+    assert!(completion.load(Ordering::Acquire));
+    assert!(
+        !raw.exists(),
+        "known never-admitted cleanup should remain supported"
+    );
+    assert_eq!(fs::read(destination).unwrap(), b"old bytes");
+    assert!(!root.join("forbidden-client").exists());
+}
+
+#[test]
+fn actual_duplex_binary_capture_and_stdin_preserve_configured_command() {
+    let root = root();
+    let context = context(&root);
+    let input = root.join("binary-input");
+    let bytes = [0xff, 0, 0x80, b'\n'].repeat(32768);
+    fs::write(&input, &bytes).unwrap();
+    let python = crate::tools::host_executable(Path::new("python3")).unwrap();
+    let mut step = PreparedStep::new(
+        &context,
+        python,
+        Purpose::Probe,
+        "offline duplex binary fixture",
+    )
+    .unwrap();
+    step.command_mut().env_clear().env("REMOVED", "must not leak").env_remove("REMOVED")
+        .current_dir(&root).args(["-c", "import os,sys; assert 'REMOVED' not in os.environ; data=sys.stdin.buffer.read(); sys.stdout.buffer.write(b'A'*262144+data); sys.stdout.buffer.flush(); sys.stderr.buffer.write(b'B'*262144); sys.stderr.buffer.flush()"])
+        .stdin(std::process::Stdio::from(fs::File::open(input).unwrap()));
+    step.capture(Capture::inspection());
+    let result = step.run(ProducerLease::default()).unwrap();
+    assert!(result.status().success());
+    assert_eq!(&result.stdout()[..262144], vec![b'A'; 262144]);
+    assert_eq!(&result.stdout()[262144..], bytes);
+    assert_eq!(result.stderr(), vec![b'B'; 262144]);
+    assert!(std::str::from_utf8(result.stdout()).is_err());
+}

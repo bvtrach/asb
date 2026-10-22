@@ -15,6 +15,9 @@ const CHUNK: usize = 8192;
 
 #[cfg(test)]
 pub(super) type WriterFactory = Box<dyn FnOnce(File) -> Box<dyn Write + Send> + Send>;
+#[cfg(test)]
+pub(super) type ReaderFactory =
+    Box<dyn FnOnce(Box<dyn Read + Send>) -> Box<dyn Read + Send> + Send>;
 
 #[cfg(test)]
 pub(super) struct AdmissionPause {
@@ -313,16 +316,24 @@ pub(super) fn run(
     // The thread exists before Admission.spawn. If allocation fails, no target
     // has been admitted and no producer can hold a descriptor into the stage.
     let worker_ticket = ticket.clone();
-    std::thread::Builder::new()
-        .name("asb-install-process".into())
-        .spawn(move || supervise(step, lease, deadline, limit_key, send, worker_ticket))
-        .map_err(|error| {
-            ticket.settle(ProducerProof::NoNewAdmission);
-            crate::Error::Io(format!(
-                "cannot establish installation custody worker: {}",
-                error.kind()
-            ))
-        })?;
+    #[cfg(test)]
+    let fail_worker_start = step.fail_worker_start;
+    #[cfg(not(test))]
+    let fail_worker_start: Option<io::ErrorKind> = None;
+    let spawned = if let Some(kind) = fail_worker_start {
+        Err(io::Error::from(kind))
+    } else {
+        std::thread::Builder::new()
+            .name("asb-install-process".into())
+            .spawn(move || supervise(step, lease, deadline, limit_key, send, worker_ticket))
+    };
+    spawned.map_err(|error| {
+        ticket.settle(ProducerProof::NoNewAdmission);
+        crate::Error::Io(format!(
+            "cannot establish installation custody worker: {}",
+            error.kind()
+        ))
+    })?;
     let mut cancellation_end = None;
     loop {
         match receive.recv_timeout(Duration::from_millis(25)) {
@@ -480,9 +491,15 @@ fn supervise(
     if unusable {
         cause = Some(AbortCause::CaptureRead);
     }
+    let stdout: Box<dyn Read + Send> = Box::new(stdout);
+    #[cfg(test)]
+    let stdout = match step.reader_factory.take() {
+        Some(factory) => factory(stdout),
+        None => stdout,
+    };
     let mut pipes = [
         Pipe {
-            reader: Box::new(stdout),
+            reader: stdout,
             output: Vec::new(),
             ended: unusable,
         },

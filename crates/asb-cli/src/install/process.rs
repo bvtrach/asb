@@ -178,13 +178,18 @@ impl OperationContext {
         let logs = std::mem::take(&mut diagnostics.logs);
         let omitted = std::mem::take(&mut diagnostics.omitted);
         drop(diagnostics);
+        if logs.is_empty() && omitted == 0 {
+            return Ok(());
+        }
+        writeln!(output, "Warning: installation diagnostic log snapshots are partial, failed, or pending; the installation outcome is reported separately.")
+            .map_err(crate::io_error)?;
         for log in logs {
             render_log(&log, output).map_err(InstallFailure::into_public)?;
         }
         if omitted != 0 {
             writeln!(
                 output,
-                "Installation diagnostics: {omitted} additional bounded log warnings omitted."
+                "  {omitted} additional diagnostic log snapshots omitted from this bounded list."
             )
             .map_err(crate::io_error)?;
         }
@@ -642,12 +647,27 @@ pub(crate) struct CompletedStep {
 /// Ancillary diagnostics never change required capture/status into success.
 fn render_log(log: &native::LogReport, output: &mut dyn std::io::Write) -> InstallResult<()> {
     if log.fault.is_some() || log.truncated || !log.settled {
-        writeln!(output, "Installation diagnostics: log {}; {} bytes retained, {} bytes accepted, {} bytes discarded; writer {}{}.",
-                log.path.as_ref().map_or_else(|| "unavailable".into(), |path| path.display().to_string()),
-                log.retained, log.accepted, log.discarded,
-                if log.settled { "settled" } else { "pending" },
-                if log.fault.is_some() { "; a log write failed" } else { "" })
-                .map_err(crate::io_error)?;
+        writeln!(
+            output,
+            "  Log {}: {} bytes retained, {} bytes accepted, {} bytes discarded; writer {}{}.",
+            log.path
+                .as_ref()
+                .map_or_else(|| "unavailable".into(), |path| path.display().to_string()),
+            log.retained,
+            log.accepted,
+            log.discarded,
+            if log.settled {
+                "settled"
+            } else {
+                "pending (completion unconfirmed)"
+            },
+            if log.fault.is_some() {
+                "; a log write failed"
+            } else {
+                ""
+            }
+        )
+        .map_err(crate::io_error)?;
     }
     Ok(())
 }
@@ -804,6 +824,10 @@ pub(crate) struct PreparedStep {
     before_continue: Option<native::AdmissionPause>,
     #[cfg(all(test, target_os = "linux"))]
     observation: Option<ObservationCheck>,
+    #[cfg(all(test, target_os = "linux"))]
+    reader_factory: Option<native::ReaderFactory>,
+    #[cfg(all(test, target_os = "linux"))]
+    fail_worker_start: Option<std::io::ErrorKind>,
 }
 impl PreparedStep {
     pub(crate) fn new(
@@ -844,6 +868,10 @@ impl PreparedStep {
             before_continue: None,
             #[cfg(all(test, target_os = "linux"))]
             observation: None,
+            #[cfg(all(test, target_os = "linux"))]
+            reader_factory: None,
+            #[cfg(all(test, target_os = "linux"))]
+            fail_worker_start: None,
         })
     }
     pub(crate) fn command_mut(&mut self) -> &mut std::process::Command {
