@@ -20,7 +20,11 @@ impl Fixture {
             .join("../../target/catalog-coverage-fixtures")
             .join(TaskIdentity::local("catalog-coverage", None).attempt_id);
         fs::create_dir_all(root.join(".asb")).unwrap();
-        fs::write(root.join(".asb/project.toml"), "").unwrap();
+        fs::write(
+            root.join(".asb/project.toml"),
+            toml::to_string(&crate::project::ProjectConfig::default()).unwrap(),
+        )
+        .unwrap();
         for task in ["first", "second"] {
             fs::create_dir_all(root.join(format!("workloads/fixture-suite/source/tasks/{task}")))
                 .unwrap();

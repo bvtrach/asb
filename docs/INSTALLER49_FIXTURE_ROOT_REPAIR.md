@@ -84,3 +84,15 @@ allowed only during bounded polling because ancillary writer settlement does
 not promise synchronous flush/close. Timeout diagnostics retain the actual
 fixture path. Neither correction changes production path or writer policy;
 runtime qualification is still pending.
+
+## First execution and valid-config correction
+
+Fresh integrated v3 actual build and exact Cargo-selected library image were
+frozen before runtime. Python and preparation origin tests each passed. The
+catalog origin failed before its legacy runtime calls because the newly empty
+project file omitted required `tools_dir`. Its raw failure and frozen images
+remain under `target/installer49-v3-*` and `target/qualification/installer49-v3`.
+No full suite or package success is claimed for v3. The test-only correction
+serializes `ProjectConfig::default()`, preserving its ordinary `tools` and
+`workloads` paths and leaving explicit fixture installation context unchanged.
+Fresh v4 qualification is required; no production change is involved.
