@@ -1,12 +1,24 @@
 //! The shared project Python used to create isolated Python tool environments.
 
-use crate::install::{InstallResult, OperationContext, ProcessScope, ProducerDirectory, Purpose};
+use crate::install::{
+    InstallFailure, InstallResult, OperationContext, ProcessScope, ProducerDirectory, Purpose,
+};
 use crate::{Error, project};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 const PYTHON_VERSION_REQUESTS: [&str; 2] = ["3.12", "3.13"];
+
+fn bootstrap_dependency_failure(failure: InstallFailure) -> InstallFailure {
+    match failure {
+        InstallFailure::Ordinary(error) => Error::Io(format!(
+            "could not bootstrap project Python: {error}. Install uv, or install Python 3.12 or 3.13 and retry."
+        ))
+        .into(),
+        abort @ InstallFailure::Abort(_) => abort,
+    }
+}
 
 fn inspect_in(
     scope: &mut ProcessScope,
@@ -196,7 +208,8 @@ pub(crate) fn ensure_in(
             &tools_root,
             output,
             &mut |_, _| {},
-        )?;
+        )
+        .map_err(bootstrap_dependency_failure)?;
     }
     // This is a NEW actual directory incarnation, after previous probe proof
     // was consumed and any previous environment was preserved without deletion.
@@ -289,6 +302,40 @@ mod bootstrap_offline_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bootstrap_dependency_ordinary_failure_keeps_cause_and_actionable_remedy() {
+        let error =
+            bootstrap_dependency_failure(Error::Io("offline source unavailable".into()).into());
+        let InstallFailure::Ordinary(error) = error else {
+            panic!("ordinary bootstrap failure must remain ordinary");
+        };
+        let message = error.to_string();
+        assert!(
+            message.contains("could not bootstrap project Python"),
+            "{message}"
+        );
+        assert!(message.contains("offline source unavailable"), "{message}");
+        assert!(
+            message.contains("Install uv, or install Python 3.12 or 3.13"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn bootstrap_dependency_abort_preserves_typed_cancellation_and_all_facts() {
+        let root = Path::new("/fixture-python-bootstrap");
+        let context = OperationContext::new(root, &project::ProjectConfig::default()).unwrap();
+        context.cancel();
+        let failure = context
+            .check_before_admission("uv bootstrap", root)
+            .unwrap_err();
+        let original = format!("{failure:?}");
+        let failure = bootstrap_dependency_failure(failure);
+        assert!(matches!(failure, InstallFailure::Abort(_)));
+        assert_eq!(format!("{failure:?}"), original);
+        assert!(!failure.to_string().contains("Install uv"));
+    }
 
     #[test]
     fn project_python_precedes_existing_child_path() {
