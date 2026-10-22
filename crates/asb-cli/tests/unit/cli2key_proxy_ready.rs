@@ -96,7 +96,13 @@ fn arbitrary_later_output_remains_bounded_discard_not_a_new_failure_policy() {
 
 #[test]
 fn listener_cloexec_stays_parent_local_and_unrelated_children_cannot_keep_it() {
+    use std::os::unix::fs::MetadataExt;
+    use std::time::{Duration, Instant};
+
+    let sentinel = TcpListener::bind("127.0.0.1:0").unwrap();
+    let sentinel_address = sentinel.local_addr().unwrap();
     let reservation = Reservation::new().unwrap();
+    let identity = reservation.socket_identity();
     let fd = reservation.listener.as_raw_fd();
     // SAFETY: read-only observation of our live owned descriptor.
     let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
@@ -117,8 +123,38 @@ fn listener_cloexec_stays_parent_local_and_unrelated_children_cannot_keep_it() {
         probe.join().unwrap();
     });
     assert_eq!(unsafe { libc::fcntl(fd, libc::F_GETFD) }, flags);
-    let address = reservation.address();
     drop(admitted); // Its pre_exec closure owns a real parent duplicate.
     drop(reservation);
-    assert!(TcpListener::bind(address).is_ok());
+    for entry in std::fs::read_dir("/proc/self/fd").unwrap() {
+        if let Ok(metadata) = std::fs::metadata(entry.unwrap().path()) {
+            assert_ne!(
+                (metadata.dev(), metadata.ino()),
+                identity,
+                "original socket retained in parent FD custody"
+            );
+        }
+    }
+    // Other parallel actors may briefly inherit a CLOEXEC copy before exec.
+    // Numeric port reuse cannot establish which socket is still owned.
+    let end = Instant::now() + Duration::from_secs(3);
+    let inode = identity.1.to_string();
+    loop {
+        let present = std::fs::read_to_string("/proc/net/tcp")
+            .unwrap()
+            .lines()
+            .any(|line| line.split_whitespace().nth(9) == Some(inode.as_str()));
+        if !present {
+            break;
+        }
+        assert!(
+            Instant::now() < end,
+            "original listening socket inode {} remained after cleanup",
+            identity.1
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(
+        std::net::TcpStream::connect(sentinel_address).is_ok(),
+        "unrelated sentinel listener was closed"
+    );
 }

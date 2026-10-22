@@ -421,3 +421,30 @@ focused results do not qualify this combined source; a fresh actual build,
 frozen hash, owning checkpoint/runtime/gate and listener/helper/CLI/replay focus,
 strict Clippy and formatting precede renewed independent review. Full remains
 held until that review.
+
+## Combined full stopped on an ambiguous fixture assertion
+
+Source `6082ae8d` built first in14.04s, frozen at
+`target/qualification/cli2key44-6082ae8d-asb`, SHA256
+`5da915d52add286d9cac2b8a6218ce4fbcc77bebb3809b00537bca87304dbf9a`.
+Combined focus passed194/0/5existing ignored; strict Clippy18.18s, formatting
+and diff-check passed. Root independently approved the integration and then full.
+`target/cli2key44-full.log` stopped with1197/1failed/13ignored in the library
+target (22.28s); no later outer target executed. The sole failure was the parent
+CLOEXEC fixture's immediate numeric-port rebind assertion. Actual high-FD curl
+and launcher identity tests passed. This does not prove either foreign port
+reuse or an actual socket leak. Before/after actual and frozen hashes agree.
+The failed libtest is frozen as `cli2key44-6082ae8d-failed-libtests`, SHA256
+`551c71974f36bd6b56fef4cac6cdfd561318d14fab00a72f4e60a30d2b0312e9`
+(post-run only). All earlier failures and RED evidence remain intact.
+
+Root approved a narrow test-only repair: preserve parent CLOEXEC and all eight
+real unrelated-child FD-table checks plus configured child execution; snapshot
+the original socket dev/inode, drop the completed child Command and reservation,
+then check the exact original identity absent from parent FDs and `/proc/net/tcp`
+with the same bounded fork/exec-transient allowance as existing custody tests.
+An unrelated listener sentinel must remain usable. The remaining numeric bind
+conflict assertion is deliberately WHILE the four real reservations are live;
+their post-finish assertions already inspect exact identity. Other bind calls
+only allocate owned fixtures or deliberately challenge the still-live inherited
+reservation. No production behavior changed and no full rerun is claimed yet.
