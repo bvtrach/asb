@@ -953,3 +953,31 @@ still pending: the generic previous write-failed wording cannot distinguish
 namespace/open, writer-start, queue, write and flush failures. Real adapter
 fallback/CLI paths, remaining fault/budget coverage and legacy test-API removal
 also remain open. All handles terminal; no full suite/PR/push/release claim.
+
+### Typed diagnostic phases: approved focused qualification
+
+18e8506b distinguishes Namespace/Open/WorkerStart/Queue/Write/Flush faults using
+private phase+ErrorKind, with first fault sticky. Setup failure includes the
+intended private log path and correctly reports a never-started writer as
+settled-with-fault, not pending. Queue fullness records bounded loss and keeps
+the first-bytes-only policy. Required capture read/configuration ErrorKind is
+instead surfaced in the fatal Abort detail; ancillary loss never replaces
+capture failure or changes it into success.
+
+Actual ASB built FIRST in13.44s. Initial libtest compile failed only for two
+unnecessary mut bindings in new tests; installer44-diagnostic-phases-focus.log
+is preserved. Signed test-only3a78edd0 removes those bindings without changing
+production. Fresh installer44-diagnostic-phases-focus-v2.log records34PASS,
+0FAIL,0ignored in32.94s after compilation. This includes true namespace/open
+regular+symlink collisions, never-started writer, actual flush ENOSPC, zero/
+ENOSPC write failure, sticky queue/prefix loss, actual healthy Source publication
+despite ancillary write/flush failure, and all earlier process/custody cases.
+No foreign file or permissions were changed, no raw payload was rendered.
+
+Strict workspace/alltargets/allfeatures Clippy -Dwarnings passed16.01s
+(installer44-diagnostic-phases-clippy.log); fmt/diffcheck passed. Actual/frozen
+before/final SHA256 all equal
+`3e8e90411f2a614d22707f7b40722fe5026802847ddd84f16a71a58422369e60`.
+All handles terminal; this remains focused Linux qualification, not complete
+adapter/CLI/aggregate-budget coverage or non-Linux qualification. No full suite,
+PR, push or release is claimed.
