@@ -65,8 +65,20 @@ Repeated repair confirms only an unused head; it refuses a subsequently started
 head. Fault tests preserve original bytes and cover failed link-directory sync,
 late-configuration conflicts, forged partitions and aggregate payload limits.
 
-Still unfinished: actual process-death qualification of unused-head/unlinked-child
-recovery, larger multi-configuration recording inheritance/fault tests, original-SDK
+Replay owner-death qualification now interrupts a real owned publisher at both
+child-admission/pre-sync and predecessor-link/pre-sync boundaries. The two-
+configuration fixture retains the exact original input closure and synthetic
+settled history; a separate publisher proves that closure before taking owners.
+Private bounded regular-file input avoids a blocking stdin writer. Both campaign
+locks exclude recovery while it is alive, and the existing process guardian
+confirms quiescence after abrupt signalled death. Recovery twice preserves all
+earlier bytes and the exact frozen candidate; normal activation returns only the
+original pending membership. Uncertain test teardown retains evidence instead of
+deleting an active tree. This is not a SIGKILL/power-loss claim, actual prior
+client qualification, or recording-journal owner-death qualification.
+
+Still unfinished: broader multi-configuration recording inheritance/owner-death
+and publication-fault tests, original-SDK
 qualification and full current-main packaging/CI. Do not mark feature 5 delivered
 until these remaining paths and release gates are complete.
 

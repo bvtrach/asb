@@ -3,6 +3,10 @@ use super::*;
 use crate::runner::campaign::StartIntent;
 use crate::runner::campaign::generation::{Catalog, Context, Expected};
 
+#[cfg(target_os = "linux")]
+#[path = "generation_owner_death_tests.rs"]
+mod owner_death;
+
 fn load(guard: &Guard, sweep: &SweepPlan, results: &Path) -> Result<Catalog, Error> {
     load_with_limit(guard, sweep, results, MAX_GENERATION)
 }
@@ -1022,12 +1026,17 @@ fn generation_slots_seal_beside_historical_peers_without_replacing_their_evidenc
     assert!(reused.groups.values().all(|rows| rows.len() == 8));
 }
 
-fn staged_unlinked_child() -> (Fixture, SweepPlan, PathBuf, Inputs, PathBuf, Vec<u8>) {
+fn successor_inputs() -> (Fixture, SweepPlan, PathBuf, Inputs) {
     let (fixture, sweep, results, guard, workers) = published_mixed();
     settle_generation_replicas(&fixture, &sweep, &results, &guard, &workers, &[2]);
     drop(workers);
     let Guard { inputs, owners } = guard;
     drop(owners);
+    (fixture, sweep, results, inputs)
+}
+
+fn staged_unlinked_child() -> (Fixture, SweepPlan, PathBuf, Inputs, PathBuf, Vec<u8>) {
+    let (fixture, sweep, results, inputs) = successor_inputs();
     // Preserve the fixture's EXACT execution closure across the injected failed
     // publisher. Metadata repair itself uses the real separate recovery inlet.
     let retained = Inputs {
