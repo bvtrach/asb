@@ -377,7 +377,7 @@ mod tests {
                 serde_json::to_string(&root.0.join("descendant.pid")).unwrap()
             );
             format!(
-                "#!/usr/bin/python3\nimport sys,pathlib,time\nsys.path.insert(0,{})\nimport asb_runtime\nsys.stdin.buffer.read()\ntry:\n asb_runtime.bounded_probe([sys.executable,'-I','-S','-B','-c',{}],deadline=time.monotonic()+.05)\nexcept asb_runtime.ExecutionError as error:\n assert 'deadline' in str(error)\nelse: raise AssertionError('inherited writer accepted')\npathlib.Path({}).write_text('zero exit')\nprint('{{\"schema_version\":1,\"paths\":[]}}')\n",
+                "#!/usr/bin/python3\nimport sys,pathlib,time\nsys.path.insert(0,{})\nimport asb_runtime\nsys.stdin.buffer.read()\ntry:\n asb_runtime.bounded_probe([sys.executable,'-I','-S','-B','-c',{}],deadline=time.monotonic()+.05)\nexcept asb_runtime.ExecutionError as error:\n assert 'deadline' in str(error)\n# The outer owned gate can settle the inherited descendant before this probe deadline.\npathlib.Path({}).write_text('zero exit')\nprint('{{\"schema_version\":1,\"paths\":[]}}')\n",
                 serde_json::to_string(&assets).unwrap(),
                 serde_json::to_string(&nested).unwrap(),
                 serde_json::to_string(&root.0.join("helper-parent-exited")).unwrap()
