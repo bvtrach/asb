@@ -728,6 +728,7 @@ impl Staging {
         Ok(guard)
     }
     pub(in crate::install) fn retain_producer_scratch(&self) {
+        self.producer.invalidate_settlement();
         self.producer_quiet
             .store(false, std::sync::atomic::Ordering::Release);
     }

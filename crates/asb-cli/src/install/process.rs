@@ -359,6 +359,11 @@ impl Default for ProducerState {
     }
 }
 impl ProducerState {
+    pub(crate) fn invalidate_settlement(&self) {
+        // Sticky: later actual quiescence may refine facts, but it cannot mint
+        // a new cleanup/publication capability for an already retained owner.
+        self.lock().poisoned = true;
+    }
     fn lock(&self) -> std::sync::MutexGuard<'_, OwnerState> {
         match self.0.lock() {
             Ok(state) => state,

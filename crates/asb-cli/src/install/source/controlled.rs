@@ -145,16 +145,31 @@ pub(in crate::install) fn install_input_in(
     // Never attempt quiet cleanup or publication after typed uncertainty. The
     // retained worker owns this SAME real Staging; its eventual Drop keeps raw.
     if let Err(InstallFailure::Abort(abort)) = prepared {
+        staging.retain_producer_scratch();
         return Err(InstallFailure::Abort(abort));
     }
-    let permission = scope.finish()?;
-    let permission = staging.accept_producer_permission(permission)?;
+    let permission = scope.finish().inspect_err(|failure| {
+        if matches!(failure, InstallFailure::Abort(_)) {
+            staging.retain_producer_scratch();
+        }
+    })?;
+    // Acquire every actual Stage resource before enabling its quiet Drop.
+    // Uniqueness is NOT producer proof; the intrinsic permission is still
+    // mandatory, and a pending observer must never gain destructive cleanup.
     let mut staging = Arc::try_unwrap(staging).map_err(|stage| {
+        stage.retain_producer_scratch();
         context.custody_failure(
             "settled installation producer still retains its staging owner",
             &stage.directory,
         )
     })?;
+    let permission = staging
+        .accept_producer_permission(permission)
+        .inspect_err(|failure| {
+            if matches!(failure, InstallFailure::Abort(_)) {
+                staging.retain_producer_scratch();
+            }
+        })?;
     let result = match prepared {
         Ok(pinned) => (|| -> Result<(), super::prepared::PublicationFailure<InstallFailure>> {
             staging.synchronize()?;
