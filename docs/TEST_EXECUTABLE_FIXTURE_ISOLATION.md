@@ -176,3 +176,30 @@ bounded request/keeper preflight admits no writer; unknown child error/unwind
 retains both actual Child and marker. No recursive cleanup is authorized by a
 reaper handoff alone. This small sharing/retention tradeoff was sent to root for
 confirmation before implementation; no helper or fixture migration exists yet.
+
+## Observed mechanistic RED before helper implementation
+
+Signed TEST-ONLY `69ff3730` deliberately retains the exact generated script's
+writable description in one owned real fork/exec child (child-only fcntl on its
+owned descriptor), then closes the parent's writer. It confirms matching full
+dev/inode in that child's FD table before attempting the script. An independent
+sleep sentinel is owned separately. Both children settle and the retainer's
+pidfd confirms exit BEFORE the intended healthy-exec assertion.
+
+Actual ASB built FIRST13.70s, locked/offline/jobs1/incremental0, in the new
+worktree's own HOME target. Only verified-idle class48 debug artifacts were
+copied beforehand; copied artifacts alone do not qualify this source and the
+original cache was not changed. Frozen baseline
+`target/qualification/fixture-writer-69ff3730-baseline-asb` SHA256
+`637f32d2248cc0e1dc66dcd1b2c58c1ca784820e39651869e83c3ad6f8c5bbca`
+matches actual before/after. `target/fixture-writer-mechanistic-red.log` is
+0PASS/1intendedFAIL/0ignored, EXIT101,0.01s after23.32s compilation: actual
+kernel ETXTBSY(errno26), no script body execution. Retained fixture marker
+`target/executable-writer-controls/18e0b30ae7e1191e-1b6a6d-0/cleanup-confirmed`
+records `retainer reaped; sentinel_alive=true; exec_errno=Some(26)`.
+The actual failed libtest is preserved at
+`target/qualification/fixture-writer-69ff3730-red-libtests` (post-run hash only).
+This proves the forced mechanism, not the unknown historical CI FD holder.
+The helper will retain this as an explicit negative control asserting ETXTBSY,
+separate from new positive isolated-writer tests; that assertion change will be
+visible in the reviewed diff, not described as an unchanged RED turning green.
