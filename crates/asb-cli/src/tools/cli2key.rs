@@ -1,6 +1,5 @@
 use super::{StaticTool, ToolKind};
-use crate::install::LoggedStatus;
-use crate::install::Recipe;
+use crate::install::{InstallResult, OperationContext, ProducerDirectory, Purpose, Recipe};
 pub(super) static ADAPTER: StaticTool = StaticTool::new(
     "cli2key",
     Recipe::Npm {
@@ -12,21 +11,33 @@ pub(super) static ADAPTER: StaticTool = StaticTool::new(
 .with_post_install(post_install);
 
 fn post_install(
+    context: &OperationContext,
     executable: &std::path::Path,
     progress: &mut dyn FnMut(u8, crate::install::ProgressStage),
     output: &mut dyn std::io::Write,
-) -> Result<(), crate::Error> {
+) -> InstallResult<()> {
     progress(90, crate::install::ProgressStage::Finalizing);
-    let status = std::process::Command::new(executable)
+    let owner =
+        ProducerDirectory::open(executable.parent().ok_or_else(|| {
+            crate::Error::Io("installed cli2key has no parent directory".into())
+        })?)?;
+    let mut scope = owner.scope(context);
+    let mut step = scope.prepare(executable, Purpose::Configure, "cli2key API key refresh")?;
+    step.command_mut()
         .args(["key", "refresh"])
-        .logged_status()
-        .map_err(|error| crate::Error::Io(format!("cannot refresh cli2key API key: {error}")))?;
+        .stdin(std::process::Stdio::null());
+    let result = scope.run(step)?;
+    let status = result.status;
+    owner.consume(scope.finish()?)?;
     if !status.success() {
         return Err(crate::Error::Io(
             "cli2key was installed, but its local API key could not be generated".into(),
-        ));
+        )
+        .into());
     }
-    writeln!(output, "Generated a local cli2key API key for project runs").map_err(crate::io_error)
+    writeln!(output, "Generated a local cli2key API key for project runs")
+        .map_err(crate::io_error)?;
+    Ok(())
 }
 
 #[cfg(all(test, unix))]
@@ -36,11 +47,21 @@ mod tests {
 
     #[test]
     fn adapter_hook_reports_success_and_failure() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/cli2key-installer-fixtures")
+            .join(crate::tools::runtime::unique_id());
+        std::fs::create_dir_all(&root).unwrap();
+        let context = OperationContext::new(
+            &root.canonicalize().unwrap(),
+            &crate::project::ProjectConfig::default(),
+        )
+        .unwrap();
         let mut updates = Vec::new();
         let mut output = Vec::new();
         ADAPTER
             .post_install(
-                std::path::Path::new("/bin/true"),
+                &context,
+                &std::path::Path::new("/bin/true").canonicalize().unwrap(),
                 &mut |percent, message| updates.push((percent, message.to_owned())),
                 &mut output,
             )
@@ -53,7 +74,8 @@ mod tests {
         );
         let error = ADAPTER
             .post_install(
-                std::path::Path::new("/bin/false"),
+                &context,
+                &std::path::Path::new("/bin/false").canonicalize().unwrap(),
                 &mut |_, _| {},
                 &mut Vec::new(),
             )

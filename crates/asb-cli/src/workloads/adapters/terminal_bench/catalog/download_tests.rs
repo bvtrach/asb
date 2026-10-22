@@ -5,6 +5,7 @@ use super::*;
 use crate::workloads::adapters::WorkloadAdapter;
 use serde_json::json;
 use std::path::PathBuf;
+use std::process::Command;
 const ADAPTER: TerminalBenchAdapter = TerminalBenchAdapter {
     id: "fixture-suite",
     source: "fixture/source",
@@ -35,6 +36,7 @@ fn isolated_catalog_source_download_and_cache_preservation_contracts() {
             "fresh",
             "damaged-cache",
             "download-fails",
+            "download-127",
             "archive-fails",
             "missing-curl",
             "cache-blocked",
@@ -57,6 +59,7 @@ fn isolated_catalog_source_download_and_cache_preservation_contracts() {
                 crate::write_test_file(&directory, &curl,r#"#!/bin/sh
 printf '%s\n' "$*" > "$HOME/curl-arguments"
 [ "$ASB_TERMINAL_SOURCE_CASE" != download-fails ] || exit 2
+[ "$ASB_TERMINAL_SOURCE_CASE" != download-127 ] || exit 127
 while [ "$#" -gt 0 ]; do
  if [ "$1" = --output ]; then
   shift
@@ -146,6 +149,11 @@ raise AssertionError('unrecognized fixture operation')
         fs::write(&cache, "not a directory").unwrap();
     }
     let context = InstallationContext {
+        process: &crate::install::OperationContext::new(
+            &root,
+            &crate::project::ProjectConfig::default(),
+        )
+        .unwrap(),
         project_root: &root,
         tools_root: &tools,
         workloads_root: &workloads,
@@ -202,14 +210,33 @@ raise AssertionError('unrecognized fixture operation')
     } else {
         let error = result.unwrap_err().to_string();
         let expected = match case.as_str() {
-            "download-fails" => "source download failed".to_owned(),
+            "download-fails" | "download-127" => {
+                "could not download official Terminal-Bench task source".to_owned()
+            }
             "archive-fails" => "incomplete or unsafe".to_owned(),
-            "missing-curl" => "cannot download official task source".to_owned(),
+            "missing-curl" => "official Terminal-Bench task source needs `curl`".to_owned(),
             "cache-blocked" => fs::create_dir_all(&cache).unwrap_err().to_string(),
             "missing-tool" => "unknown tool".to_owned(),
             _ => unreachable!(),
         };
         assert!(error.contains(&expected), "{error}");
         assert!(!stages.contains(&100));
+        if matches!(
+            case.as_str(),
+            "download-fails" | "download-127" | "missing-curl"
+        ) {
+            assert_eq!(stages, [20]);
+            assert!(!archive.exists());
+            assert!(!workloads.join("fixture-suite.workload.toml").exists());
+            assert_eq!(
+                fs::read_to_string(root.join("sdk-operations")).unwrap(),
+                "runtime\nverify\n"
+            );
+            assert_eq!(root.join("curl-arguments").exists(), case != "missing-curl");
+            if case == "download-127" {
+                assert!(error.contains("exit status: 127"), "{error}");
+                assert!(!error.contains("needs `curl`"));
+            }
+        }
     }
 }

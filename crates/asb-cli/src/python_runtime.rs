@@ -1,38 +1,95 @@
 //! The shared project Python used to create isolated Python tool environments.
 
+use crate::install::{
+    InstallFailure, InstallResult, OperationContext, ProcessScope, ProducerDirectory, Purpose,
+};
 use crate::{Error, project};
-use std::fs::{self, OpenOptions};
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 const PYTHON_VERSION_REQUESTS: [&str; 2] = ["3.12", "3.13"];
 
-fn version(executable: &Path) -> Option<(u32, u32)> {
-    let result = Command::new(executable)
-        .args([
+fn bootstrap_dependency_failure(failure: InstallFailure) -> InstallFailure {
+    match failure {
+        InstallFailure::Ordinary(error) => Error::Io(format!(
+            "could not bootstrap project Python: {error}. Install uv, or install Python 3.12 or 3.13 and retry."
+        ))
+        .into(),
+        abort @ InstallFailure::Abort(_) => abort,
+    }
+}
+
+fn inspect_in(
+    scope: &mut ProcessScope,
+    program: &Path,
+    arguments: &[&str],
+    label: &str,
+) -> InstallResult<Option<Vec<u8>>> {
+    let Some(program) = crate::tools::host_executable(program) else {
+        return Ok(None);
+    };
+    let mut step = scope.prepare(program, Purpose::Version, label)?;
+    step.capture(crate::install::process::Capture::inspection());
+    step.command_mut().args(arguments).stdin(Stdio::null());
+    let result = scope.run(step)?;
+    Ok(result.status.success().then_some(result.stdout))
+}
+
+fn version_in(scope: &mut ProcessScope, executable: &Path) -> InstallResult<Option<(u32, u32)>> {
+    let Some(bytes) = inspect_in(
+        scope,
+        executable,
+        &[
             "-I",
             "-S",
             "-c",
             "import sys; print('%d.%d' % sys.version_info[:2])",
-        ])
-        .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .output()
-        .ok()?;
-    if !result.status.success() {
-        return None;
-    }
-    let text = std::str::from_utf8(&result.stdout).ok()?.trim();
-    let (major, minor) = text.split_once('.')?;
-    Some((major.parse().ok()?, minor.parse().ok()?))
+        ],
+        "Python interpreter version",
+    )?
+    else {
+        return Ok(None);
+    };
+    let Some((major, minor)) = std::str::from_utf8(&bytes)
+        .ok()
+        .and_then(|text| text.trim().split_once('.'))
+    else {
+        return Ok(None);
+    };
+    Ok(major.parse().ok().zip(minor.parse().ok()))
+}
+fn compatible_in(scope: &mut ProcessScope, executable: &Path) -> InstallResult<bool> {
+    Ok(matches!(version_in(scope, executable)?, Some((3, 12 | 13))))
+}
+pub(crate) fn matches_project_in(
+    scope: &mut ProcessScope,
+    executable: &Path,
+    project_python: &Path,
+) -> InstallResult<bool> {
+    Ok(compatible_in(scope, executable)?
+        && version_in(scope, executable)? == version_in(scope, project_python)?)
 }
 
-fn compatible(executable: &Path) -> bool {
-    matches!(version(executable), Some((3, 12 | 13)))
+#[cfg(test)]
+fn version(context: &OperationContext, executable: &Path) -> Option<(u32, u32)> {
+    let owner = ProducerDirectory::open(context.root()).ok()?;
+    let mut scope = owner.scope(context);
+    let result = version_in(&mut scope, executable).ok()?;
+    owner.consume(scope.finish().ok()?).ok()?;
+    result
 }
-
-pub(crate) fn matches_project(executable: &Path, project_python: &Path) -> bool {
-    compatible(executable) && version(executable) == version(project_python)
+#[cfg(test)]
+fn matches_project(context: &OperationContext, executable: &Path, project_python: &Path) -> bool {
+    let Ok(owner) = ProducerDirectory::open(context.root()) else {
+        return false;
+    };
+    let mut scope = owner.scope(context);
+    let result = matches_project_in(&mut scope, executable, project_python);
+    let settled = scope
+        .finish()
+        .and_then(|permission| owner.consume(permission));
+    settled.is_ok() && result.unwrap_or(false)
 }
 
 pub(crate) fn project_python(root: &Path) -> PathBuf {
@@ -81,51 +138,56 @@ pub(crate) fn preserve_environment(path: &Path) -> Result<Option<PathBuf>, Error
     )))
 }
 
-fn installed_python() -> Option<PathBuf> {
+fn installed_python_in(scope: &mut ProcessScope) -> InstallResult<Option<PathBuf>> {
     for name in ["python3.12", "python3.13", "python3"] {
         let candidate = PathBuf::from(name);
-        if compatible(&candidate) {
-            return Some(candidate);
+        if compatible_in(scope, &candidate)? {
+            return Ok(Some(candidate));
         }
     }
-    // uv can know about managed interpreters not present on PATH. This is a
-    // lookup only; downloads happen exclusively in the explicit fallback.
     for request in PYTHON_VERSION_REQUESTS {
-        let output = Command::new("uv")
-            .args([
+        let Some(bytes) = inspect_in(
+            scope,
+            Path::new("uv"),
+            &[
                 "python",
                 "find",
                 "--no-project",
                 "--no-config",
                 "--no-python-downloads",
                 request,
-            ])
-            .stdin(Stdio::null())
-            .stderr(Stdio::null())
-            .output();
-        if let Ok(output) = output
-            && output.status.success()
-            && let Ok(text) = std::str::from_utf8(&output.stdout)
-        {
+            ],
+            "uv managed Python lookup",
+        )?
+        else {
+            continue;
+        };
+        if let Ok(text) = std::str::from_utf8(&bytes) {
             let path = PathBuf::from(text.trim());
-            if path.is_absolute() && compatible(&path) {
-                return Some(path);
+            if path.is_absolute() && compatible_in(scope, &path)? {
+                return Ok(Some(path));
             }
         }
     }
-    None
+    Ok(None)
 }
 
-/// Create the project environment, downloading Python through uv only when no
-/// suitable local interpreter is found. Failed setup can be retried later.
-pub(crate) fn ensure(root: &Path, output: &mut dyn std::io::Write) -> Result<PathBuf, Error> {
+pub(crate) fn ensure_in(
+    context: &OperationContext,
+    output: &mut dyn std::io::Write,
+) -> InstallResult<PathBuf> {
+    let root = context.root();
     let python = project_python(root);
-    if compatible(&python) {
+    let probe_owner = ProducerDirectory::open(root)?;
+    let mut probe = probe_owner.scope(context);
+    if compatible_in(&mut probe, &python)? {
+        probe_owner.consume(probe.finish()?)?;
         return Ok(python);
     }
+    let interpreter = installed_python_in(&mut probe)?;
+    probe_owner.consume(probe.finish()?)?;
     let env_dir = root.join(".asb/python/venv");
-    fs::create_dir_all(env_dir.parent().expect("venv parent"))
-        .map_err(|error| Error::Io(format!("cannot create project Python directory: {error}")))?;
+    fs::create_dir_all(env_dir.parent().expect("venv parent")).map_err(crate::io_error)?;
     if let Some(backup) = preserve_environment(&env_dir)? {
         writeln!(
             output,
@@ -134,63 +196,60 @@ pub(crate) fn ensure(root: &Path, output: &mut dyn std::io::Write) -> Result<Pat
         )
         .map_err(crate::io_error)?;
     }
-    let log_path = root.join(".asb/python/setup.log");
-    let log = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_path)
-        .map_err(|error| Error::Io(format!("cannot open {}: {error}", log_path.display())))?;
-    let log_stderr = log
-        .try_clone()
-        .map_err(|error| Error::Io(format!("cannot open Python setup log: {error}")))?;
-    let status = if let Some(interpreter) = installed_python() {
+    let tools_root = project::resolve(root, &context.project().tools_dir);
+    if interpreter.is_none() {
+        crate::install::ensure_runtime_dependency_in(
+            context,
+            "uv",
+            &tools_root,
+            output,
+            &mut |_, _| {},
+        )
+        .map_err(bootstrap_dependency_failure)?;
+    }
+    // This is a NEW actual directory incarnation, after previous probe proof
+    // was consumed and any previous environment was preserved without deletion.
+    fs::create_dir(&env_dir).map_err(crate::io_error)?;
+    let owner = ProducerDirectory::open(&env_dir)?;
+    let mut scope = owner.scope(context);
+    let mut step = if let Some(interpreter) = interpreter {
         writeln!(
             output,
             "Preparing the project Python environment using {}.",
             interpreter.display()
         )
         .map_err(crate::io_error)?;
-        Command::new(&interpreter)
+        let mut step = scope.prepare(
+            interpreter,
+            Purpose::Configure,
+            "project Python environment creation",
+        )?;
+        step.command_mut()
             .args(["-m", "venv", "--without-pip"])
-            .arg(&env_dir)
-            .stdin(Stdio::null())
-            .stdout(Stdio::from(log))
-            .stderr(Stdio::from(log_stderr))
-            .status()
-            .map_err(|error| {
-                Error::Io(format!(
-                    "cannot create project Python environment with {}: {error}",
-                    interpreter.display()
-                ))
-            })?
+            .arg(&env_dir);
+        step
     } else {
-        let (_, config) = project::load(root)?;
-        let tools_root = project::resolve(root, &config.tools_dir);
-        crate::install::ensure_runtime_dependency("uv", root, &tools_root, output, &mut |_, _| {})
-            .map_err(|error| Error::Io(format!("could not bootstrap project Python: {error}. Install uv, or install Python 3.12 or 3.13 and retry.")))?;
         writeln!(
             output,
             "No compatible Python found; using uv to download Python 3.12 for this project."
         )
         .map_err(crate::io_error)?;
-        let mut command = Command::new("uv");
-        crate::tools::apply_runtime_path(&mut command, root, &config.tools_dir)?;
-        command
+        let mut step =
+            scope.prepare("uv", Purpose::Package, "project Python bootstrap download")?;
+        crate::tools::apply_runtime_path_at(step.command_mut(), &tools_root)?;
+        step.command_mut()
             .args(["venv", "--no-project", "--no-config", "--python", "3.12"])
             .arg(&env_dir)
             .env("UV_PYTHON_INSTALL_DIR", root.join(".asb/python/uv-python"))
-            .env("UV_CACHE_DIR", root.join(".asb/python/uv-cache"))
-            .stdin(Stdio::null())
-            .stdout(Stdio::from(log))
-            .stderr(Stdio::from(log_stderr));
-        project::apply_network_proxy(&mut command, root)?;
-        command.status().map_err(|error| Error::Io(format!("cannot start uv to install Python 3.12: {error}. Install uv, or install Python 3.12 or 3.13 and retry.")))?
+            .env("UV_CACHE_DIR", root.join(".asb/python/uv-cache"));
+        step
     };
-    if !status.success() || !compatible(&python) {
-        return Err(Error::Io(format!(
-            "could not prepare a compatible Python 3.12 or 3.13 environment. Check {} for details, including Python/uv, project-directory access, network or proxy errors; then retry the tool installation.",
-            log_path.display()
-        )));
+    step.command_mut().stdin(Stdio::null());
+    let status = scope.run(step)?.status;
+    let compatible = compatible_in(&mut scope, &python)?;
+    owner.consume(scope.finish()?)?;
+    if !status.success() || !compatible {
+        return Err(Error::Io(format!("could not prepare a compatible Python 3.12 or 3.13 environment (setup {status}); inspect the installation diagnostics for Python/uv, project-directory access, network or proxy errors, then retry the tool installation")).into());
     }
     Ok(python)
 }
@@ -239,6 +298,40 @@ mod bootstrap_offline_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bootstrap_dependency_ordinary_failure_keeps_cause_and_actionable_remedy() {
+        let error =
+            bootstrap_dependency_failure(Error::Io("offline source unavailable".into()).into());
+        let InstallFailure::Ordinary(error) = error else {
+            panic!("ordinary bootstrap failure must remain ordinary");
+        };
+        let message = error.to_string();
+        assert!(
+            message.contains("could not bootstrap project Python"),
+            "{message}"
+        );
+        assert!(message.contains("offline source unavailable"), "{message}");
+        assert!(
+            message.contains("Install uv, or install Python 3.12 or 3.13"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn bootstrap_dependency_abort_preserves_typed_cancellation_and_all_facts() {
+        let root = Path::new("/fixture-python-bootstrap");
+        let context = OperationContext::new(root, &project::ProjectConfig::default()).unwrap();
+        context.cancel();
+        let failure = context
+            .check_before_admission("uv bootstrap", root)
+            .unwrap_err();
+        let original = format!("{failure:?}");
+        let failure = bootstrap_dependency_failure(failure);
+        assert!(matches!(failure, InstallFailure::Abort(_)));
+        assert_eq!(format!("{failure:?}"), original);
+        assert!(!failure.to_string().contains("Install uv"));
+    }
 
     #[test]
     fn project_python_precedes_existing_child_path() {

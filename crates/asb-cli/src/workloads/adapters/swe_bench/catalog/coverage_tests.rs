@@ -125,6 +125,11 @@ if mode=='invalid-materialized': (destination/'catalog.json').write_text('invali
     let source_archive = "swe-bench-tasks-3d07b464b7b311a0cbfb5ed5b2d8a3b96f84a33d.tar.gz";
     fs::write(tool.join(source_archive), b"fixture source bytes").unwrap();
     let context = InstallationContext {
+        process: &crate::install::OperationContext::new(
+            &fixture.0,
+            &crate::project::ProjectConfig::default(),
+        )
+        .unwrap(),
         project_root: &fixture.0,
         tools_root: &tools,
         workloads_root: &fixture.0,
