@@ -5,6 +5,74 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
+const SNAPSHOT_BYTES: usize = 4096;
+
+fn snapshot_bytes(mut reader: impl std::io::Read) -> std::io::Result<(Vec<u8>, bool)> {
+    let mut bytes = vec![0; SNAPSHOT_BYTES + 1];
+    let mut length = 0;
+    // Bound retries as well as bytes; a diagnostic never owns cleanup progress.
+    for _ in 0..32 {
+        match reader.read(&mut bytes[length..]) {
+            Ok(0) => {
+                bytes.truncate(length);
+                return Ok((bytes, false));
+            }
+            Ok(count) => {
+                length += count;
+                if length > SNAPSHOT_BYTES {
+                    bytes.truncate(SNAPSHOT_BYTES);
+                    return Ok((bytes, true));
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Err(std::io::Error::other("diagnostic read attempt limit"))
+}
+
+fn diagnostic_snapshot(path: &Path) -> String {
+    use std::os::unix::fs::OpenOptionsExt;
+    let snapshot = (|| {
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+            .open(path)?;
+        if !file.metadata()?.is_file() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "diagnostic is not a regular file",
+            ));
+        }
+        snapshot_bytes(file)
+    })();
+    match snapshot {
+        Ok((bytes, truncated)) => format!(
+            "{:?}{}",
+            String::from_utf8_lossy(&bytes),
+            if truncated { " [truncated]" } else { "" }
+        ),
+        Err(error) => format!("[unavailable: {:?}]", error.kind()),
+    }
+}
+
+fn wait_diagnostics(root: &Path) -> String {
+    let mut message = String::from("provisional fixture snapshots, NOT settlement evidence:");
+    for name in [
+        "guardian-error.json",
+        "child.stderr",
+        "child.stdout",
+        "guardian.stderr",
+        "guardian.stdout",
+    ] {
+        message.push_str(&format!(
+            "\n{name}: {}",
+            diagnostic_snapshot(&root.join(name))
+        ));
+    }
+    message
+}
+
 /// Explicit images survive frozen libtest reexec outside target/debug/deps.
 pub(crate) fn actual_asb() -> Result<PathBuf, String> {
     let candidate = if let Some(path) = std::env::var_os("ASB_RUNTIME_EXECUTABLE") {
@@ -70,6 +138,13 @@ impl Guardian {
         )
     }
 
+    // Explicit wait-error presentation only. Drop/retain must never perform
+    // diagnostic filesystem I/O or delay transfer to pre-established custody.
+    fn wait_error(&mut self, reason: &str) -> String {
+        let retained = self.retain(reason);
+        format!("{retained}; {}", wait_diagnostics(&self.namespace))
+    }
+
     fn wait(&mut self, deadline: Instant) -> Result<ExitStatus, String> {
         loop {
             match self
@@ -82,16 +157,15 @@ impl Guardian {
                     self.child.take();
                     return Ok(status);
                 }
-                Err(_) => return Err(self.retain("cannot observe fixture guardian exit")),
+                Err(_) => return Err(self.wait_error("cannot observe fixture guardian exit")),
                 Ok(None) => {}
             }
             if self.namespace.join("guardian-error.json").exists() {
-                return Err(
-                    self.retain("fixture cleanup reported uncertainty, not completed settlement")
-                );
+                return Err(self
+                    .wait_error("fixture cleanup reported uncertainty, not completed settlement"));
             }
             if Instant::now() >= deadline {
-                return Err(self.retain("fixture guardian exceeded caller deadline"));
+                return Err(self.wait_error("fixture guardian exceeded caller deadline"));
             }
             std::thread::sleep(Duration::from_millis(5));
         }
@@ -151,7 +225,7 @@ pub(crate) fn run(root: &Path, test: &str, scenario: &str) -> Result<ExitStatus,
 
 #[cfg(test)]
 mod tests {
-    #![allow(unsafe_code)] // Exact pidfd exit/reap observations, never PID signals.
+    #![allow(unsafe_code)] // Owned pidfd observations/private FIFO fixture, never PID signals.
     use super::*;
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 
@@ -317,6 +391,9 @@ mod tests {
                 read(&root, "guardian-error.json").unwrap()["custody"],
                 "retained-not-settled"
             );
+            assert!(reason.contains("provisional fixture snapshots, NOT settlement evidence"));
+            assert!(reason.contains("guardian-error.json:"));
+            assert!(reason.contains("child.stderr:") && reason.contains("guardian.stderr:"));
         } else {
             assert_eq!(record["cleanup_error"], serde_json::Value::Null);
             if kind == "timeout" {
@@ -338,5 +415,56 @@ mod tests {
     #[test]
     fn caller_unwind_retains_outer_guardian_until_actual_release_and_reap() {
         case("unwind");
+    }
+
+    #[test]
+    fn diagnostic_snapshots_bound_regular_bytes_and_reject_missing_or_nonregular_files() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/material50-fixtures")
+            .join(crate::workloads::TaskIdentity::local("diagnostic-snapshots", None).attempt_id);
+        std::fs::create_dir_all(&root).unwrap();
+        let regular = root.join("regular");
+        let mut bytes = vec![b'a'; SNAPSHOT_BYTES];
+        bytes.extend_from_slice(b"TAIL_MUST_NOT_APPEAR");
+        std::fs::write(&regular, bytes).unwrap();
+        let captured = diagnostic_snapshot(&regular);
+        assert!(captured.contains("[truncated]"));
+        assert!(!captured.contains("TAIL_MUST_NOT_APPEAR"));
+        assert_eq!(
+            diagnostic_snapshot(&root.join("missing")),
+            "[unavailable: NotFound]"
+        );
+        assert_eq!(diagnostic_snapshot(&root), "[unavailable: InvalidData]");
+        let link = root.join("link");
+        std::os::unix::fs::symlink(&regular, &link).unwrap();
+        assert!(diagnostic_snapshot(&link).starts_with("[unavailable:"));
+        let fifo = root.join("fifo");
+        let name = std::ffi::CString::new(fifo.as_os_str().as_encoded_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+        assert_eq!(diagnostic_snapshot(&fifo), "[unavailable: InvalidData]");
+        assert_eq!(std::fs::read_link(link).unwrap(), regular);
+    }
+
+    #[test]
+    fn diagnostic_read_errors_and_interrupted_retries_are_bounded() {
+        struct Fault(std::io::ErrorKind, usize);
+        impl std::io::Read for Fault {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                self.1 += 1;
+                Err(std::io::Error::from(self.0))
+            }
+        }
+        let mut failed = Fault(std::io::ErrorKind::PermissionDenied, 0);
+        assert_eq!(
+            snapshot_bytes(&mut failed).unwrap_err().kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
+        assert_eq!(failed.1, 1);
+        let mut interrupted = Fault(std::io::ErrorKind::Interrupted, 0);
+        assert_eq!(
+            snapshot_bytes(&mut interrupted).unwrap_err().kind(),
+            std::io::ErrorKind::Other
+        );
+        assert_eq!(interrupted.1, 32);
     }
 }
