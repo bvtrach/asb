@@ -57,3 +57,10 @@ Required delivery gates follow DEVELOPMENT.md: formatting, strict Clippy, full
 tests/build, documentation/diagrams, package/extracted installation and hosted
 exact-head verification. Coverage remains an optional diagnostic, not a newly
 introduced merge threshold.
+
+The standalone pre-version checkpoint `9ece78eb` passed all 1,213 library tests
+(13 existing ignored), every integration suite and doctests, plus strict
+all-target/all-feature Clippy. Main's independent v0.2.44 release completed while
+this change was being qualified. This repair therefore targets v0.2.45; final
+versioned-head source, package/install and hosted evidence must be verified
+separately before merge/release.
