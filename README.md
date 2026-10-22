@@ -339,6 +339,9 @@ Successful human-readable `asb run` and `asb sweep` output prints the local
 `file:` URL for the generated report. When a verified Perfetto trace exists,
 it also prints an official Perfetto UI URL; the trace remains on the local
 machine and can be opened by that URL or dragged into Perfetto UI.
+Each direct `asb run BENCHMARK.toml` allocates a fresh, benchmark-scoped
+directory such as `results/BENCHMARK-runs/run-001/`. Later runs use the next
+index, preserving the prior run's workspace, log, and collector evidence.
 `asb compare BENCHMARK_OR_SWEEP.toml` can be run at any time to regenerate
 `results/<sweep>-comparison/report.html` in
 addition to `comparison.json` and SVG charts. Open the report locally for a
