@@ -21,6 +21,9 @@ pub(crate) mod fixture_writer;
 mod helper_exchange;
 mod install;
 mod launch;
+#[cfg(all(test, target_os = "linux"))]
+#[path = "../tests/support/material_guardian.rs"]
+pub(crate) mod material_guardian;
 mod measurements;
 mod models;
 mod output_lock;
