@@ -577,3 +577,27 @@ and `target/material50-revised-{before,after}.sha256`; raw fixture JSON and all
 historical failing development/RED logs remain intact. This is a focused source
 checkpoint, NOT a full-suite, current-stack integration, release or delivery
 claim. No version bump, push or PR; independent final review remains required.
+
+## Guardian error-branch fixtures (source-only, awaiting review)
+
+The 117 passing cases above did not execute outer Rust Guardian::retain or the
+Python finite cleanup-report path. Three additional private Linux library tests
+now reuse the actual owner-loss scenario, explicit ASB identity, real stopped
+resource journal and positive direct adoption of the live admitted gate. An
+explicit script-only control defers actor release until the parent writes the
+owned marker; normal existing fixture behavior is unchanged. Only the reporting
+case shortens the private post-owner-exit reporting allowance to 40ms, not actual
+custody lifetime or production timeouts. Other cases exercise a 40ms Rust caller
+timeout and controlled unwind/Drop separately. No synthetic kernel error is
+claimed.
+
+An owned release safeguard precedes spawn and outlives the controlled unwind;
+all ordinary error paths run it. The tests pin the exact outer guardian and
+live adopted gate, require an incomplete keeper receipt before release, then
+explicitly release real actors and observe actual keeper reap/ECHILD for the
+outer guardian, actual Python gate reap, sentinel survival and zero admitted
+guardian KILLs before intended assertions. On failed release/observation the
+existing wait-only owner and namespace are retained, never killed for a test
+deadline. These new fixtures have NOT been built or run; source review is
+required before qualification. The fair multi-child reaper follow-up remains
+separate and unimplemented.

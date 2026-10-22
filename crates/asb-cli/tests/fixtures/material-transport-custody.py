@@ -141,7 +141,11 @@ def container_task(root, scenario):
             connection.close()
 
 
-def guardian(root, binary, test, scenario, actual_asb):
+def guardian(root, binary, test, scenario, actual_asb, control="normal"):
+    if control not in ["normal", "deferred", "short-report"]:
+        raise ValueError("unknown private guardian fixture control")
+    deferred = control != "normal"
+    report_seconds = .04 if control == "short-report" else 35
     # Only this exclusive fixture subprocess adopts children, never shared ASB.
     if ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0):
         raise OSError(ctypes.get_errno(), "fixture subreaper")
@@ -163,7 +167,7 @@ def guardian(root, binary, test, scenario, actual_asb):
     identities, gates = {}, []
     cleanup_error, gate_record, gate_identity = None, None, None
     status = -999 if child is None else None
-    cleanup_deadline = time.monotonic()+35 if child is None else None
+    cleanup_deadline = time.monotonic()+report_seconds if child is None else None
     owner_deadline, owner_kill_requested = time.monotonic()+15, False
 
     def report(category):
@@ -230,8 +234,9 @@ def guardian(root, binary, test, scenario, actual_asb):
                     time.sleep(.005)
                     continue
                 if status != 0:report("InnerFixtureFailed")
-                cleanup_deadline = time.monotonic()+35
-                (root/"release-fixtures").touch()
+                cleanup_deadline = time.monotonic()+report_seconds
+                if not deferred:
+                    (root/"release-fixtures").touch()
                 output.close()
                 errors.close()
             pids = [int(value) for value in Path(f"/proc/{os.getpid()}/task/{os.getpid()}/children").read_text().split()]
@@ -251,6 +256,10 @@ def guardian(root, binary, test, scenario, actual_asb):
                         adopted_alive.append(pid)
                     if gate_record is not None and pid == gate_record["pid"]:
                         gates.append(pid)
+                        if event is None:
+                            # Positive direct kernel ownership while the exact
+                            # admitted gate is still live, before parent release.
+                            save(root,"adopted-live-gate.json",{"pid":pid})
                 descriptor = identities[pid]
                 event = os.waitid(os.P_PIDFD, descriptor, os.WEXITED | os.WNOHANG)
                 if event is not None:
