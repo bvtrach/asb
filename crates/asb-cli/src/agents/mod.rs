@@ -39,8 +39,12 @@ pub(crate) trait AgentAdapter: Sync {
         &self,
         context: &crate::runtime_inputs::Context<'_>,
     ) -> Result<Vec<crate::runtime_inputs::Dependency>, Error> {
+        // Native execution accepts the adapter command from PATH when no
+        // project-local installation is selected. The optional input seal must
+        // declare that same command instead of making fresh sweeps warn solely
+        // because the user chose a system-installed agent.
         let executable = resolve(self.id(), context.root, &context.project.tools_dir)
-            .ok_or_else(|| Error::Input("selected agent runtime is not installed".into()))?;
+            .unwrap_or_else(|| self.executable().into());
         let mut command = self.process(&executable)?.direct();
         project::apply_python_path(&mut command, context.root, Path::new(&executable))?;
         crate::tools::apply_runtime_path(&mut command, context.root, &context.project.tools_dir)?;

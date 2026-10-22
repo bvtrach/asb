@@ -84,6 +84,23 @@ fn static_adapter_defaults_are_empty_and_preparation_command_hooks_are_called() 
 }
 
 #[test]
+fn runtime_inputs_follow_the_path_command_when_no_project_installation_exists() {
+    let adapter = adapter();
+    let root = Path::new("/tmp/asb-agent-runtime-inputs-missing-project-tool");
+    let project = crate::project::ProjectConfig::default();
+    let inputs = adapter
+        .runtime_inputs(&crate::runtime_inputs::Context {
+            root,
+            project: &project,
+        })
+        .unwrap();
+    assert!(inputs.iter().any(|input| matches!(
+        input,
+        crate::runtime_inputs::Dependency::Program { path, .. } if path == Path::new("fixture")
+    )));
+}
+
+#[test]
 fn every_optional_hook_is_dispatched_without_changing_its_authoritative_values() {
     fn collect(_context: &CollectionContext<'_>) -> AgentArtifacts {
         AgentArtifacts {
