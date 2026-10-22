@@ -89,3 +89,15 @@ Evidence: `target/fair-reaper-red-{build,held,localfault}.log`, matching
 `before/after.sha256`, and frozen actual/libtest copies. All runtime/build handles
 are terminal; no production fairness edits, full suite, release, PR or push.
 Independent observed-RED approval is required before the proposed correction.
+
+## Minimal production correction, source-only pending review
+
+After observed-RED approval, the same worker now retains its existing vector in
+place and visits each Child with one nonblocking try_wait per round. Only actual
+Some(status) removes a reaped entry. A successful live observation permits the
+existing Terminate kill attempt; errors retain that exact Child without signal,
+and WaitOnly never signals. One sleep separates nonempty rounds. No blocking
+wait, extra worker, handoff API, release policy, deadline reset or caller retry
+is introduced. Completion remains after actual empty population only. The
+original five tests/assertions are unchanged. This implementation has NOT been
+built or run; independent source review precedes new runtime qualification.

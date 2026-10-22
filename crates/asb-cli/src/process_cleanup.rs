@@ -12,12 +12,6 @@ fn poll_owned(child: &mut Child) -> std::io::Result<Option<std::process::ExitSta
     child.try_wait()
 }
 
-fn wait_owned(child: &mut Child) -> std::io::Result<std::process::ExitStatus> {
-    #[cfg(all(test, target_os = "linux"))]
-    test_support::observation_fault(child)?;
-    child.wait()
-}
-
 #[derive(Default)]
 struct State {
     children: Vec<(Child, ReapPolicy)>,
@@ -53,29 +47,25 @@ impl OwnedReaper {
                 while !state.closed {
                     state = ready.wait(state).unwrap_or_else(|error| error.into_inner());
                 }
-                let children = std::mem::take(&mut state.children);
+                let mut children = std::mem::take(&mut state.children);
                 drop(state); // Never hold the handoff lock across a kernel wait.
-                for (mut child, policy) in children {
-                    loop {
-                        if matches!(policy, ReapPolicy::Terminate) {
-                            match poll_owned(&mut child) {
-                                Ok(Some(_)) => break, // Actual exit/reap confirmed.
-                                Ok(None) => {
-                                    let _ = child.kill();
-                                }
-                                Err(_) => {
-                                    // Observation uncertainty is not permission
-                                    // to signal a cached identity or drop Child.
-                                    std::thread::sleep(std::time::Duration::from_millis(10));
-                                    continue;
-                                }
+                while !children.is_empty() {
+                    // One nonblocking observation per owner in each round.
+                    // A held/uncertain first child must not prevent independent
+                    // siblings from receiving termination or actual reap work.
+                    children.retain_mut(|(child, policy)| match poll_owned(child) {
+                        Ok(Some(_)) => false, // Actual exit/reap confirmed.
+                        Ok(None) => {
+                            if matches!(policy, ReapPolicy::Terminate) {
+                                let _ = child.kill();
                             }
+                            true
                         }
-                        if wait_owned(&mut child).is_ok() {
-                            break;
-                        }
-                        // The same pre-established worker retains this exact
-                        // Child through errors. WaitOnly is NEVER killed.
+                        // Observation uncertainty never authorizes a signal or
+                        // discarding this exact Child. WaitOnly NEVER signals.
+                        Err(_) => true,
+                    });
+                    if !children.is_empty() {
                         std::thread::sleep(std::time::Duration::from_millis(10));
                     }
                 }
