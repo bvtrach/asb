@@ -188,7 +188,8 @@ fn child(case: &str) -> bool {
         Ok(result) => {
             directory.consume(scope.finish().unwrap()).unwrap();
             serde_json::json!({"returned":true,"error":false,"success":result.status.success(),
-                "status":result.status.to_string(),"bytes":result.stdout.len(),"cleanup_confirmed":true})
+                "status":result.status.to_string(),"status_code":result.status.code(),
+                "bytes":result.stdout.len(),"stdout":result.stdout,"cleanup_confirmed":true})
         }
         Err(InstallFailure::Abort(abort)) => serde_json::json!({"returned":true,"error":true,
             "success":false,"status":null,"cause":format!("{:?}",abort.cause),
@@ -261,13 +262,13 @@ fn status_return_must_not_leave_a_descendant_writer_mutating_staging() {
     let result: serde_json::Value =
         serde_json::from_slice(&fs::read(owner.root.join("returned.json")).unwrap()).unwrap();
     assert_eq!(
-        result["success"], false,
-        "direct principal exit zero cannot authorize a still-live descendant"
+        result["success"], true,
+        "normal principal exit must remain successful after matching descendant quiescence"
     );
     assert!(owner.root.join("principal-exiting-zero").is_file());
-    assert_eq!(result["cause"], "Deadline");
+    assert_eq!(result["status_code"], 0);
     assert_eq!(result["cleanup_confirmed"], true);
-    assert!(result["status"].is_null());
+    assert!(!result["status"].is_null());
     assert_eq!(initial.as_deref(), Some("initial"));
     assert!(released);
     assert!(
@@ -297,9 +298,11 @@ fn inspection_must_bound_inherited_pipe_lifetime_after_principal_exit() {
     );
     let result: serde_json::Value =
         serde_json::from_slice(&fs::read(owner.root.join("returned.json")).unwrap()).unwrap();
-    assert_eq!(result["cause"], "Deadline");
+    assert_eq!(result["success"], true);
+    assert_eq!(result["status_code"], 0);
     assert_eq!(result["cleanup_confirmed"], true);
-    assert!(result["status"].is_null());
+    assert_eq!(result["stdout"], serde_json::json!(b"valid-prefix".to_vec()));
+    assert!(!result["status"].is_null());
 }
 
 #[test]
