@@ -322,3 +322,30 @@ run `39688577324`; its post-merge run `39689920357` is in progress at this
 checkpoint. Stage43 must wait for that class's complete verification and signed
 release before merging. Own exact-head hosted/package CI, both post-merge jobs
 and signed release remain required. The coverage threshold remains removed.
+# Current-main integration for renewed qualification
+
+The earlier PR #308 head `6e21f19a` remains held after its failed hosted offline
+CLI test; no historical failure cause is inferred from later reproductions.
+The compatibility-listener and exact descriptor-inheritance repair is a
+separate release class. Its reviewed source `662a5ede` was normally merged into
+the runner branch at signed `c79a074d`, staging package0.2.45. Only Cargo version
+conflicts required resolution. Runner production and owning test files remain
+byte-identical to independently reviewed `6e21f19a`; the incoming helper,
+checkpoint, proxy, descriptor and fixture fixes remain unchanged.
+
+Current main is signed `66fb5fda`, released as v0.2.43 after PR #309 and both
+post-merge jobs passed. The incoming compatibility repair is staged0.2.44 and
+still needs its own exact-head hosted delivery. The present integration does
+not claim that release or replace its tests. Public runner promotion must retain
+the actual compatibility merge ancestry and receive fresh independent review,
+complete combined qualification and exact-head/post-merge CI.
+
+The renewed actual ASB built FIRST on the verified-idle exclusive HOME43 cache
+in14.01s. Frozen `target/qualification/runner45-c79a074d-asb` and actual SHA256:
+`537766d748080b73116775b4971db7476a2646c948178f7123643ffb89cd4ec1`.
+Before/after focused hashes agree. Runner134/0/3existingignored, checkpoint41/0,
+and entire offline CLI95/0/5existingignored passed:270 distinct outer tests.
+No source edit or relink occurred during those tests. Logs are retained under
+`target/runner45-*`. These are focused results, not complete qualification.
+No provider, credentials, SDK, Docker or privileged collector was used.
+
