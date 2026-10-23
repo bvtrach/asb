@@ -80,6 +80,10 @@ impl WorkloadAdapter for SweBenchAdapter {
     fn id(&self) -> &'static str {
         self.id
     }
+
+    fn setup_extension(&self) -> Option<super::SetupExtension> {
+        Some(super::SetupExtension::trials())
+    }
     fn preflight(
         &self,
         context: &crate::workloads::PreflightContext<'_>,
@@ -185,5 +189,16 @@ mod tests {
             assert!(adapter.prepare_source(&root, &root).is_err());
         }
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn original_swebench_uses_the_adapter_owned_trial_extension() {
+        for name in ["swe-bench", "swe-bench-lite", "swe-bench-verified"] {
+            let extension = find(name)
+                .and_then(|adapter| adapter.setup_extension())
+                .expect("trial extension");
+            assert_eq!(extension.id, "trial");
+            assert_eq!(extension.tab, "trials");
+        }
     }
 }

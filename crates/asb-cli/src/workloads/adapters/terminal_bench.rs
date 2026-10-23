@@ -81,6 +81,10 @@ impl super::WorkloadAdapter for TerminalBenchAdapter {
     fn id(&self) -> &'static str {
         self.id
     }
+
+    fn setup_extension(&self) -> Option<super::SetupExtension> {
+        Some(super::SetupExtension::trials())
+    }
     fn preflight(
         &self,
         context: &crate::workloads::PreflightContext<'_>,
@@ -199,6 +203,19 @@ pub(super) static ADAPTER: StaticExternalAdapter = StaticExternalAdapter::new(
 mod tests {
     use super::super::WorkloadAdapter;
     use serde_json::json;
+
+    #[test]
+    fn terminal_bench_adapters_and_compatibility_alias_expose_trial_extensions() {
+        for adapter in [
+            &super::super::terminal_bench_1_0::ADAPTER as &dyn WorkloadAdapter,
+            &super::super::terminal_bench_2_1::ADAPTER,
+            &super::ADAPTER,
+        ] {
+            let extension = adapter.setup_extension().expect("trial extension");
+            assert_eq!(extension.id, "trial");
+            assert_eq!(extension.tab, "trials");
+        }
+    }
 
     #[test]
     fn both_original_terminal_adapters_describe_public_selection_before_execution() {

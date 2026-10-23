@@ -67,6 +67,25 @@ pub(crate) fn runtime_inputs(
 ) -> Result<Vec<crate::runtime_inputs::Dependency>, crate::Error> {
     adapters::find(name).map_or_else(|| Ok(Vec::new()), |adapter| adapter.runtime_inputs(context))
 }
+
+/// Adapter-owned setup metadata. Callers must only retain a value while the
+/// matching workload remains selected.
+pub(crate) fn setup_extension(name: &str) -> Option<adapters::SetupExtension> {
+    adapters::find(name).and_then(|adapter| adapter.setup_extension())
+}
+
+/// Enumerate adapter-owned choices for the active setup extension. Values are
+/// stable domain identifiers; the UI reserves its own `[all]` and `[none]`
+/// controls and never persists those labels as workload trials.
+pub(crate) fn setup_extension_values(
+    name: &str,
+    extension: &adapters::SetupExtension,
+    directory: &Path,
+) -> Result<Vec<String>, String> {
+    adapters::find(name)
+        .ok_or_else(|| format!("no workload adapter is registered for `{name}`"))?
+        .setup_extension_values(extension, directory)
+}
 pub(crate) mod target;
 pub(crate) fn registered_sources() -> impl Iterator<Item = (&'static str, &'static str)> {
     adapters::sources()

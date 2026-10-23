@@ -66,7 +66,7 @@ struct Pane {
     selected: Vec<bool>,
     cursor: usize,
     search: String,
-    sections: Vec<Option<&'static str>>,
+    sections: Vec<Option<String>>,
     // Ratatui adjusts this on each render to keep the cursor visible. Retain
     // it between frames so moving within the viewport does not scroll it.
     viewport_offset: Cell<usize>,
@@ -170,15 +170,18 @@ impl Pane {
     }
 
     fn has_selection(&self) -> bool {
-        self.selected.iter().any(|selected| *selected)
+        self.selected_choices()
+            .any(|choice| !choice.key.is_control())
     }
 }
 
 struct App {
     root: PathBuf,
     project: project::ProjectConfig,
-    panes: [Pane; 6],
+    panes: [Pane; 7],
     step: PaneKind,
+    extension_tab: String,
+    extension_description: String,
     message: String,
     message_color: Color,
     message_until: Option<std::time::Instant>,
@@ -192,14 +195,59 @@ impl App {
         &mut self.panes[kind.index()]
     }
 
+    fn navigation_order(&self) -> Vec<PaneKind> {
+        let mut order = Vec::from(PaneKind::ORDER);
+        if !self.pane(PaneKind::Extensions).choices.is_empty() {
+            order.insert(4, PaneKind::Extensions);
+        }
+        order
+    }
+
+    fn step_name(&self, step: PaneKind) -> &str {
+        if step == PaneKind::Extensions {
+            &self.extension_tab
+        } else {
+            step.name()
+        }
+    }
+
+    fn step_description(&self) -> &str {
+        if self.step == PaneKind::Extensions {
+            &self.extension_description
+        } else {
+            self.step.description()
+        }
+    }
+
+    fn next_step(&self) -> Option<PaneKind> {
+        let order = self.navigation_order();
+        order
+            .iter()
+            .position(|step| *step == self.step)
+            .and_then(|index| order.get(index + 1).copied())
+    }
+
+    fn previous_step(&self) -> Option<PaneKind> {
+        let order = self.navigation_order();
+        order
+            .iter()
+            .position(|step| *step == self.step)
+            .and_then(|index| index.checked_sub(1))
+            .and_then(|index| order.get(index).copied())
+    }
+
     fn new(root: PathBuf, project: project::ProjectConfig) -> Self {
-        let agents = agents::names()
-            .map(|name| Choice {
-                label: (*name).into(),
-                key: ChoiceKey::Agent((*name).into()),
-                availability: Availability::Unknown,
-            })
-            .collect();
+        let agents = std::iter::once(Choice {
+            label: "[all]".into(),
+            key: ChoiceKey::AllAgents,
+            availability: Availability::Available,
+        })
+        .chain(agents::names().map(|name| Choice {
+            label: (*name).into(),
+            key: ChoiceKey::Agent((*name).into()),
+            availability: Availability::Unknown,
+        }))
+        .collect();
         let provider_choices = providers::names()
             .iter()
             .copied()
@@ -210,18 +258,29 @@ impl App {
                 availability: Availability::Unknown,
             })
             .collect();
-        let workloads = workload_choices(&root, &project.workloads_dir);
+        let workloads = std::iter::once(Choice {
+            label: "[all]".into(),
+            key: ChoiceKey::AllWorkloads,
+            availability: Availability::Available,
+        })
+        .chain(workload_choices(&root, &project.workloads_dir))
+        .collect();
         let mut workload_pane = Pane::new(workloads);
         let external_names = install::external_workload_names()
             .map(str::to_owned)
             .collect::<BTreeSet<_>>();
         for (index, choice) in workload_pane.choices.iter().enumerate() {
-            let name = choice.key.workload().expect("workload pane identity");
-            workload_pane.sections[index] = Some(if external_names.contains(name) {
-                "External workloads"
-            } else {
-                "Built-in workloads"
-            });
+            let Some(name) = choice.key.workload() else {
+                continue;
+            };
+            workload_pane.sections[index] = Some(
+                if external_names.contains(name) {
+                    "External workloads"
+                } else {
+                    "Built-in workloads"
+                }
+                .into(),
+            );
         }
         let measures = measurements::available_collectors()
             .into_iter()
@@ -251,8 +310,11 @@ impl App {
                 workload_pane,
                 measure_pane,
                 concurrency_pane,
+                Pane::new(Vec::new()),
             ],
             step: PaneKind::Agents,
+            extension_tab: "workload options".into(),
+            extension_description: PaneKind::Extensions.description().into(),
             message: "Space selects; arrows move; Tab or Enter advances; Esc cancels.".into(),
             message_color: Color::Yellow,
             message_until: None,
@@ -283,6 +345,9 @@ impl App {
     fn refresh_availability(&mut self) {
         let tools = project::resolve(&self.root, &self.project.tools_dir);
         for choice in &mut self.panes[PaneKind::Agents.index()].choices {
+            if choice.key.is_all() {
+                continue;
+            }
             choice.availability = if install::tool_available(
                 choice.key.agent().expect("agent pane identity"),
                 &tools,
@@ -294,6 +359,9 @@ impl App {
         }
         let workloads = project::resolve(&self.root, &self.project.workloads_dir);
         for choice in &mut self.panes[PaneKind::Workloads.index()].choices {
+            if choice.key.is_all() {
+                continue;
+            }
             let name = choice.key.workload().expect("workload pane identity");
             let external = install::external_workload_names().any(|external| external == name);
             choice.availability = if install::workload_available(name, &workloads)
@@ -318,6 +386,113 @@ impl App {
                 Availability::Missing
             };
         }
+    }
+
+    /// Rebuild extension choices exclusively from currently selected
+    /// workloads.  State is retained only for an adapter that remains active;
+    /// deselecting a workload removes every associated value immediately.
+    fn refresh_extensions(&mut self) -> Result<(), Error> {
+        let previous = self
+            .pane(PaneKind::Extensions)
+            .selected_choices()
+            .filter_map(|choice| match &choice.key {
+                ChoiceKey::ExtensionValue {
+                    workload,
+                    extension,
+                    value,
+                } => Some((workload.clone(), extension.clone(), value.clone())),
+                _ => None,
+            })
+            .collect::<BTreeSet<_>>();
+        let directory = project::resolve(&self.root, &self.project.workloads_dir);
+        let selected = self
+            .pane(PaneKind::Workloads)
+            .selected_choices()
+            .filter_map(|choice| choice.key.workload().map(str::to_owned))
+            .collect::<Vec<_>>();
+        let mut choices = Vec::new();
+        let mut tabs = BTreeSet::new();
+        let mut descriptions = BTreeSet::new();
+        for workload in selected {
+            let Some(extension) = workloads::setup_extension(&workload) else {
+                continue;
+            };
+            tabs.insert(extension.tab);
+            descriptions.insert(extension.description);
+            let values = workloads::setup_extension_values(&workload, &extension, &directory)
+                .map_err(Error::Input)?;
+            choices.push(Choice {
+                label: format!("[all] {workload}"),
+                key: ChoiceKey::AllExtension {
+                    workload: workload.clone(),
+                    extension: extension.id.into(),
+                },
+                availability: Availability::Available,
+            });
+            choices.push(Choice {
+                label: format!("[none] {workload}"),
+                key: ChoiceKey::NoExtension {
+                    workload: workload.clone(),
+                    extension: extension.id.into(),
+                },
+                availability: Availability::Available,
+            });
+            choices.extend(values.into_iter().map(|value| Choice {
+                label: value.clone(),
+                key: ChoiceKey::ExtensionValue {
+                    workload: workload.clone(),
+                    extension: extension.id.into(),
+                    value,
+                },
+                availability: Availability::Available,
+            }));
+        }
+        let mut pane = Pane::new(choices);
+        for (index, choice) in pane.choices.iter().enumerate() {
+            match &choice.key {
+                ChoiceKey::AllExtension { workload, .. }
+                | ChoiceKey::NoExtension { workload, .. }
+                | ChoiceKey::ExtensionValue { workload, .. } => {
+                    pane.sections[index] = Some(format!("{workload} trials"));
+                }
+                _ => {}
+            }
+            if let ChoiceKey::ExtensionValue {
+                workload,
+                extension,
+                value,
+            } = &choice.key
+            {
+                pane.selected[index] =
+                    previous.contains(&(workload.clone(), extension.clone(), value.clone()));
+            }
+        }
+        for index in 0..pane.choices.len() {
+            if matches!(pane.choices[index].key, ChoiceKey::AllExtension { .. }) {
+                update_extension_sentinels(&mut pane, index);
+            }
+        }
+        self.panes[PaneKind::Extensions.index()] = pane;
+        self.extension_tab = if tabs.len() == 1 {
+            tabs.into_iter().next().unwrap_or("workload options").into()
+        } else {
+            "workload options".into()
+        };
+        self.extension_description = if descriptions.len() == 1 {
+            descriptions
+                .into_iter()
+                .next()
+                .unwrap_or(PaneKind::Extensions.description())
+                .into()
+        } else if descriptions.is_empty() {
+            PaneKind::Extensions.description().into()
+        } else {
+            "Choose adapter-owned options for every selected workload.".into()
+        };
+        if self.step == PaneKind::Extensions && self.pane(PaneKind::Extensions).choices.is_empty() {
+            self.step = PaneKind::Workloads;
+        }
+        Ok(())
     }
 
     fn sync_collector_dependencies(&mut self) -> Vec<String> {
@@ -395,9 +570,12 @@ impl App {
         let model_warning = (self.step == PaneKind::Providers)
             .then(|| self.refresh_models())
             .flatten();
-        if let Some(next) = self.step.next() {
+        if self.step == PaneKind::Workloads {
+            self.refresh_extensions()?;
+        }
+        if let Some(next) = self.next_step() {
             self.step = next;
-            self.message = model_warning.unwrap_or_else(|| self.step.description().into());
+            self.message = model_warning.unwrap_or_else(|| self.step_description().into());
             self.message_color = Color::Yellow;
             self.message_until = None;
             Ok(None)
@@ -407,9 +585,9 @@ impl App {
     }
 
     fn back(&mut self) {
-        if let Some(previous) = self.step.previous() {
+        if let Some(previous) = self.previous_step() {
             self.step = previous;
-            self.message = self.step.description().into();
+            self.message = self.step_description().into();
         }
     }
 }
@@ -1337,8 +1515,62 @@ where
     let Some(index) = app.panes[step.index()].active_index() else {
         return Ok(());
     };
+    if let ChoiceKey::AllExtension {
+        workload,
+        extension,
+    } = app.panes[step.index()].choices[index].key.clone()
+    {
+        let enable = !app.panes[step.index()].selected[index];
+        let pane = &mut app.panes[step.index()];
+        for (choice, selected) in pane.choices.iter().zip(pane.selected.iter_mut()) {
+            if matches!(&choice.key, ChoiceKey::ExtensionValue { workload: candidate, extension: candidate_extension, .. } if candidate == &workload && candidate_extension == &extension)
+            {
+                *selected = enable;
+            }
+            if matches!(&choice.key, ChoiceKey::NoExtension { workload: candidate, extension: candidate_extension } if candidate == &workload && candidate_extension == &extension)
+            {
+                *selected = false;
+            }
+        }
+        update_extension_sentinels(pane, index);
+        return Ok(());
+    }
+    if let ChoiceKey::NoExtension {
+        workload,
+        extension,
+    } = app.panes[step.index()].choices[index].key.clone()
+    {
+        let pane = &mut app.panes[step.index()];
+        for (choice, selected) in pane.choices.iter().zip(pane.selected.iter_mut()) {
+            if matches!(&choice.key, ChoiceKey::ExtensionValue { workload: candidate, extension: candidate_extension, .. } if candidate == &workload && candidate_extension == &extension)
+            {
+                *selected = false;
+            }
+        }
+        pane.selected[index] = true;
+        update_extension_sentinels(pane, index);
+        return Ok(());
+    }
+    if app.panes[step.index()].choices[index].key.is_all() {
+        let enable = !app.panes[step.index()].selected[index];
+        let pane = &mut app.panes[step.index()];
+        for (choice, selected) in pane.choices.iter().zip(pane.selected.iter_mut()) {
+            if !choice.key.is_all() {
+                *selected = enable;
+            }
+        }
+        pane.selected[index] = enable;
+        return Ok(());
+    }
     if app.panes[step.index()].selected[index] {
         app.panes[step.index()].selected[index] = false;
+        if let Some(all) = app.panes[step.index()]
+            .choices
+            .iter()
+            .position(|choice| choice.key.is_all())
+        {
+            app.panes[step.index()].selected[all] = false;
+        }
         if step == PaneKind::Measurements {
             app.sync_collector_dependencies();
             if app.panes[step.index()].selected[index] {
@@ -1351,6 +1583,9 @@ where
                     true,
                 );
             }
+        }
+        if step == PaneKind::Workloads {
+            app.refresh_extensions()?;
         }
         return Ok(());
     }
@@ -1376,10 +1611,75 @@ where
         }
     }
     app.panes[step.index()].selected[index] = true;
+    let pane = &mut app.panes[step.index()];
+    if let Some(all) = pane.choices.iter().position(|choice| choice.key.is_all()) {
+        pane.selected[all] = pane
+            .choices
+            .iter()
+            .zip(pane.selected.iter())
+            .filter(|(choice, _)| !choice.key.is_all())
+            .all(|(_, selected)| *selected);
+    }
     if step == PaneKind::Measurements {
         app.sync_collector_dependencies();
     }
+    if step == PaneKind::Extensions {
+        update_extension_sentinels(&mut app.panes[step.index()], index);
+    }
+    if step == PaneKind::Workloads {
+        app.refresh_extensions()?;
+    }
     Ok(())
+}
+
+fn update_extension_sentinels(pane: &mut Pane, _changed: usize) {
+    let groups = pane
+        .choices
+        .iter()
+        .filter_map(|choice| match &choice.key {
+            ChoiceKey::AllExtension {
+                workload,
+                extension,
+            }
+            | ChoiceKey::NoExtension {
+                workload,
+                extension,
+            }
+            | ChoiceKey::ExtensionValue {
+                workload,
+                extension,
+                ..
+            } => Some((workload.clone(), extension.clone())),
+            _ => None,
+        })
+        .collect::<BTreeSet<_>>();
+    for (workload, extension) in groups {
+        let values = pane
+            .choices
+            .iter()
+            .enumerate()
+            .filter(|(_, choice)| matches!(&choice.key, ChoiceKey::ExtensionValue { workload: candidate, extension: candidate_extension, .. } if candidate == &workload && candidate_extension == &extension))
+            .collect::<Vec<_>>();
+        let any = values.iter().any(|(index, _)| pane.selected[*index]);
+        let all = !values.is_empty() && values.iter().all(|(index, _)| pane.selected[*index]);
+        for (index, choice) in pane.choices.iter().enumerate() {
+            match &choice.key {
+                ChoiceKey::AllExtension {
+                    workload: candidate,
+                    extension: candidate_extension,
+                } if candidate == &workload && candidate_extension == &extension => {
+                    pane.selected[index] = all
+                }
+                ChoiceKey::NoExtension {
+                    workload: candidate,
+                    extension: candidate_extension,
+                } if candidate == &workload && candidate_extension == &extension => {
+                    pane.selected[index] = !any
+                }
+                _ => {}
+            }
+        }
+    }
 }
 
 fn draw(frame: &mut ratatui::Frame<'_>, app: &App) {
@@ -1392,23 +1692,27 @@ fn draw(frame: &mut ratatui::Frame<'_>, app: &App) {
             Constraint::Length(3),
         ])
         .split(frame.area());
-    let steps = PaneKind::ORDER.map(PaneKind::name);
+    let steps = app.navigation_order();
+    let active_step = steps
+        .iter()
+        .position(|step| *step == app.step)
+        .unwrap_or_default();
     let step_line = steps
         .iter()
         .enumerate()
         .flat_map(|(index, name)| {
-            let style = if index == app.step.index() {
+            let style = if *name == app.step {
                 Style::default()
                     .fg(Color::Black)
                     .bg(Color::Cyan)
                     .add_modifier(Modifier::BOLD)
-            } else if index < app.step.index() {
+            } else if index < active_step {
                 Style::default().fg(Color::Green)
             } else {
                 Style::default().fg(Color::DarkGray)
             };
             [
-                Span::styled(format!(" {name} "), style),
+                Span::styled(format!(" {} ", app.step_name(*name)), style),
                 Span::raw(if index + 1 == steps.len() {
                     ""
                 } else {
@@ -1423,7 +1727,7 @@ fn draw(frame: &mut ratatui::Frame<'_>, app: &App) {
         vertical[0],
     );
     frame.render_widget(
-        Paragraph::new(app.step.description())
+        Paragraph::new(app.step_description())
             .wrap(Wrap { trim: true })
             .block(Block::default().borders(Borders::ALL).title("Step")),
         vertical[1],
@@ -1509,7 +1813,10 @@ fn render_choice_pane(
     let mut previous_section = None;
     for index in visible {
         let choice = &pane.choices[index];
-        let section = pane.sections.get(index).copied().flatten();
+        let section = pane
+            .sections
+            .get(index)
+            .and_then(|section| section.as_deref());
         if let Some(section) = section
             && previous_section != Some(section)
         {
@@ -1803,7 +2110,8 @@ fn generate_configs(app: &App) -> Result<Generated, Error> {
         .collect::<Vec<_>>();
     let workloads = app.panes[PaneKind::Workloads.index()]
         .selected_choices()
-        .map(|choice| selected_trials(app, &choice.key))
+        .filter(|choice| !choice.key.is_control())
+        .map(|choice| selected_workload_trials(app, &choice.key))
         .collect::<Result<Vec<_>, _>>()?;
     let measures = crate::collectors::expand_dependencies(
         &app.panes[PaneKind::Measurements.index()]
@@ -1919,6 +2227,41 @@ fn selected_trials(app: &App, choice: &ChoiceKey) -> Result<TrialSelection, Erro
             .map(|trial| Some(trial.id))
             .collect(),
     ))
+}
+
+fn selected_workload_trials(app: &App, choice: &ChoiceKey) -> Result<TrialSelection, Error> {
+    // A persisted workload trial-set is an explicit user selection and takes
+    // precedence over the interactive extension pane.
+    if matches!(choice, ChoiceKey::TrialSet { .. }) {
+        return selected_trials(app, choice);
+    }
+    let Some(workload) = choice.workload() else {
+        return Err(Error::Input("invalid workload selection identity".into()));
+    };
+    let Some(extension) = workloads::setup_extension(workload) else {
+        return selected_trials(app, choice);
+    };
+    let trials = app
+        .pane(PaneKind::Extensions)
+        .selected_choices()
+        .filter_map(|choice| match &choice.key {
+            ChoiceKey::ExtensionValue {
+                workload: selected,
+                extension: selected_extension,
+                value,
+            } if selected == workload && selected_extension == extension.id => {
+                Some(Some(value.clone()))
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    if trials.is_empty() {
+        return Err(Error::Input(format!(
+            "select at least one {} value for `{workload}` in the setup TUI",
+            extension.tab
+        )));
+    }
+    Ok((workload.to_owned(), None, trials))
 }
 
 #[cfg(test)]
@@ -2071,7 +2414,7 @@ mod tests {
         assert!(app.message.contains("Select at least one"));
         app.back();
         assert_eq!(app.step, PaneKind::Agents);
-        app.panes[PaneKind::Agents.index()].selected[0] = true;
+        app.panes[PaneKind::Agents.index()].selected[1] = true;
         assert!(app.advance().unwrap().is_none());
         assert_eq!(app.step, PaneKind::Providers);
         app.back();
@@ -2249,14 +2592,14 @@ mod tests {
                 .collect(),
         );
         pane.sections = vec![
-            Some("first"),
-            Some("first"),
-            Some("first"),
-            Some("first"),
-            Some("second"),
-            Some("second"),
-            Some("second"),
-            Some("second"),
+            Some("first".into()),
+            Some("first".into()),
+            Some("first".into()),
+            Some("first".into()),
+            Some("second".into()),
+            Some("second".into()),
+            Some("second".into()),
+            Some("second".into()),
         ];
         let mut terminal = Terminal::new(TestBackend::new(40, 7)).unwrap();
         let draw = |terminal: &mut Terminal<TestBackend>, pane: &Pane| {
@@ -2361,6 +2704,7 @@ mod tests {
             app.panes[PaneKind::Agents.index()]
                 .choices
                 .iter()
+                .filter(|choice| !choice.key.is_control())
                 .all(|choice| choice.availability == Availability::Missing)
         );
         assert!(
@@ -2416,35 +2760,40 @@ mod tests {
             let mut app = App::new(std::env::temp_dir(), ProjectConfig::default());
             app.step = step;
             app.panes[step.index()].selected.fill(false);
-            app.panes[step.index()].cursor = 0;
-            app.panes[step.index()].choices[0].availability = Availability::Missing;
+            let first = app.panes[step.index()]
+                .choices
+                .iter()
+                .position(|choice| !choice.key.is_control())
+                .unwrap();
+            app.panes[step.index()].cursor = first;
+            app.panes[step.index()].choices[first].availability = Availability::Missing;
             let mut calls = 0;
             super::toggle_setup_choice(&mut app, |app, dependency| {
                 assert!(dependency.is_none());
-                assert!(!app.panes[step.index()].selected[0]);
+                assert!(!app.panes[step.index()].selected[first]);
                 calls += 1;
                 Ok(false)
             })
             .unwrap();
             assert_eq!(calls, 1);
             assert!(
-                !app.panes[step.index()].selected[0],
+                !app.panes[step.index()].selected[first],
                 "failed install selected step {step:?}"
             );
             super::toggle_setup_choice(&mut app, |app, dependency| {
-                assert!(!app.panes[step.index()].selected[0]);
+                assert!(!app.panes[step.index()].selected[first]);
                 if dependency.is_none() {
                     calls += 1;
-                    app.panes[step.index()].choices[0].availability = Availability::Available;
+                    app.panes[step.index()].choices[first].availability = Availability::Available;
                 }
                 Ok(true)
             })
             .unwrap();
             assert_eq!(calls, 2);
-            assert!(app.panes[step.index()].selected[0]);
+            assert!(app.panes[step.index()].selected[first]);
             super::toggle_setup_choice(&mut app, |_, _| panic!("deselection must not install"))
                 .unwrap();
-            assert!(!app.panes[step.index()].selected[0]);
+            assert!(!app.panes[step.index()].selected[first]);
         }
     }
 
@@ -2694,7 +3043,7 @@ mod tests {
         std::fs::create_dir_all(&root).expect("test root");
         let project = ProjectConfig::default();
         let mut app = App::new(root.clone(), project);
-        app.panes[PaneKind::Agents.index()].selected[0] = true;
+        app.panes[PaneKind::Agents.index()].selected[1] = true;
         app.panes[PaneKind::Providers.index()].selected[0] = true;
         // Use a catalog fixture rather than discovering from the selected
         // provider, which could read a developer key or contact a live API.
@@ -2707,7 +3056,7 @@ mod tests {
             availability: Availability::Unknown,
         }]);
         app.panes[PaneKind::Models.index()].selected[0] = true;
-        app.panes[PaneKind::Workloads.index()].selected[0] = true;
+        app.panes[PaneKind::Workloads.index()].selected[1] = true;
         let generated = generate_configs(&app).expect("configs generated");
         assert_eq!(generated.tests, 1);
         let manifest = crate::sweep::read_manifest(&generated.sweep).unwrap();
@@ -2808,7 +3157,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!("asb-tui-concurrency-{}", std::process::id()));
         std::fs::create_dir_all(&root).expect("test root");
         let app = App::new(root.clone(), ProjectConfig::default());
-        assert_eq!(app.panes.len(), 6);
+        assert_eq!(app.panes.len(), 7);
         assert_eq!(
             app.panes[PaneKind::Concurrency.index()]
                 .selected_choices()
@@ -2829,5 +3178,142 @@ mod tests {
             sweep: std::path::PathBuf::from("asb-sweep-123.toml"),
         });
         assert!(summary.contains("Run it with: asb sweep asb-sweep-123.toml"));
+    }
+
+    #[test]
+    fn extension_controls_select_all_or_none_without_persisting_control_values() {
+        let mut pane = Pane::new(vec![
+            Choice {
+                label: "[all] terminal-bench".into(),
+                key: ChoiceKey::AllExtension {
+                    workload: "terminal-bench".into(),
+                    extension: "trial".into(),
+                },
+                availability: Availability::Available,
+            },
+            Choice {
+                label: "[none] terminal-bench".into(),
+                key: ChoiceKey::NoExtension {
+                    workload: "terminal-bench".into(),
+                    extension: "trial".into(),
+                },
+                availability: Availability::Available,
+            },
+            Choice {
+                label: "task-a".into(),
+                key: ChoiceKey::ExtensionValue {
+                    workload: "terminal-bench".into(),
+                    extension: "trial".into(),
+                    value: "task-a".into(),
+                },
+                availability: Availability::Available,
+            },
+            Choice {
+                label: "task-b".into(),
+                key: ChoiceKey::ExtensionValue {
+                    workload: "terminal-bench".into(),
+                    extension: "trial".into(),
+                    value: "task-b".into(),
+                },
+                availability: Availability::Available,
+            },
+        ]);
+        pane.selected[2] = true;
+        pane.selected[3] = true;
+        super::update_extension_sentinels(&mut pane, 2);
+        assert!(pane.selected[0]);
+        assert!(!pane.selected[1]);
+        pane.selected[2] = false;
+        pane.selected[3] = false;
+        super::update_extension_sentinels(&mut pane, 2);
+        assert!(!pane.selected[0]);
+        assert!(pane.selected[1]);
+        assert!(!pane.has_selection());
+        assert!(
+            pane.selected_choices()
+                .all(|choice| !matches!(choice.key, ChoiceKey::ExtensionValue { .. }))
+        );
+    }
+
+    #[test]
+    fn selected_adapter_adds_trial_tab_and_deselection_discards_it() {
+        let root = std::env::temp_dir().join(format!(
+            "asb-tui-extension-lifecycle-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let mut app = App::new(root.clone(), ProjectConfig::default());
+        let workload = app.panes[PaneKind::Workloads.index()]
+            .choices
+            .iter()
+            .position(|choice| choice.key.workload() == Some("terminal-bench"))
+            .unwrap();
+        app.panes[PaneKind::Workloads.index()].selected[workload] = true;
+        app.refresh_extensions().unwrap();
+        assert!(app.navigation_order().contains(&PaneKind::Extensions));
+        let trials = &app.panes[PaneKind::Extensions.index()];
+        assert!(
+            trials
+                .choices
+                .iter()
+                .any(|choice| matches!(choice.key, ChoiceKey::AllExtension { .. }))
+        );
+        let value = trials
+            .choices
+            .iter()
+            .position(|choice| matches!(choice.key, ChoiceKey::ExtensionValue { .. }))
+            .unwrap();
+        app.panes[PaneKind::Extensions.index()].selected[value] = true;
+        app.panes[PaneKind::Workloads.index()].selected[workload] = false;
+        app.refresh_extensions().unwrap();
+        assert!(app.panes[PaneKind::Extensions.index()].choices.is_empty());
+        assert!(!app.navigation_order().contains(&PaneKind::Extensions));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn extension_trial_selection_is_published_as_a_workload_trial() {
+        let root = std::env::temp_dir().join(format!(
+            "asb-tui-extension-publication-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let mut app = App::new(root.clone(), ProjectConfig::default());
+        app.panes[PaneKind::Agents.index()] = Pane::new(vec![agent_choice("pi")]);
+        app.panes[PaneKind::Agents.index()].selected[0] = true;
+        app.panes[PaneKind::Providers.index()] = Pane::new(vec![provider_choice("openai")]);
+        app.panes[PaneKind::Providers.index()].selected[0] = true;
+        app.panes[PaneKind::Models.index()] = Pane::new(vec![Choice {
+            label: "fixture-model".into(),
+            key: ChoiceKey::Model {
+                provider: "openai".into(),
+                model: "fixture-model".into(),
+            },
+            availability: Availability::Available,
+        }]);
+        app.panes[PaneKind::Models.index()].selected[0] = true;
+        app.panes[PaneKind::Workloads.index()] = Pane::new(vec![choice("terminal-bench")]);
+        app.panes[PaneKind::Workloads.index()].selected[0] = true;
+        app.refresh_extensions().unwrap();
+        let trial = app.panes[PaneKind::Extensions.index()]
+            .choices
+            .iter()
+            .position(|choice| {
+                matches!(&choice.key, ChoiceKey::ExtensionValue { value, .. } if value == "shell")
+            })
+            .unwrap();
+        app.panes[PaneKind::Extensions.index()].selected[trial] = true;
+        let generated = generate_configs(&app).unwrap();
+        assert_eq!(generated.tests, 1);
+        let manifest = crate::sweep::read_manifest(&generated.sweep).unwrap();
+        let config: crate::benchmark::BenchmarkConfig =
+            toml::from_str(&std::fs::read_to_string(root.join(&manifest.configs[0])).unwrap())
+                .unwrap();
+        assert_eq!(config.workload, "terminal-bench");
+        assert_eq!(config.trial.as_deref(), Some("shell"));
+        assert!(config.trial_set.is_none());
+        let _ = std::fs::remove_dir_all(root);
     }
 }
