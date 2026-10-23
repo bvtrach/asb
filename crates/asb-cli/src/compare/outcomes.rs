@@ -74,45 +74,8 @@ impl Recorded {
                 "a grade-only result and a measurement claim the same slot; preserve both and inspect the conflict",
             ));
         }
-        for field in [
-            "execution",
-            "recording",
-            "execution_plan_fingerprint",
-            "module",
-            "benchmark_outcome",
-            "schema_version",
-            "replica_index",
-            "execution_cohort",
-            "task",
-            "agent",
-            "workload",
-            "provider",
-            "model",
-            "process_success",
-            "workload_success",
-            "workload_evaluation",
-            "workload_baseline",
-            "workload_baseline_passed",
-            "success_rate",
-            "token_usage",
-            "elapsed_ms",
-            "steps",
-            "failure_kind",
-            "failure_reason",
-            "workload_failure",
-            "adapter_smoke_success",
-            "workload_resource_disposition",
-            "workload_artifacts",
-        ] {
-            let agrees = if matches!(
-                field,
-                "workload_resource_disposition" | "workload_artifacts"
-            ) {
-                self.summary.get(field) == measured.get(field)
-            } else {
-                self.summary[field] == measured[field]
-            };
-            if !agrees {
+        for field in crate::planning::MEASUREMENT_AGREEMENT_FIELDS {
+            if !crate::planning::measurement_field_agrees(&self.summary, measured, field) {
                 return Err(invalid(
                     &self.path,
                     &format!(

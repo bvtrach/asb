@@ -32,6 +32,57 @@ pub(crate) fn recorded_object<'a>(
     Ok(value)
 }
 
+/// Summary fields that must agree exactly between a recorded outcome and its
+/// runtime measurement before either may stand in for the other.
+pub(crate) const MEASUREMENT_AGREEMENT_FIELDS: [&str; 28] = [
+    "execution_plan_fingerprint",
+    "execution",
+    "recording",
+    "module",
+    "benchmark_outcome",
+    "replica_index",
+    "execution_cohort",
+    "schema_version",
+    "task",
+    "agent",
+    "workload",
+    "provider",
+    "model",
+    "process_success",
+    "workload_success",
+    "workload_evaluation",
+    "workload_baseline",
+    "workload_baseline_passed",
+    "success_rate",
+    "token_usage",
+    "elapsed_ms",
+    "steps",
+    "failure_kind",
+    "failure_reason",
+    "workload_failure",
+    "adapter_smoke_success",
+    "workload_resource_disposition",
+    "workload_artifacts",
+];
+
+/// Whether a summary field and its measured counterpart agree. Optional
+/// observations are absent in either representation; nonnull values must still
+/// agree exactly.
+pub(crate) fn measurement_field_agrees(
+    summary: &serde_json::Value,
+    measured: &serde_json::Value,
+    field: &str,
+) -> bool {
+    if matches!(
+        field,
+        "workload_resource_disposition" | "workload_artifacts"
+    ) {
+        summary.get(field) == measured.get(field)
+    } else {
+        summary[field] == measured[field]
+    }
+}
+
 /// Runtime dispatch population, not replay identity or observed overlap.
 /// Occurrence IDs and original slot membership deliberately do not enter it.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]

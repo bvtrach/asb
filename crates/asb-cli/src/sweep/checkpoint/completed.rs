@@ -773,53 +773,16 @@ fn validate_capture_declarations(record: &Outcome) -> Result<(), Error> {
 }
 
 pub(in crate::sweep) fn measurement_matches(measured: &Value, summary: &Value) -> bool {
-    [
-        "execution_plan_fingerprint",
-        "execution",
-        "recording",
-        "module",
-        "benchmark_outcome",
-        "replica_index",
-        "execution_cohort",
-        "schema_version",
-        "task",
-        "agent",
-        "workload",
-        "provider",
-        "model",
-        "process_success",
-        "workload_success",
-        "workload_evaluation",
-        "workload_baseline",
-        "workload_baseline_passed",
-        "success_rate",
-        "token_usage",
-        "elapsed_ms",
-        "steps",
-        "failure_kind",
-        "failure_reason",
-        "workload_failure",
-        "adapter_smoke_success",
-        "workload_resource_disposition",
-        "workload_artifacts",
-    ]
-    .iter()
-    .all(|field| {
-        if matches!(
-            *field,
-            "workload_resource_disposition" | "workload_artifacts"
-        ) {
-            measured.get(*field) == summary.get(*field)
-        } else {
-            // Older JSON summaries emitted null for optional execution identity
-            // while measurements omitted it. Neither representation asserts a
-            // campaign or recording. Nonnull identities must still agree exactly;
-            // campaign readers additionally require the planned typed identity.
-            measured[*field] == summary[*field]
-        }
-    }) && ["planning", "effective_budgets"]
+    // Older JSON summaries emitted null for optional execution identity while
+    // measurements omitted it. Neither representation asserts a campaign or
+    // recording. Nonnull identities must still agree exactly; campaign readers
+    // additionally require the planned typed identity.
+    crate::planning::MEASUREMENT_AGREEMENT_FIELDS
         .iter()
-        .all(|field| crate::planning::recorded_object(measured, Some(summary), field).is_ok())
+        .all(|field| crate::planning::measurement_field_agrees(summary, measured, field))
+        && ["planning", "effective_budgets"]
+            .iter()
+            .all(|field| crate::planning::recorded_object(measured, Some(summary), field).is_ok())
 }
 
 fn invalid(reason: &str) -> Error {
