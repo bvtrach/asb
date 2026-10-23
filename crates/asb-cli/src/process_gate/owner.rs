@@ -1,6 +1,7 @@
 //! Lifetime binding for the exclusive native gate, including its stopped phase.
 #![allow(unsafe_code)]
 
+use super::poll_read;
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
@@ -71,11 +72,7 @@ impl Owner {
         if CANCELLED.load(Ordering::Relaxed) {
             return Ok(true);
         }
-        let mut descriptor = libc::pollfd {
-            fd: self.process.as_raw_fd(),
-            events: libc::POLLIN,
-            revents: 0,
-        };
+        let mut descriptor = poll_read(self.process.as_raw_fd());
         let result = unsafe { libc::poll(&mut descriptor, 1, 0) };
         if result < 0 {
             let error = io::Error::last_os_error();
@@ -95,26 +92,10 @@ impl Owner {
     ) -> io::Result<std::process::ExitStatus> {
         let principal = pin(child.id() as libc::pid_t)?;
         let mut descriptors = [
-            libc::pollfd {
-                fd: self.process.as_raw_fd(),
-                events: libc::POLLIN,
-                revents: 0,
-            },
-            libc::pollfd {
-                fd: self.cancellation.as_raw_fd(),
-                events: libc::POLLIN,
-                revents: 0,
-            },
-            libc::pollfd {
-                fd: principal.as_raw_fd(),
-                events: libc::POLLIN,
-                revents: 0,
-            },
-            libc::pollfd {
-                fd: control.as_ref().map_or(-1, |control| control.descriptor()),
-                events: libc::POLLIN,
-                revents: 0,
-            },
+            poll_read(self.process.as_raw_fd()),
+            poll_read(self.cancellation.as_raw_fd()),
+            poll_read(principal.as_raw_fd()),
+            poll_read(control.as_ref().map_or(-1, |control| control.descriptor())),
         ];
         loop {
             if self.cancelled()? {
@@ -210,26 +191,10 @@ impl Owner {
                     libc::close(fd);
                 }
                 let mut descriptors = [
-                    libc::pollfd {
-                        fd: self.process.as_raw_fd(),
-                        events: libc::POLLIN,
-                        revents: 0,
-                    },
-                    libc::pollfd {
-                        fd: gate.as_raw_fd(),
-                        events: libc::POLLIN,
-                        revents: 0,
-                    },
-                    libc::pollfd {
-                        fd: self.cancellation.as_raw_fd(),
-                        events: libc::POLLIN,
-                        revents: 0,
-                    },
-                    libc::pollfd {
-                        fd: self.watcher_done.as_raw_fd(),
-                        events: libc::POLLIN,
-                        revents: 0,
-                    },
+                    poll_read(self.process.as_raw_fd()),
+                    poll_read(gate.as_raw_fd()),
+                    poll_read(self.cancellation.as_raw_fd()),
+                    poll_read(self.watcher_done.as_raw_fd()),
                 ];
                 loop {
                     let result = libc::poll(descriptors.as_mut_ptr(), 4, -1);

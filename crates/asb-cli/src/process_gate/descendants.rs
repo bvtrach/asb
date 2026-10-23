@@ -276,11 +276,7 @@ mod tests {
     }
 
     fn exited(descriptor: &OwnedFd, timeout: i32) -> bool {
-        let mut poll = libc::pollfd {
-            fd: descriptor.as_raw_fd(),
-            events: libc::POLLIN,
-            revents: 0,
-        };
+        let mut poll = crate::process_gate::poll_read(descriptor.as_raw_fd());
         unsafe { libc::poll(&mut poll, 1, timeout) > 0 && poll.revents & libc::POLLIN != 0 }
     }
 

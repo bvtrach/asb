@@ -44,6 +44,16 @@ pub(crate) fn executable() -> io::Result<std::path::PathBuf> {
     std::env::current_exe()
 }
 
+/// A poll descriptor watching one file descriptor for readability.
+#[cfg(unix)]
+pub(crate) fn poll_read(fd: libc::c_int) -> libc::pollfd {
+    libc::pollfd {
+        fd,
+        events: libc::POLLIN,
+        revents: 0,
+    }
+}
+
 #[cfg(target_os = "linux")]
 fn install_receipt(command: &mut Command, receipt_fd: i32) {
     use std::os::unix::process::CommandExt;

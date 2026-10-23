@@ -93,11 +93,7 @@ fn reader<R: Read + AsRawFd>(
                     let _ = sender.send(Event::Frozen);
                     frozen = true;
                 }
-                let mut poll = libc::pollfd {
-                    fd: descriptor,
-                    events: libc::POLLIN,
-                    revents: 0,
-                };
+                let mut poll = crate::process_gate::poll_read(descriptor);
                 // SAFETY: poll borrows one valid descriptor for at most 50 ms.
                 if unsafe { libc::poll(&mut poll, 1, 50) } < 0
                     && io::Error::last_os_error().kind() != io::ErrorKind::Interrupted
